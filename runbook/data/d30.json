@@ -385,7 +385,7 @@
         "The one-hour service token expired and was never refreshed"
       ],
       "answer": 3,
-      "explain": "A 401 with 'token expired' exactly one hour into the run is a token lifetime problem in the harness (Days 15 and 27). Those 104 failures say nothing about the model, and the score should be reported with them separated as infrastructure errors.",
+      "explain": "A 401 with 'token expired' exactly one hour into the run is a token lifetime problem in the harness (Days 15 and 27). The failures from case 242 on say nothing about the model, and the score should be reported with them separated as infrastructure errors.",
       "why": ["A rate limit returns 429, not 401 with 'token expired'.", "Malformed arguments return 400 or 422, and would not start at a round hour.", "A database outage gives 5xx errors from the tools API.", ""]
     },
     {
@@ -531,7 +531,7 @@
           ],
           "answer": 0,
           "explain": "There may be two faults. A cache-bypassed request tests the index, retrieval, and model together. If it is right, the cache is the only problem; if it is wrong, the re-index needs attention too.",
-          "reveal": "With the cache bypassed, Relay retrieves the refund chunk updated on Tuesday at 09:12 and answers 14 days. The index is current."
+          "reveal": "With the cache bypassed, Relay retrieves the refund chunk re-indexed from the article updated on Tuesday at 09:12 and answers 14 days. The index is current."
         },
         {
           "q": "What is the durable fix?",
@@ -644,7 +644,7 @@
           "answer": 2,
           "explain": "Worker-7 called the payment API and never reached the acknowledgement. After the visibility timeout the broker handed the job to worker-2, as at-least-once delivery promises. The 30-second gap matches a timeout, not a simultaneous pull.",
           "artifact": {"lang": "log", "code": "10:41:02 worker-7 job=rf_5521 start order=88412 amount=39.00\n10:41:03 worker-7 job=rf_5521 payment_api ok refund_id=re_9QK\n10:41:03 worker-7 job=rf_5521 refund row committed\n10:41:33 worker-2 job=rf_5521 start order=88412 amount=39.00 (redelivered)\n10:41:34 worker-2 job=rf_5521 payment_api ok refund_id=re_A7T\n10:41:34 worker-2 job=rf_5521 ack"},
-          "reveal": "Pod events show worker-7 was OOMKilled at 10:41:04. Memory on refund workers climbs during a nightly batch and several were killed last week."
+          "reveal": "Pod events show worker-7 was OOMKilled at 10:41:04. Memory on refund workers climbs during busy periods, and several were killed last week."
         },
         {
           "q": "Which fix stops duplicates no matter why a worker dies?",
@@ -838,7 +838,7 @@
           ],
           "answer": 3,
           "explain": "Holding the read path fixed and testing the new model isolates the second change. A production rollback for a week is slow and costly, and asking the model about its own reasoning is not evidence.",
-          "reveal": "With primary reads, the new model's loop rate is 0.1 percent, the same as the old model before Monday."
+          "reveal": "With primary reads, the new model's loop rate is 0.1 percent, the same as the old model on the same evals."
         }
       ],
       "debrief": "The model was blamed, and the cause was replica lag. After writing the refund on the primary, the agent read the order from a replica that had not caught up, saw no refund, and tried again. Days 11, 26, and 6 meet here. The fix was read-your-writes for the agent and tool results that report what they did. The general lesson: an agent acts on what its tools tell it, so stale reads become wrong actions."
