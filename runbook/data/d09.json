@@ -1,0 +1,614 @@
+{
+  "id": "d09",
+  "day": 9,
+  "phase": "p3",
+  "title": "Indexes and the query planner",
+  "tagline": "Why a query is slow, and how to read the database's own explanation of what it did.",
+  "minutes": 56,
+  "why": "Most slow endpoints in a service like Relay are slow because of a handful of queries, and the database will tell you exactly what each one did if you ask. Reading a query plan turns 'the database is slow' into 'this query reads 8 million rows to return 20'. That is the difference between buying a bigger server and adding one index.",
+  "objectives": [
+    "Explain why a query that is fast in development is slow in production, using table size and selectivity",
+    "Choose a composite index for a query and justify its column order",
+    "Read an EXPLAIN ANALYZE plan and say where the time went and whether the row estimates were right",
+    "Recognize N+1 queries, a missing foreign key index, and connection exhaustion from their symptoms",
+    "Decide between fixing a query and buying more database hardware"
+  ],
+  "lessons": [
+    {
+      "id": "d09-l1",
+      "title": "Why a query is slow: scans",
+      "minutes": 11,
+      "blocks": [
+        {"t": "p", "text": "To answer a query, PostgreSQL either reads the whole table and keeps the rows that match, a **sequential scan**, or uses an index to jump straight to the matching rows, an **index scan**. Which is cheaper depends on how big the table is and how many of its rows the query needs."},
+        {"t": "p", "text": "A sequential scan's cost grows in step with the table: twice the rows, twice the work. An index lookup's cost barely grows with the table, because finding a value takes only a few steps down a tree, plus one fetch for each matching row. On a small table the difference is invisible; on a large one it is the whole story."},
+        {"t": "compare",
+          "caption": "Three ways to read a table",
+          "columns": ["", "Sequential scan", "Index scan", "Bitmap scan"],
+          "rows": [
+            ["How it reads", "Every page of the table, in order", "Index entries in order, then each matching row", "The index first to mark pages, then those pages in order"],
+            ["Cost grows with", "Total table size", "Number of matching rows", "Number of pages holding matches"],
+            ["Best when", "The table is small, or a large share of rows is needed", "Few rows match, or rows are needed in index order", "A moderate share of rows matches"],
+            ["Warning sign", "A large table and a tiny result", "Many thousands of rows fetched one by one", "Rarely a problem on its own"]
+          ],
+          "verdict": "A sequential scan over a large table to return a handful of rows is the single most common cause of a slow query."},
+        {"t": "h", "text": "Selectivity"},
+        {"t": "p", "text": "**Selectivity** is the share of rows a condition keeps. `WHERE id = 812` keeps one row out of millions and is very selective. `WHERE status = 'closed'` might keep 90 percent of tickets. An index fetch pays a scattered read per row, so when most rows are needed, reading the table in order is cheaper, and the planner chooses the sequential scan on purpose."},
+        {"t": "callout", "kind": "insight", "title": "A sequential scan is not automatically a bug", "text": "On a table of a few thousand rows, or for a query that needs most of the table, a sequential scan is the right plan. It becomes a problem when the table is large and the result is small."},
+        {"t": "h", "text": "Fast on your laptop, slow in production"},
+        {"t": "list", "style": "bullet", "items": [
+          "Size: your development database has 500 tickets; production has 9 million. A full scan of 500 rows takes well under a millisecond.",
+          "Skew: in production one business customer has 400,000 tickets. A query that is fine for typical users is slow for them.",
+          "Memory: a small table sits entirely in memory; a large one must be read from disk, which is much slower.",
+          "Concurrency: on your laptop one query runs at a time. In production, hundreds compete for the same disk and CPU."
+        ]},
+        {"t": "callout", "kind": "pitfall", "title": "The endpoint slows as the table grows", "text": "Latency that creeps up week after week while traffic stays flat is the signature of a query whose work grows with table size. It usually means a full scan, or an index that matches only part of the condition. Nothing changed in the code, which is why it gets missed."},
+        {"t": "tradeoff",
+          "title": "Fix the query, or buy a bigger database",
+          "options": [
+            {"name": "Fix the query or add an index", "gain": ["Often a speedup of many times, not a fraction", "Cost does not grow with the table", "Frees capacity for everything else"], "cost": ["Needs someone to find and understand the query", "Each index adds write cost"], "choose": "Choose this when a few queries account for most of the database's time, which is the usual case."},
+            {"name": "Scale up the database", "gain": ["No code change", "Helps every query a little at once"], "cost": ["Gains are proportional at best, so a full scan stays a full scan", "Recurring cost, and the problem returns as data grows"], "choose": "Choose this when the workload is already efficient and simply larger than the machine, or as a stopgap while the fix is built."}
+          ]},
+        {"t": "callout", "kind": "debug", "title": "Find the expensive query before anything else", "text": "Rank queries by total time spent, not by count or by single slowest run. The `pg_stat_statements` extension keeps calls, total time, and mean time per query shape. The slow query log, enabled with `log_min_duration_statement`, records each statement slower than a threshold you choose."},
+        {"t": "check",
+          "q": "Ticket search takes 5 ms on a developer's laptop and 2 seconds in production. The code and query are identical. What is the most likely reason?",
+          "options": ["Production has far more rows, and the query scans them all", "Production's network to the database is slower", "The ORM caches results on the laptop", "Production runs an older version of Python"],
+          "answer": 0,
+          "explain": "A 400-fold gap with identical code points at the amount of data scanned. Network latency adds milliseconds per query, not seconds, and the other two would not depend on data size."},
+        {"t": "reveal", "prompt": "You add an index on `tickets.status`, and a query for `WHERE status = 'closed'` still uses a sequential scan. About 90 percent of tickets are closed. Is the planner wrong?", "answer": "No. Fetching 90 percent of rows one by one through an index costs more than reading the whole table in order. An index on status helps only for rare values, such as the few open or escalated tickets, and a partial index is often better for those."}
+      ]
+    },
+    {
+      "id": "d09-l2",
+      "title": "Indexes: B-tree, composite, covering",
+      "minutes": 11,
+      "blocks": [
+        {"t": "p", "text": "An **index** is a separate data structure that keeps a column's values in sorted order, each entry pointing at its row in the table. The default kind in PostgreSQL is the **B-tree**, a shallow, balanced tree. Finding one value takes a few page reads even when the table holds hundreds of millions of rows."},
+        {"t": "analogy", "text": "A composite index is like a phone book sorted by last name, then first name. You can find every Smith, or Ana Smith, quickly. Finding every Ana means reading the whole book, because first names are sorted only within each last name. The analogy stops at maintenance: a phone book is printed once, while an index is updated on every write."},
+        {"t": "h", "text": "Column order in a composite index"},
+        {"t": "p", "text": "A **composite index** on `(user_id, created_at)` is sorted by user, then by time within each user. It serves `WHERE user_id = ?`, and `WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`, by reading just the 20 newest entries for that user. It cannot efficiently serve `WHERE created_at > ?` alone, because those entries are scattered across every user."},
+        {"t": "compare",
+          "caption": "One composite index versus two single-column indexes",
+          "columns": ["Query or concern", "Composite (user_id, created_at)", "Separate indexes on each column"],
+          "rows": [
+            ["`user_id = ? ORDER BY created_at DESC LIMIT 20`", "Reads 20 entries, already in order", "Finds all the user's tickets, then sorts them"],
+            ["`created_at > ?` alone", "Cannot use it efficiently", "Uses the created_at index"],
+            ["Both conditions at once", "One index walk", "Postgres can combine two bitmaps, at extra cost"],
+            ["Writes", "One index to update", "Two indexes to update"]
+          ],
+          "verdict": "Build composite indexes for the queries you run most, with equality columns first and the range or sort column last. Keep single-column indexes for queries you cannot predict."},
+        {"t": "h", "text": "Covering, partial, unique"},
+        {"t": "list", "style": "bullet", "items": [
+          "A **covering index** contains every column the query reads, so Postgres can answer with an index-only scan and skip the table. Postgres lets you add extra non-key columns with `INCLUDE`.",
+          "A **partial index** covers only rows matching a condition, such as `WHERE status = 'open'`. It is small and cheap to maintain, and only queries with the same condition use it.",
+          "A **unique index** also enforces that no two rows share a value. A unique index on `lower(email)` blocks duplicates that differ only in letter case.",
+          "An **expression index** stores the result of a function, such as `lower(email)`. Only queries that use the same expression can use it."
+        ]},
+        {"t": "tradeoff",
+          "title": "More indexes, or faster writes",
+          "options": [
+            {"name": "Index generously", "gain": ["More queries find a fast path", "Fewer surprises from new query shapes"], "cost": ["Every insert writes to every index", "More disk and memory, competing with the table for cache", "Slower bulk loads and backfills"], "choose": "Choose this for read-heavy tables, such as help-center articles, that change rarely."},
+            {"name": "Index sparingly", "gain": ["Fast inserts and updates", "Less storage and less vacuum work"], "cost": ["Some queries scan", "Each new query shape needs review"], "choose": "Choose this for write-heavy tables, such as messages or event logs, indexing only what the hot queries use."}
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "The right columns in the wrong order", "text": "An index on `(created_at, user_id)` looks equivalent to `(user_id, created_at)` and is not. For 'this user's newest tickets' it must walk entries for every user in the time range. If a plan shows an index used but thousands of entries read for a tiny result, check the column order."},
+        {"t": "callout", "kind": "debug", "title": "Indexes that cost and never help", "text": "`pg_stat_user_indexes` records how often each index was scanned since statistics were last reset. An index with zero scans over weeks is pure write cost. Check replicas before dropping it, since each server keeps its own counts."},
+        {"t": "check",
+          "q": "Relay's console runs `WHERE user_id = ? AND status = 'open' ORDER BY created_at DESC LIMIT 20`. Which index fits it best?",
+          "options": ["`(user_id, status, created_at)`", "`(created_at, user_id, status)`", "`(status)` alone", "`(created_at)` alone"],
+          "answer": 0,
+          "explain": "Equality columns first narrow the index to one user's open tickets, and `created_at` last means those entries are already in order, so the scan stops after 20. Leading with `created_at` forces a walk through every user's entries."}
+      ]
+    },
+    {
+      "id": "d09-l3",
+      "title": "Reading a query plan",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "The **query planner** chooses how to run each query by estimating the cost of possible plans from table statistics. `EXPLAIN` shows the plan it chose, with its estimates. `EXPLAIN ANALYZE` actually runs the query and adds what really happened: time per step and actual row counts."},
+        {"t": "callout", "kind": "pitfall", "title": "EXPLAIN ANALYZE runs the statement", "text": "On an UPDATE or DELETE, `EXPLAIN ANALYZE` really changes the data. Wrap it in a transaction and roll back, or analyze an equivalent SELECT."},
+        {"t": "code",
+          "lang": "plan",
+          "title": "Before: no suitable index (parallel workers off, for a shorter plan)",
+          "code": "EXPLAIN ANALYZE SELECT id, status, created_at FROM tickets\n  WHERE user_id = 48213 ORDER BY created_at DESC LIMIT 20;\n\n Limit  (cost=231904.18..231904.23 rows=20 width=24) (actual time=1874.420..1874.426 rows=20 loops=1)\n   ->  Sort  (cost=231904.18..231905.03 rows=340 width=24) (actual time=1874.418..1874.422 rows=20 loops=1)\n         Sort Key: created_at DESC\n         Sort Method: top-N heapsort  Memory: 27kB\n         ->  Seq Scan on tickets  (cost=0.00..231895.12 rows=340 width=24) (actual time=0.031..1873.977 rows=512 loops=1)\n               Filter: (user_id = 48213)\n               Rows Removed by Filter: 8399488\n Planning Time: 0.142 ms\n Execution Time: 1874.468 ms",
+          "notes": [
+            "Read from the innermost node outward. The Seq Scan feeds the Sort, which feeds the Limit.",
+            "`rows=340` inside `cost=` is the estimate; `rows=512` inside `actual` is what happened. Within a factor of two is fine.",
+            "`actual time=0.031..1873.977` is time to the first row and to the last row, in milliseconds. Times include the node's children, so the Seq Scan is nearly all of the 1,874 ms.",
+            "`Rows Removed by Filter: 8399488` is the smoking gun. It read 8.4 million rows to keep 512.",
+            "With parallel workers on, you would see `Gather` above a `Parallel Seq Scan`, with row counts reported per worker."
+          ]},
+        {"t": "code",
+          "lang": "plan",
+          "title": "After: CREATE INDEX tickets_user_created_idx ON tickets (user_id, created_at)",
+          "code": " Limit  (cost=0.56..80.95 rows=20 width=24) (actual time=0.041..0.093 rows=20 loops=1)\n   ->  Index Scan Backward using tickets_user_created_idx on tickets  (cost=0.56..1367.24 rows=340 width=24) (actual time=0.039..0.088 rows=20 loops=1)\n         Index Cond: (user_id = 48213)\n Planning Time: 0.211 ms\n Execution Time: 0.112 ms",
+          "notes": [
+            "`Index Cond` means the index itself found the matching rows; there is no `Rows Removed by Filter`.",
+            "`Backward` means it walks the index from newest to oldest, which matches `ORDER BY created_at DESC`. The Sort node is gone.",
+            "It stops after 20 rows because the Limit needs no more. That is why the actual rows are 20, while the estimate for the whole scan is 340.",
+            "Execution went from about 1.9 seconds to about 0.1 ms."
+          ]},
+        {"t": "compare",
+          "caption": "Plan nodes you will meet most",
+          "columns": ["Node", "What it does", "When it is a warning sign"],
+          "rows": [
+            ["Seq Scan", "Reads every row and applies the filter", "Large table with a big `Rows Removed by Filter`"],
+            ["Index Scan", "Walks the index, fetching each matching row", "Huge row counts or loops, since each fetch is a scattered read"],
+            ["Index Only Scan", "Answers from the index alone where pages are marked all-visible", "High `Heap Fetches`, meaning the table was visited anyway"],
+            ["Bitmap Heap Scan", "Marks matching pages from an index, then reads them in order", "Rarely on its own; check the row counts"],
+            ["Nested Loop", "For each outer row, looks up matches on the inner side", "The outer side is far larger than estimated"],
+            ["Hash Join", "Builds a hash table from one input and probes it with the other", "`Batches` above 1, meaning it spilled to disk"],
+            ["Sort", "Orders rows", "`Sort Method: external merge`, meaning it spilled to disk"]
+          ],
+          "verdict": "Most plans are a handful of these nodes. Learn to spot the three spills and the oversized scan, and you can read nearly any plan."},
+        {"t": "h", "text": "Estimates versus reality"},
+        {"t": "p", "text": "The planner picks a plan from its **estimates** of how many rows each step returns, based on statistics that `ANALYZE` collects. Autovacuum refreshes them automatically, but after a bulk load, a mass update, or a big delete they can be stale for a while. A wrong estimate leads to a plan built for a different amount of data."},
+        {"t": "p", "text": "The classic case: the planner expects 1 row from the outer side of a Nested Loop and gets 48,000, so the inner lookup runs 48,000 times. Look at `loops=` on the inner node and multiply. Running `ANALYZE` on the table usually fixes it; correlated columns may need extended statistics."},
+        {"t": "callout", "kind": "debug", "title": "Reading a slow plan in three passes", "text": "First, find the node with the largest time after subtracting its children. Second, compare estimated and actual rows there; a gap of ten times or more means the planner was working blind. Third, look for `Rows Removed by Filter`, disk spills, and high loop counts."},
+        {"t": "check",
+          "q": "A plan node reads `(cost=0.43..8.45 rows=1 width=16) (actual time=0.031..61.208 rows=48210 loops=1)`. What does this tell you first?",
+          "options": ["The row estimate was far off, likely from stale statistics", "The node took 8.45 ms of the query's run time", "The index is corrupt and returns too many rows", "The query returned exactly one row to the client"],
+          "answer": 0,
+          "explain": "The estimate was 1 row and the actual was 48,210, which means the planner chose its plan for the wrong amount of data. Cost is in arbitrary planner units, not milliseconds, so 8.45 is not a time."},
+        {"t": "reveal", "prompt": "A Nested Loop's inner Index Scan shows `actual time=0.186..0.187 rows=1 loops=48210`. Roughly how long did the inner side take in total?", "answer": "About 9 seconds. Actual times are reported per loop, so 0.187 ms times 48,210 loops is roughly 9,000 ms. Forgetting to multiply by loops is the most common misreading of a plan."}
+      ]
+    },
+    {
+      "id": "d09-l4",
+      "title": "The usual suspects: N+1, pools, long queries",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "An **N+1 query** pattern runs one query to load a list, then one more query per item in the list. It usually comes from an ORM's lazy loading inside a loop. Each query is fast; the cost is the number of round trips, and it grows with the length of the list."},
+        {"t": "code",
+          "lang": "log",
+          "title": "Postgres statement log for one ticket-history request",
+          "code": "10:15:02.114 [4410] LOG:  duration: 0.902 ms  statement: SELECT ... FROM tickets WHERE user_id = 48213 ...\n10:15:02.117 [4410] LOG:  duration: 0.311 ms  statement: SELECT ... FROM messages WHERE ticket_id = 9912001\n10:15:02.119 [4410] LOG:  duration: 0.298 ms  statement: SELECT ... FROM messages WHERE ticket_id = 9912002\n10:15:02.121 [4410] LOG:  duration: 0.305 ms  statement: SELECT ... FROM messages WHERE ticket_id = 9912003\n... 46 more lines like these ...\n10:15:02.231 [4410] LOG:  duration: 0.301 ms  statement: SELECT ... FROM messages WHERE ticket_id = 9912050",
+          "notes": [
+            "Every query is under a millisecond. A slow query log with a threshold would never show any of them.",
+            "51 queries for one page. The timestamps show the request spent over 100 ms in round trips for about 16 ms of database work.",
+            "Near-identical statements differing only in one ID, from one connection, in one burst: that is the N+1 shape.",
+            "If `messages.ticket_id` had no index, each of the 50 would also be a full scan."
+          ]},
+        {"t": "compare",
+          "caption": "Ways to load tickets with their messages",
+          "columns": ["", "Lazy loading", "Eager load with a join", "Eager load with a second IN query"],
+          "rows": [
+            ["Queries per page", "1 plus 1 per ticket", "1", "2"],
+            ["Rows transferred", "Exactly what is used", "Ticket columns repeated per message", "Each row once"],
+            ["Risk", "Hundreds of queries on long lists", "Large repeated rows when children are many", "A very long IN list for huge parents"],
+            ["SQLAlchemy option", "The default for relationships", "`joinedload`", "`selectinload`"]
+          ],
+          "verdict": "Use eager loading for any relationship you read inside a loop. Prefer the second-query style when each parent has many children."},
+        {"t": "p", "text": "PostgreSQL indexes primary keys and unique columns automatically, but not foreign key columns. If `messages.ticket_id` has no index, every lookup of a ticket's messages scans the whole messages table, and deleting a ticket scans it too, to check for rows still pointing at it."},
+        {"t": "list", "style": "bullet", "items": [
+          "`SELECT *` pulls every column, including large message bodies and embeddings the page never shows, and rules out index-only scans.",
+          "A query with no LIMIT returns everything a customer has. It works with 100 rows and exhausts memory with 2 million.",
+          "Long-running transactions hold locks and stop vacuum from cleaning up, slowing everything that touches the same tables."
+        ]},
+        {"t": "h", "text": "Connections and pooling"},
+        {"t": "p", "text": "Each PostgreSQL connection is a separate server process with its own memory, and `max_connections` caps how many exist. Opening one takes several round trips, so apps keep a **connection pool** of open connections and lend them to requests. Each API worker process has its own pool, so total connections are pods times workers times pool size."},
+        {"t": "flow",
+          "title": "One query's trip from FastAPI to Postgres",
+          "steps": [
+            {"actor": "API", "label": "Asks its pool for a connection", "detail": "Returns at once if one is free; otherwise waits up to the pool timeout.", "fail": "Requests stall, then fail with a pool timeout, while the database itself looks idle."},
+            {"actor": "PgBouncer", "label": "Assigns a server connection", "detail": "In transaction mode, a server connection is lent only for the length of one transaction.", "fail": "Clients queue inside PgBouncer when every server connection is busy."},
+            {"actor": "Postgres", "label": "Plans the query", "detail": "Chooses a plan from table statistics.", "fail": "Stale statistics produce a plan built for the wrong row counts."},
+            {"actor": "Postgres", "label": "Executes the plan", "detail": "Scans tables and indexes, joins, sorts.", "fail": "A full scan or a disk spill turns milliseconds into seconds."},
+            {"actor": "API", "label": "Receives rows and returns the connection", "detail": "The ORM builds objects from the rows, then the connection goes back to the pool.", "fail": "An unbounded result fills memory; a connection never returned leaks until the pool is empty."}
+          ]},
+        {"t": "tradeoff",
+          "title": "How the API reaches Postgres",
+          "options": [
+            {"name": "App pools only", "gain": ["Nothing extra to run", "Every session feature works"], "cost": ["Connections multiply with every pod the autoscaler adds", "Idle connections still use server memory"], "choose": "Choose this when the number of API processes is small and stable."},
+            {"name": "PgBouncer in front", "gain": ["Thousands of clients share a few dozen server connections", "Scaling out the API does not multiply database connections"], "cost": ["One more component to run and monitor", "In transaction mode, features that rely on session state can misbehave"], "choose": "Choose this once the API autoscales or many processes connect."}
+          ]},
+        {"t": "callout", "kind": "debug", "title": "'sorry, too many clients already'", "text": "Count connections in `pg_stat_activity` grouped by application and state. Many `idle` connections from the API mean pools are oversized for the number of processes. Many `active` ones mean slow queries are holding them. Raising `max_connections` hides the first and worsens the second."},
+        {"t": "p", "text": "**Table bloat** comes from how PostgreSQL handles changes. An update writes a new row version and a delete only marks the old one dead. Vacuum later makes that space reusable. If vacuum falls behind, or a long transaction stops it, dead rows pile up and every scan reads more pages for the same live data."},
+        {"t": "check",
+          "q": "A Relay page makes 201 queries for 200 tickets, each under a millisecond. The slow query log, set to 100 ms, shows nothing. What is going on?",
+          "options": ["An N+1 pattern whose cost is in the number of queries", "The slow query log is misconfigured", "The database is healthy, so the slowness must be in the network", "A missing index makes each query a full scan"],
+          "answer": 0,
+          "explain": "Each query is fast, so a per-statement threshold never fires, and the cost sits in 201 round trips. A missing index would make individual queries slow enough to show in the log."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "An endpoint gets slower every week while traffic stays flat",
+      "causes": ["A query scans a table that keeps growing", "An index matches only part of the condition, so the rest is filtered row by row"],
+      "look": "`pg_stat_statements` ranked by total time, then `EXPLAIN ANALYZE` of the top query.",
+      "confirm": "A Seq Scan or a large `Rows Removed by Filter` on the growing table.",
+      "fix": "An index that matches the filter and sort, built concurrently. It adds write cost to that table."
+    },
+    {
+      "symptom": "Hundreds of near-identical queries per request, differing only in one ID",
+      "causes": ["ORM lazy loading inside a loop", "A per-item helper that queries the database"],
+      "look": "The statement log or ORM SQL log for one request, or the database spans on its trace.",
+      "confirm": "One list query followed by one query per item.",
+      "fix": "Eager-load the relationship, or fetch all children in one query with IN."
+    },
+    {
+      "symptom": "A plan shows rows=1 estimated and tens of thousands actual",
+      "causes": ["Statistics are stale after a bulk load, mass update, or delete", "Correlated columns the planner treats as independent"],
+      "look": "When the table was last analyzed, and the gap between estimated and actual rows node by node.",
+      "confirm": "Running `ANALYZE` on the table brings the estimate close and the plan changes.",
+      "fix": "Analyze after large data changes; add extended statistics for correlated columns."
+    },
+    {
+      "symptom": "FATAL: sorry, too many clients already",
+      "causes": ["Pool size times processes exceeds `max_connections`", "Connections held by slow queries or leaked by the app"],
+      "look": "`pg_stat_activity` grouped by application name and state.",
+      "confirm": "Most connections are idle in app pools, or active on the same slow query.",
+      "fix": "Put PgBouncer in front and shrink per-process pools, or fix the slow query. Raising the limit alone costs memory and contention."
+    },
+    {
+      "symptom": "Deleting a user or ticket takes seconds",
+      "causes": ["A child table's foreign key column has no index, so each delete scans the child table"],
+      "look": "Foreign keys pointing at the table, and whether each referencing column is indexed.",
+      "confirm": "`EXPLAIN ANALYZE` on the delete shows time in constraint checks, or a manual lookup on the child column does a Seq Scan.",
+      "fix": "Index the foreign key column."
+    },
+    {
+      "symptom": "An index exists, yet the plan shows a Seq Scan on that column",
+      "causes": ["The query wraps the column in a function, such as `lower(email)`", "The condition matches a large share of rows", "The value's type differs from the column's type"],
+      "look": "The exact condition in the plan's Filter line, compared with the index definition.",
+      "confirm": "The Filter shows an expression the index does not store, or the actual row count is a large share of the table.",
+      "fix": "An expression index matching the query, or rewrite the condition to use the column as stored."
+    },
+    {
+      "symptom": "Inserts and bulk imports got slower after a round of new indexes",
+      "causes": ["Every insert writes to every index on the table"],
+      "look": "Index count per table and each index's scan count in `pg_stat_user_indexes`.",
+      "confirm": "Several indexes with zero or near-zero scans.",
+      "fix": "Drop unused indexes after checking replicas, and merge overlapping ones into one composite."
+    },
+    {
+      "symptom": "Table size keeps growing while the number of live rows is flat",
+      "causes": ["Vacuum is falling behind on a frequently updated table", "A long-running or idle-in-transaction session stops cleanup"],
+      "look": "Dead row counts per table and the oldest open transaction in `pg_stat_activity`.",
+      "confirm": "Dead rows are a large share of the table, and an old transaction is still open.",
+      "fix": "End the long transaction and tune autovacuum for that table. Reclaiming space already lost may need a table rewrite."
+    }
+  ],
+  "glossary": [
+    {"term": "Sequential scan", "def": "Reading every row of a table in order and keeping those that match. Cost grows with the size of the table."},
+    {"term": "Index scan", "def": "Using an index to find matching entries, then fetching each matching row from the table."},
+    {"term": "Selectivity", "def": "The share of rows a condition keeps. Highly selective conditions keep very few rows and benefit most from an index."},
+    {"term": "B-tree", "def": "The default PostgreSQL index: a shallow, balanced tree of sorted values that supports equality, range, and ordered lookups."},
+    {"term": "Composite index", "def": "An index on several columns, sorted by the first, then the second within it. Column order decides which queries it serves."},
+    {"term": "Covering index", "def": "An index containing every column a query needs, so the query can be answered without visiting the table."},
+    {"term": "Partial index", "def": "An index over only the rows matching a condition, such as open tickets. Smaller and cheaper, and used only by queries with that condition."},
+    {"term": "Query planner", "def": "The part of the database that estimates the cost of possible plans from statistics and picks the cheapest."},
+    {"term": "EXPLAIN ANALYZE", "def": "Runs a query and reports the chosen plan with estimated and actual row counts and time per step."},
+    {"term": "Statistics", "def": "Summaries of each column's values, collected by ANALYZE, that the planner uses to estimate row counts."},
+    {"term": "N+1 queries", "def": "One query for a list plus one query per item, usually from lazy loading in a loop."},
+    {"term": "Connection pool", "def": "A set of open database connections kept by a process and lent to requests, avoiding the cost of opening one each time."},
+    {"term": "PgBouncer", "def": "A lightweight connection pooler between apps and PostgreSQL that lets many clients share a small number of server connections."},
+    {"term": "Table bloat", "def": "Space taken by dead row versions that vacuum has not yet made reusable, which makes scans read more pages."}
+  ],
+  "apply": {
+    "title": "Count and read the queries behind one action",
+    "minutes": 15,
+    "steps": [
+      "If your project uses a SQL database, including SQLite or pgvector, turn on SQL logging and perform one ordinary action, such as loading a page or running one eval case. Count the queries it emits.",
+      "Look for repeated statements that differ only in one value. If there are more than a few, find the loop that causes them.",
+      "Take the query that runs most often and run `EXPLAIN ANALYZE` on it, or `EXPLAIN QUERY PLAN` on SQLite. Note whether it scans the table or uses an index.",
+      "Write down how many rows that table holds today and estimate how many it will hold in a year. Decide whether the plan you saw will still be acceptable then."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d09-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["seq-scan", "table-growth"],
+      "diagnostic": true,
+      "q": "An endpoint got steadily slower over three months while traffic stayed flat. The table it queries grew from 1 million to 9 million rows. What is the most likely cause?",
+      "options": [
+        "The connection pool is too small for the traffic",
+        "The query reads the whole table because no index fits its filter",
+        "The database server's disk is starting to fail",
+        "The ORM is caching too many objects in memory"
+      ],
+      "answer": 1,
+      "explain": "Latency that tracks table size with flat traffic is the signature of a full scan, whose work grows with every row added. A small pool causes waiting that tracks traffic, which did not change.",
+      "why": ["Pool waits rise with traffic, and traffic was flat.", "", "A failing disk tends to produce errors or sudden jumps, not slowdown in step with one table's growth.", "ORM caching would not make the query itself slower as the table grows."]
+    },
+    {
+      "id": "d09-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["query-plan", "statistics"],
+      "context": "An hour ago a batch job marked 48,000 tickets as escalated. Before that, almost none were. The escalation report, normally instant, now takes nine seconds.",
+      "artifact": {"lang": "plan", "code": " Nested Loop  (cost=0.87..16.92 rows=1 width=72) (actual time=0.052..9120.437 rows=48210 loops=1)\n   ->  Index Scan using tickets_status_idx on tickets t  (cost=0.43..8.45 rows=1 width=16) (actual time=0.031..61.208 rows=48210 loops=1)\n         Index Cond: (status = 'escalated'::text)\n   ->  Index Scan using messages_ticket_id_idx on messages m  (cost=0.44..8.46 rows=1 width=64) (actual time=0.186..0.187 rows=1 loops=48210)\n         Index Cond: (ticket_id = t.id)\n Planning Time: 0.190 ms\n Execution Time: 9124.871 ms"},
+      "q": "What is the most likely cause, and the first fix?",
+      "options": [
+        "The messages table needs an index on ticket_id",
+        "A nested loop is always slower than a hash join, so disable it",
+        "The query returns too many columns, so select fewer",
+        "Statistics are stale, so the planner expected 1 row; run ANALYZE"
+      ],
+      "answer": 3,
+      "explain": "The planner estimated 1 escalated ticket and got 48,210, so it chose a nested loop that ran the inner lookup 48,210 times. The statistics predate the batch job, and `ANALYZE` lets it choose a plan for the real count. The messages index already exists and is being used.",
+      "why": ["The plan already uses `messages_ticket_id_idx`.", "A nested loop is the right plan for a few outer rows; the problem is the estimate, and disabling plan types globally causes other regressions.", "Column count does not explain a 48,000-fold row estimate error.", ""]
+    },
+    {
+      "id": "d09-q03",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["composite-index", "index-design"],
+      "q": "Relay's ticket list runs `WHERE user_id = ? ORDER BY created_at DESC LIMIT 20`. Which index serves it best?",
+      "options": [
+        "An index on `(created_at, user_id)`",
+        "An index on `(created_at)` alone",
+        "An index on `(user_id, created_at)`",
+        "Separate indexes on `user_id` and `created_at`"
+      ],
+      "answer": 2,
+      "explain": "With `user_id` first, the index narrows to one user, and `created_at` second keeps that user's entries in time order, so the scan stops after 20. Separate indexes find the user's tickets but then must sort them all, which grows with the customer's size.",
+      "why": ["Time first scatters one user's entries across the whole index.", "This finds recent tickets for everyone and filters by user row by row.", "", "This finds all the user's tickets, then sorts every one of them to pick 20."]
+    },
+    {
+      "id": "d09-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["n-plus-one", "orm"],
+      "artifact": {"lang": "log", "code": "LOG:  duration: 0.88 ms  statement: SELECT ... FROM tickets WHERE user_id = 48213 LIMIT 100\nLOG:  duration: 0.31 ms  statement: SELECT ... FROM users WHERE id = 7711\nLOG:  duration: 0.29 ms  statement: SELECT ... FROM users WHERE id = 7712\nLOG:  duration: 0.30 ms  statement: SELECT ... FROM users WHERE id = 7715\n... 97 more lines like these ..."},
+      "q": "The ticket list page takes 400 ms. What is going on?",
+      "options": [
+        "The users table is missing an index on its primary key",
+        "Each ticket triggers its own query for a related user, one at a time",
+        "The database is retrying a query that keeps failing",
+        "The connection pool is reconnecting before every statement"
+      ],
+      "answer": 1,
+      "explain": "One list query, then one near-identical query per row, is the N+1 shape, typically lazy loading of the ticket's assignee or author. Each query is fast; the round trips add up. Primary keys are always indexed, and the 0.3 ms timings confirm it.",
+      "why": ["Primary keys are indexed automatically, and 0.3 ms lookups confirm it.", "", "Retries would repeat the same statement after errors, and these succeed with different IDs.", "Reconnects would show as connection time, not as distinct queries with different IDs."]
+    },
+    {
+      "id": "d09-q05",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["connection-pool", "pgbouncer"],
+      "context": "After the autoscaler grew Relay's API from 6 to 16 pods, Postgres began logging `FATAL: sorry, too many clients already`. Each pod runs 4 workers, each with a pool of up to 10 connections. `max_connections` is 300.",
+      "q": "What is the best fix?",
+      "options": [
+        "Raise `max_connections` to 1,000",
+        "Increase each pool to 20 so requests wait less",
+        "Restart Postgres to clear stale connections",
+        "Put PgBouncer in front and shrink each worker's pool"
+      ],
+      "answer": 3,
+      "explain": "16 pods times 4 workers times 10 is up to 640 connections against a limit of 300; at 6 pods it was 240. PgBouncer lets all those clients share a few dozen server connections, so scaling out no longer multiplies them. Raising the limit is tempting, but each connection is a process with its own memory, and the next scale-out hits the new limit.",
+      "why": ["Each connection is a server process with memory; the limit moves but the multiplication continues.", "Larger pools make the overshoot worse.", "Restarting drops connections that the pools will open again within seconds.", ""]
+    },
+    {
+      "id": "d09-q06",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["write-cost", "index-design"],
+      "q": "Relay's `messages` table has nine indexes, and the nightly import got slower each time one was added. What explains it?",
+      "options": [
+        "Every inserted row must also be written into each index",
+        "Indexes lock the whole table during each insert",
+        "The planner spends longer choosing among indexes for each insert",
+        "Each index makes Postgres re-sort the table on insert"
+      ],
+      "answer": 0,
+      "explain": "Each index is a separate structure that must receive an entry for every new row, so insert work grows with the number of indexes. Inserts take only a light lock that does not block other writers, and tables are never re-sorted.",
+      "why": ["", "Ordinary inserts take a light table lock that does not block other inserts or reads.", "A simple insert has almost nothing to plan.", "Postgres does not keep tables sorted; only the indexes are ordered."]
+    },
+    {
+      "id": "d09-q07",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["query-plan", "expression-index"],
+      "context": "There is an index on `users(email)`. Login lookups are slow.",
+      "artifact": {"lang": "plan", "title": "Parallel workers off", "code": " Seq Scan on users  (cost=0.00..64451.00 rows=12000 width=72) (actual time=402.118..803.554 rows=1 loops=1)\n   Filter: (lower(email) = 'ana@example.com'::text)\n   Rows Removed by Filter: 2399999\n Planning Time: 0.098 ms\n Execution Time: 803.581 ms"},
+      "q": "Why is the index not used?",
+      "options": [
+        "The table is too small for an index to help",
+        "The statistics on users are stale",
+        "The index is corrupt and the planner skips it",
+        "The index stores `email` as written and cannot answer `lower(email)`"
+      ],
+      "answer": 3,
+      "explain": "The Filter line shows the condition is on `lower(email)`, an expression the index does not contain. An expression index on `lower(email)` fixes it. Stale statistics are tempting, but even perfect statistics cannot make an index on `email` answer a condition on a different expression.",
+      "why": ["The plan removed 2.4 million rows; the table is large.", "Statistics affect estimates, but no estimate makes this index usable for `lower(email)`.", "A corrupt index gives wrong results or errors; the planner does not silently skip it.", ""]
+    },
+    {
+      "id": "d09-q08",
+      "type": "multi",
+      "level": 2,
+      "tags": ["table-growth", "n-plus-one"],
+      "q": "Which of these are common reasons a Relay endpoint slows down as data accumulates? Select all that apply.",
+      "options": [
+        "No index matches the WHERE clause on a large table",
+        "An N+1 loop over a list that keeps getting longer",
+        "A query with no LIMIT that returns every row for a customer",
+        "A foreign key column with no index, used in a join",
+        "An index on the primary key",
+        "A LIMIT 20 query served from a matching index"
+      ],
+      "answers": [0, 1, 2, 3],
+      "explain": "Each of the first four does work proportional to how much data exists: scanned rows, round trips, returned rows, or scanned child rows. A primary key index and an index-served LIMIT stay fast regardless of table size."
+    },
+    {
+      "id": "d09-q09",
+      "type": "order",
+      "level": 2,
+      "tags": ["query-plan", "slow-query"],
+      "q": "Put these steps for investigating a slow database in a sensible order.",
+      "items": [
+        "Rank queries by total time in `pg_stat_statements` or the slow query log",
+        "Run `EXPLAIN ANALYZE` on the top query with realistic parameters",
+        "Find the plan node where most of the time is spent",
+        "Compare estimated and actual rows at that node",
+        "Change one thing, such as an index or ANALYZE, and compare the new plan"
+      ],
+      "explain": "Ranking first makes sure you fix the query that matters. Within the plan, locate the time before asking why the planner chose that path. Changing one thing at a time, then re-reading the plan, tells you which change helped."
+    },
+    {
+      "id": "d09-q10",
+      "type": "match",
+      "level": 1,
+      "tags": ["query-plan"],
+      "q": "Match each plan node to what it does.",
+      "pairs": [
+        ["Seq Scan", "Reads every row of the table and filters"],
+        ["Index Scan", "Walks the index, then fetches each matching row from the table"],
+        ["Index Only Scan", "Answers from the index, skipping the table where pages are all-visible"],
+        ["Bitmap Heap Scan", "Collects matching pages from an index, then reads them in page order"],
+        ["Hash Join", "Builds a hash table from one input and probes it with the other"]
+      ],
+      "explain": "Knowing what each node does tells you what its cost depends on: table size for a Seq Scan, matching rows for an Index Scan, memory for a Hash Join."
+    },
+    {
+      "id": "d09-q11",
+      "type": "open",
+      "level": 3,
+      "tags": ["scaling", "slow-query"],
+      "context": "Relay's ticket history endpoint has a p95 of 4 seconds. Database CPU is at 85 percent. A teammate proposes doubling the database instance size.",
+      "q": "Explain what you would check before agreeing, and when buying hardware would be the right call.",
+      "rubric": [
+        "Ranks queries by total database time to see whether a few dominate",
+        "Reads EXPLAIN ANALYZE for the top queries, looking for scans, estimate errors, or N+1 patterns",
+        "Notes that hardware gives a proportional gain while an index can change the work by orders of magnitude",
+        "Says hardware is right when the workload is already efficient, or as a stopgap while a fix ships",
+        "Mentions verifying the effect after the change"
+      ],
+      "model": "First I would rank queries by total time in pg_stat_statements. If one or two dominate, I would read their EXPLAIN ANALYZE plans for full scans, bad estimates, or N+1 patterns, because an index or a query fix can cut that work by orders of magnitude while doubling the instance at best halves it. Hardware is the right call when the top queries already have good plans and the load is simply larger than the machine, or briefly as a stopgap while a fix ships. Either way I would compare p95 and CPU afterwards."
+    },
+    {
+      "id": "d09-q12",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["partial-index", "index-design"],
+      "q": "Relay's queue page runs `WHERE status = 'open' ORDER BY created_at LIMIT 50`. About 2 percent of tickets are open. Which index is smallest while still serving this query well?",
+      "options": [
+        "An index on `(status)` for all rows",
+        "An index on `(created_at)` limited to rows where status is open",
+        "An index on `(status, created_at)` for all rows",
+        "An index on `(created_at)` for all rows"
+      ],
+      "answer": 1,
+      "explain": "A partial index holds only the 2 percent of rows that are open, already ordered by `created_at`, so it is small and the scan stops after 50. The composite on all rows serves the query equally well but is about fifty times larger, and is updated for every ticket.",
+      "why": ["This finds open tickets but must then sort them, and it indexes every row.", "", "This serves the query well but indexes all tickets, so it is far larger.", "This walks closed tickets too, filtering out 98 percent of the entries it reads."]
+    }
+  ],
+  "drills": [
+    {
+      "id": "d09-x1",
+      "title": "Ticket history times out for the biggest customers",
+      "brief": "Relay's support console shows each customer's ticket history. Since last week it takes 6 to 10 seconds for large business customers and times out for the largest. Small customers are fine. Database CPU has crept from 40 to 75 percent over the month, and a teammate has requested a database instance twice the size.",
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Approve the bigger instance, since CPU is high",
+            "Add a cache in front of the history endpoint",
+            "Find which query shapes account for the most total database time",
+            "Restart Postgres to clear its memory"
+          ],
+          "answer": 2,
+          "explain": "Ranking by total time shows whether one query dominates, which decides between fixing a query and buying hardware. Approving the instance acts on the most expensive theory before the cheapest check, and a cache hides the slowness without explaining it.",
+          "reveal": "One query shape accounts for 61 percent of all database time. Its mean is 270 ms because most customers are small.",
+          "artifact": {"lang": "text", "title": "pg_stat_statements, top three by total time", "code": "  calls    total ms   mean ms  share  query\n 18,400   4,968,000     270.0    61%  SELECT ... FROM tickets WHERE user_id = $1 ORDER BY created_at\n                                       DESC LIMIT 50\n612,000     306,000       0.5     4%  SELECT ... FROM users WHERE id = $1\n 95,000     281,000       3.0     3%  INSERT INTO messages ..."}
+        },
+        {
+          "q": "What next?",
+          "options": [
+            "Add an index on `created_at`",
+            "Run `EXPLAIN ANALYZE` for one large customer and one small one",
+            "Rewrite the endpoint to fetch history in the background",
+            "Run VACUUM FULL on tickets"
+          ],
+          "answer": 1,
+          "explain": "Comparing plans for a large and a small customer shows why the cost depends on customer size. Adding an index before reading the plan is a guess, and VACUUM FULL rewrites the table under an exclusive lock with no evidence that bloat is involved.",
+          "reveal": "For the largest customer, the existing index on `user_id` finds 412,044 tickets, all are fetched from the table, and then sorted to keep 50. The estimates are accurate. For a small customer the same plan touches a few hundred rows.",
+          "artifact": {"lang": "plan", "code": " Limit  (cost=548712.30..548712.42 rows=50 width=48) (actual time=7412.288..7412.301 rows=50 loops=1)\n   ->  Sort  (cost=548712.30..549725.08 rows=405112 width=48) (actual time=7412.286..7412.294 rows=50 loops=1)\n         Sort Key: created_at DESC\n         Sort Method: top-N heapsort  Memory: 39kB\n         ->  Bitmap Heap Scan on tickets  (cost=7581.42..535255.04 rows=405112 width=48) (actual time=210.412..7301.877 rows=412044 loops=1)\n               Recheck Cond: (user_id = 7)\n               Heap Blocks: exact=301877\n               ->  Bitmap Index Scan on tickets_user_id_idx  (cost=0.00..7480.15 rows=405112 width=0) (actual time=152.903..152.903 rows=412044 loops=1)\n                     Index Cond: (user_id = 7)\n Planning Time: 0.231 ms\n Execution Time: 7412.402 ms"}
+        },
+        {
+          "q": "The plan reads 412,044 rows to return 50, and the estimates are accurate. Which fix addresses that?",
+          "options": [
+            "Run ANALYZE on tickets",
+            "Raise `work_mem` so the sort runs in memory",
+            "Add a separate index on `created_at` next to the one on `user_id`",
+            "Create a composite index on `(user_id, created_at)`"
+          ],
+          "answer": 3,
+          "explain": "With the composite index, the user's tickets are already in time order inside the index, so Postgres reads the newest 50 and stops. ANALYZE cannot help when estimates are already right, the sort already fits in 39 kB of memory, and a separate `created_at` index cannot provide per-user order.",
+          "reveal": "With the composite index in place, the plan becomes a backward index scan that stops at 50 rows.",
+          "artifact": {"lang": "plan", "code": " Limit  (cost=0.56..63.71 rows=50 width=48) (actual time=0.038..0.214 rows=50 loops=1)\n   ->  Index Scan Backward using tickets_user_created_idx on tickets  (cost=0.56..511648.29 rows=405112 width=48) (actual time=0.036..0.205 rows=50 loops=1)\n         Index Cond: (user_id = 7)\n Planning Time: 0.274 ms\n Execution Time: 0.241 ms"}
+        },
+        {
+          "q": "How do you add this index to a busy 9-million-row table in production?",
+          "options": [
+            "`CREATE INDEX` during business hours, since it only takes seconds",
+            "`CREATE INDEX CONCURRENTLY`, then confirm the index is valid",
+            "Declare it on the ORM model and let the app create it on startup",
+            "Copy the table, index the copy, and swap the names"
+          ],
+          "answer": 1,
+          "explain": "A concurrent build lets inserts and updates continue while it runs, at the price of taking longer. If it fails partway it leaves an invalid index behind, so you check before relying on it. A plain build blocks writes to tickets for its whole duration, which is far more than seconds on a table this size."
+        }
+      ],
+      "debrief": "Root cause: the only index was on `user_id`, so every history request fetched and sorted all of a customer's tickets, which grew with the largest customers. The bigger instance looked like the answer because CPU was high, and would have bought at most a proportional gain. The composite index cut the worst case from about 7 seconds to under a millisecond. Afterwards, the single-column `user_id` index is redundant, since the composite's leading column serves the same lookups, and can be dropped after checking its usage. The general lesson: rank by total time, read the plan, then decide about hardware."
+    },
+    {
+      "id": "d09-x2",
+      "title": "Too many clients after a scale-out",
+      "brief": "During a marketing email campaign, Relay's traffic tripled. The autoscaler grew the API from 6 to 18 pods. Within minutes about a third of requests failed with 500s, with the error below in the API logs. A teammate suggests raising Postgres's `max_connections` from 300 to 2,000.",
+      "artifact": {"lang": "log", "code": "14:06:12 ERROR api-7c9f OperationalError: connection to server at \"db.internal\" (10.0.3.12),\n  port 5432 failed: FATAL:  sorry, too many clients already"},
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Raise `max_connections` to 2,000 as suggested",
+            "Roll back the last deploy",
+            "Restart Postgres to drop stale connections",
+            "Count current connections grouped by application and state"
+          ],
+          "answer": 3,
+          "explain": "Grouping connections by who holds them and what they are doing tells you whether the cause is too many pools or slow queries, and the fixes differ. Raising the limit acts before you know which, and nothing about a deploy points to a code change.",
+          "reveal": "The API holds most connections, and most of them are idle.",
+          "artifact": {"lang": "text", "code": " application_name | state  | count\n------------------+--------+-------\n relay-api        | idle   |   231\n relay-api        | active |    52\n relay-worker     | idle   |     6\n relay-worker     | active |     6\n (other)          | active |     2"}
+        },
+        {
+          "q": "Most API connections are idle. Why does the API hold so many?",
+          "options": [
+            "Each worker has its own pool, so connections scale with pods",
+            "Postgres keeps connections open after each query finishes",
+            "Slow queries are keeping the connections busy",
+            "The app leaks a connection on every request"
+          ],
+          "answer": 0,
+          "explain": "Idle connections are pooled ones waiting to be lent out. Every new pod adds four workers, each with its own pool, so connection count follows the autoscaler. Slow queries would show as active, and a leak would keep growing even at steady traffic.",
+          "reveal": "Each worker uses SQLAlchemy's default pool of 5 plus up to 10 overflow connections. 18 pods times 4 workers is 72 pools, up to 1,080 connections against a limit of 300."
+        },
+        {
+          "q": "Which fix holds up when the autoscaler adds even more pods?",
+          "options": [
+            "Raise `max_connections` to 2,000 as suggested",
+            "Cap the autoscaler at 6 pods until traffic drops",
+            "Put PgBouncer in front of Postgres and shrink each pool",
+            "Set the pool size to 1 connection per worker"
+          ],
+          "answer": 2,
+          "explain": "PgBouncer lets any number of API clients share a fixed set of server connections, so scaling out no longer multiplies database connections. A higher limit only moves the wall and adds memory per process, capping pods sheds the campaign traffic, and a pool of 1 still grows with pods.",
+          "reveal": "With PgBouncer holding 60 server connections, the 18 pods share them. About 50 are active at peak, and the errors stop."
+        },
+        {
+          "q": "A week later, a per-request `SET statement_timeout` sometimes applies to other requests' queries. Why?",
+          "options": [
+            "PgBouncer rewrites SET statements before forwarding them",
+            "In transaction mode, a session setting stays on the server connection that other clients reuse",
+            "Postgres applies `statement_timeout` to every connection globally",
+            "Each client still has its own server connection, so this is a different bug"
+          ],
+          "answer": 1,
+          "explain": "In transaction mode a server connection is handed to a different client after each transaction, carrying any session-level setting with it. `SET LOCAL` inside the transaction scopes the setting to that transaction, which is safe behind a pooler."
+        }
+      ],
+      "debrief": "Root cause: per-process pools multiplied by an autoscaler outgrew `max_connections`, while most of the connections sat idle. Raising the limit was the obvious fix and would have failed again at the next scale-out, with more memory spent on idle processes. PgBouncer decoupled the number of API processes from the number of database connections. An alert on connections in use as a share of `max_connections` would have warned before the campaign. The general lesson: count who holds the connections and what they are doing before changing any limit."
+    }
+  ]
+}

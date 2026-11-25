@@ -527,7 +527,7 @@
       "id": "d07-x1",
       "title": "Replies are slow, and the dashboard is green",
       "brief": "Since Monday, support has forwarded a dozen complaints that Relay takes forever to answer questions about orders. The service dashboard shows average latency and error rate unchanged for a week. Monday's deploy switched the agent to a newer model version and included a few small tool changes.",
-      "artifact": {"lang": "text", "title": "Service dashboard, all routes", "code": "panel                       Sat     Sun     Mon     Tue\navg latency (all routes)   28 ms   27 ms   31 ms   31 ms\n5xx rate                   0.1%    0.1%    0.1%    0.1%\nrequests                   402k    388k    410k    425k"},
+      "artifact": {"lang": "text", "title": "Service dashboard, all routes", "code": "panel                       Sat     Sun     Mon     Tue\navg latency (all routes)   28 ms   27 ms   31 ms   31 ms\n5xx rate                   0.1%    0.1%    0.1%    0.1%\nrequests                   4.02M   3.88M   4.10M   4.25M"},
       "steps": [
         {
           "q": "What do you check first?",
@@ -540,7 +540,7 @@
           "answer": 1,
           "explain": "A service-wide average dominated by health checks can hide almost anything. Splitting by route and percentile is cheap and says whether the slowness is everywhere or in a tail. Rolling back the model is a guess that also undoes the tool changes, and would not tell you which one mattered.",
           "reveal": "Only the reply route moved. Its p50 is unchanged, and its p99 jumped on Monday afternoon.",
-          "artifact": {"lang": "text", "title": "POST /tickets/{id}/reply", "code": "day     count     p50     p95     p99\nSat     11,900  305 ms  2.0 s   4.1 s\nSun     11,200  300 ms  2.0 s   4.0 s\nMon     12,300  310 ms  3.4 s  13.2 s\nTue     12,600  312 ms  3.9 s  14.6 s"}
+          "artifact": {"lang": "text", "title": "POST /tickets/{id}/reply", "code": "day     count     p50     p95     p99\nSat     11,900  2.4 s   4.5 s   5.6 s\nSun     11,200  2.4 s   4.4 s   5.5 s\nMon     12,300  2.5 s   6.8 s  13.2 s\nTue     12,600  2.5 s   7.3 s  14.6 s"}
         },
         {
           "q": "The typical reply is as fast as before; only the tail grew. What next?",
@@ -616,12 +616,12 @@
           "q": "The email has failed for two days. Why was nobody paged?",
           "options": [
             "The paging integration must have been broken",
-            "The error was logged at error level, which does not trigger pages",
-            "Worker alerts cover only CPU, memory, and queue depth, and none of those changed",
+            "An error-rate alert on worker logs exists but was muted",
+            "Worker alerts watch only CPU, memory, and queue depth",
             "The worker's error lines were sampled away"
           ],
           "answer": 2,
-          "explain": "The worker caught the exception and finished the job, so the queue drained normally and resources looked healthy. Every existing alert watched a cause, and nothing measured whether emails were actually sent. Log levels do not page anyone by themselves.",
+          "explain": "The worker caught the exception and finished the job, so the queue drained normally and resources looked healthy. Every existing alert watched a cause, and nothing measured whether emails were actually sent. No alert was muted or broken; none existed that could fire.",
           "reveal": "The worker exports resource metrics and queue depth only. There is no count of email jobs by outcome."
         },
         {

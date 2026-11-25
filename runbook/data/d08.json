@@ -398,7 +398,7 @@
       "type": "mcq",
       "level": 3,
       "tags": ["migrations", "locks"],
-      "context": "During a 2 p.m. deploy, a migration ran `ALTER TABLE messages ADD COLUMN ...`. For six minutes every request touching messages hung, then everything recovered at once. The same migration took under a second in staging. During the incident, one session had been `idle in transaction` since 1:54 p.m.",
+      "context": "During a 2 p.m. deploy, a migration ran `ALTER TABLE messages ADD COLUMN ...`. For six minutes every request touching messages hung, then everything recovered at once. The same migration took under a second in staging. During the incident, one session that had read from messages had been `idle in transaction` since 1:54 p.m.",
       "q": "What is the most likely explanation?",
       "options": [
         "The new column forced a rewrite of the whole messages table",
@@ -407,8 +407,8 @@
         "Autovacuum locked the messages table at the same moment"
       ],
       "answer": 2,
-      "explain": "Adding a column needs a brief exclusive lock, which cannot be granted while another transaction holds any lock on the table. New queries queue behind the waiting ALTER, so the whole table stalls until the old transaction ends. A rewrite is tempting, but it would have been slow in staging too.",
-      "why": ["A rewrite would have been slow in staging too, and would not depend on an idle session.", "Connection exhaustion gives connection errors, and would not single out the messages table.", "", "Autovacuum does not take a lock that blocks ordinary reads and writes."]
+      "explain": "Adding a column needs a brief exclusive lock, which cannot be granted while another transaction holds any lock on the table. New queries queue behind the waiting ALTER, so the whole table stalls until the old transaction ends. A table rewrite is tempting, but adding a column without a volatile default does not rewrite the table, and a rewrite would not depend on an idle session.",
+      "why": ["Adding a column without a volatile default does not rewrite the table, and a rewrite would not depend on an idle session.", "Connection exhaustion gives connection errors, and would not single out the messages table.", "", "Autovacuum does not take a lock that blocks ordinary reads and writes."]
     },
     {
       "id": "d08-q07",
@@ -511,7 +511,7 @@
     {
       "id": "d08-x1",
       "title": "Refunds doubled overnight",
-      "brief": "Finance says the 'Refunds issued by Relay' dashboard jumped from about $4,100 a day to almost $9,900 on Tuesday, and asks whether the agent is issuing duplicate refunds. On Monday evening an analyst added a 'refunds by tag' breakdown to the same dashboard. No change to the agent shipped this week.",
+      "brief": "Finance says the 'Refunds issued by Relay' dashboard jumped from about $4,100 a day to almost $9,900 on Tuesday, and asks whether the agent is issuing duplicate refunds. The dashboard saves each day's total when the day ends, so past days are not recomputed. Early on Tuesday an analyst added a 'refunds by tag' breakdown to the same dashboard. No change to the agent shipped this week.",
       "artifact": {"lang": "text", "title": "Refunds dashboard, daily total", "code": "day    refunded\nSat    $4,050\nSun    $3,980\nMon    $4,210\nTue    $9,870\nWed    $9,640"},
       "steps": [
         {
@@ -530,12 +530,12 @@
           "q": "The table is right and the dashboard is wrong. Where do you look?",
           "options": [
             "The refunds table's indexes",
-            "The dashboard query, especially anything changed on Monday",
+            "The dashboard query, especially anything changed on Tuesday",
             "The payment provider's API logs",
             "The dashboard tool's cache settings"
           ],
           "answer": 1,
-          "explain": "The number is computed by the query, and the query changed on Monday. Indexes affect speed, not results, and the provider's logs already agree with the table.",
+          "explain": "The number is computed by the query, and the query changed on Tuesday. Indexes affect speed, not results, and the provider's logs already agree with the table.",
           "reveal": "To support the breakdown, the analyst added a join to `ticket_tags` in the base query that the total panel also uses.",
           "artifact": {"lang": "sql", "code": "SELECT date(r.created_at) AS day,\n       SUM(r.amount_cents)  AS refunded_cents\nFROM refunds r\nJOIN tickets t      ON t.id = r.ticket_id\nJOIN ticket_tags tt ON tt.ticket_id = t.id\nGROUP BY day;"}
         },
@@ -563,7 +563,7 @@
           "explain": "The total and the breakdown have different grains, one row per refund versus one row per refund and tag, so they need different queries. DISTINCT on amounts merges different refunds of equal size, and a left join keeps untagged refunds but still repeats tagged ones."
         }
       ],
-      "debrief": "Root cause: a one-to-many join to `ticket_tags` was added to a shared query, so each refund was counted once per tag. Duplicate refunds by the agent were the obvious suspect and were ruled out by one query against the source table. The fix gives each panel a query at its own grain. A dashboard test that compares the total with a plain sum over refunds would have caught it on Monday evening. The general lesson: before trusting a total after a join, ask how many matches each row can have."
+      "debrief": "Root cause: a one-to-many join to `ticket_tags` was added to a shared query, so each refund was counted once per tag. Duplicate refunds by the agent were the obvious suspect and were ruled out by one query against the source table. The fix gives each panel a query at its own grain. A dashboard test that compares the total with a plain sum over refunds would have caught it on Tuesday morning. The general lesson: before trusting a total after a join, ask how many matches each row can have."
     },
     {
       "id": "d08-x2",

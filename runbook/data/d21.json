@@ -1,0 +1,640 @@
+{
+  "id": "d21",
+  "day": 21,
+  "phase": "p4",
+  "title": "Running in production: cloud, Kubernetes, releases",
+  "tagline": "Where the code runs, how a new version rolls out without hurting users, and what to do when one does.",
+  "minutes": 58,
+  "why": "Many incidents begin at a deploy, and many of their signals reach you through a platform you do not run yourself: a pod status, an exit code, a canary graph. If you can read those signals, you can tell a platform team exactly what is wrong instead of forwarding a screenshot. This day also covers the release habits that keep a bad version small, and the incident habits that end an outage sooner.",
+  "objectives": [
+    "Choose between virtual machines, containers, and serverless functions for a workload, and name the cost of each",
+    "Read `kubectl get pods` and `describe` output and say what CrashLoopBackOff, OOMKilled, and Pending each prove",
+    "Pick a release strategy that limits blast radius, and plan a schema change that old and new versions can both survive",
+    "Decide between rolling back and fixing forward during an incident, and say why",
+    "Write postmortem action items that are specific, owned, and checkable"
+  ],
+  "lessons": [
+    {
+      "id": "d21-l1",
+      "title": "Cloud building blocks",
+      "minutes": 13,
+      "blocks": [
+        {"t": "p", "text": "A cloud provider rents you four kinds of building blocks: **compute** to run code, **storage** to keep bytes, **networking** to connect things, and **managed services** that run common software for you, such as Postgres. Every architecture diagram for Relay is some arrangement of these four."},
+        {"t": "compare",
+          "caption": "Building blocks and how they fail",
+          "columns": ["", "What it is", "Relay uses it for", "Typical failure"],
+          "rows": [
+            ["Compute", "VMs, containers, or functions that run code", "The API and the worker fleet", "Instances die, run out of memory, or start slowly"],
+            ["Object storage", "Files stored by key over HTTP, such as S3", "Uploaded screenshots and eval reports", "Wrong permissions, or a bucket left public"],
+            ["Block storage", "A virtual disk attached to one machine", "Database data files, when self-hosted", "Disk full, or its throughput limit reached"],
+            ["Networking", "Private networks, firewall rules, load balancers, DNS", "Keeping Postgres reachable only from inside", "A rule blocks traffic and calls time out"],
+            ["Managed database", "Postgres run by the provider, with backups and failover", "Users, tickets, messages, orders", "Failover drops connections; connection limit reached"]
+          ],
+          "verdict": "When something breaks, name the block first. A timeout that starts after a firewall change is a networking problem, however much it looks like a slow application."},
+        {"t": "h", "text": "Where the code runs"},
+        {"t": "tradeoff",
+          "title": "Virtual machines, containers, or serverless",
+          "options": [
+            {"name": "Virtual machines", "gain": ["Full control of the operating system", "Runs anything, including long-lived processes"], "cost": ["You patch and scale them", "Slow to add capacity"], "choose": "Choose this for software that needs a whole machine, or as the hosts a container platform runs on."},
+            {"name": "Containers on a platform", "gain": ["One image runs the same everywhere", "Fast scaling and rolling deploys", "Suits long-lived services"], "cost": ["A platform such as Kubernetes to run or rent", "You pay for idle capacity at low traffic"], "choose": "Choose this for steady services such as Relay's API and workers."},
+            {"name": "Serverless functions", "gain": ["No servers to manage", "Scales to zero; pay per invocation"], "cost": ["Cold starts add latency", "Limits on run time and memory", "Poor at long streams and connection pools"], "choose": "Choose this for short, spiky, event-driven work such as a payment webhook or an image resize."}
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "Cold-start latency", "text": "A **cold start** happens when a platform must start a new instance before it can handle a request: load the code, start the runtime, import libraries, open connections. The first requests after idle or during a scale-up pay for it. In a trace it shows as a long gap before the handler's first span. Keep a few instances warm, or trim startup work."},
+        {"t": "check",
+          "q": "Relay's payment webhook runs as a serverless function. After a quiet night, the first few events each take 4 seconds instead of 200 ms, and later ones are fast. What is the likely cause?",
+          "options": ["Cold starts after the function scaled to zero", "The payment provider sends larger events at night", "Postgres has to warm its cache every morning"],
+          "answer": 0,
+          "explain": "Slowness confined to the first requests after idle is the signature of cold starts. A database cache effect would slow queries for longer, and event size does not change with the time of day."},
+        {"t": "h", "text": "Regions, zones, and infrastructure as code"},
+        {"t": "p", "text": "A **region** is a geographic area with several datacenters. An **availability zone** is an isolated location within a region, with separate power and networking. Spreading copies across zones survives the loss of one datacenter. Spreading across regions survives a regional outage, at a much higher cost in latency and in data replication complexity."},
+        {"t": "p", "text": "**Infrastructure as code** (IaC) describes cloud resources in files, such as Terraform, that are reviewed and applied like code. For debugging, its value is history. When someone changes a firewall rule by hand in the console, the real state **drifts** from the files, and the next apply may silently undo the fix."},
+        {"t": "tradeoff",
+          "title": "Managed service or self-hosted",
+          "options": [
+            {"name": "Managed service", "gain": ["Backups, failover, and patching handled", "Replicas and restores without new skills"], "cost": ["Less control over versions, extensions, and maintenance windows", "Limits you cannot raise", "Higher price per unit of capacity"], "choose": "Choose this by default for databases, queues, and caches, where Relay's team gains nothing from running them."},
+            {"name": "Self-hosted", "gain": ["Any version, extension, or setting", "Can be cheaper at large, steady scale"], "cost": ["Your team owns backups, failover, upgrades, and the 3 a.m. pages", "Recovery steps you may never have practiced"], "choose": "Choose this when you need something the managed offering does not allow and have people to run it."}
+          ]},
+        {"t": "callout", "kind": "insight", "title": "Cost is an engineering signal", "text": "A sudden rise in spend often reveals a bug before any alert does: a retry loop, a log flood, a cache that stopped hitting, a job that never ends. Watch spend per service, including LLM tokens, and treat an unexplained jump like an error spike."},
+        {"t": "callout", "kind": "ai", "title": "Serverless and long LLM calls", "text": "A function that waits on a long generation is usually billed for the wait and can hit the platform's run-time limit. Streaming replies and agent loops generally belong in a long-running service, with functions reserved for short tasks around them."},
+        {"t": "reveal", "prompt": "Relay's Postgres runs in a single zone. What happens when that zone has an outage, and what does a multi-zone setup change?", "answer": "Every API request that touches the database fails, even though API copies in other zones are healthy. A multi-zone setup keeps a standby in another zone and fails over to it. You pay with some write latency and a burst of connection errors during the switch."}
+      ]
+    },
+    {
+      "id": "d21-l2",
+      "title": "Kubernetes in concepts",
+      "minutes": 15,
+      "blocks": [
+        {"t": "p", "text": "**Kubernetes** runs containers across a cluster of machines and keeps them in a declared state. You do not tell it to start three processes. You declare that three copies should exist, and its controllers keep making that true, restarting and rescheduling as processes and machines fail. You may never run it yourself, but you will read its signals."},
+        {"t": "layers",
+          "title": "The objects you will hear about, from traffic to code",
+          "layers": [
+            {"name": "Ingress", "role": "Routes external HTTP traffic by host and path to services.", "breaks": "A wrong rule or certificate fails requests at the edge, before any pod sees them."},
+            {"name": "Service", "role": "A stable name and address in front of a changing set of pods. Only ready pods receive traffic.", "breaks": "A selector that matches no pods leaves the service with no endpoints, and connections fail."},
+            {"name": "Deployment", "role": "Declares the image, the number of replicas, and how to roll out a change.", "breaks": "A stalled rollout leaves old and new pods running side by side."},
+            {"name": "Pod", "role": "One or more containers scheduled together with one network address. The smallest unit Kubernetes runs.", "breaks": "Restarts, gets evicted, or never gets scheduled."},
+            {"name": "Node", "role": "A machine, usually a VM, whose agent (the kubelet) starts and watches pods.", "breaks": "A failed or memory-starved node takes its pods with it."}
+          ]},
+        {"t": "h", "text": "Probes, requests, and limits"},
+        {"t": "compare",
+          "caption": "Two probes, two different questions",
+          "columns": ["", "Liveness probe", "Readiness probe"],
+          "rows": [
+            ["Asks", "Is this container stuck beyond repair?", "Should this pod receive traffic now?"],
+            ["On failure", "The container is restarted", "The pod is removed from the service's endpoints"],
+            ["Good check", "The process answers at all", "Startup finished and local resources, such as the pool, work"],
+            ["Bad check", "Calls Postgres, so a database blip restarts every pod", "Returns 200 before the app has loaded"]
+          ],
+          "verdict": "Keep liveness shallow and rarely failing. Make readiness reflect whether this pod can serve. A startup probe can give slow-starting apps time before liveness begins."},
+        {"t": "p", "text": "Each container declares **requests** and **limits** for CPU and memory. The scheduler places a pod only on a node with enough unreserved capacity for its requests. Limits cap use at run time, and the two resources behave differently at the cap. A container over its CPU limit is **throttled** and slows down. A container over its memory limit is killed."},
+        {"t": "h", "text": "Reading pod status"},
+        {"t": "code",
+          "lang": "shell",
+          "title": "What a platform engineer pastes into the channel",
+          "code": "$ kubectl get pods -n relay\nNAME                           READY   STATUS             RESTARTS        AGE\nrelay-api-7d9f8c6b5d-2xkqp     1/1     Running            0               3h12m\nrelay-api-7d9f8c6b5d-9wlrt     1/1     Running            0               3h12m\nrelay-api-5b7c9d4f8-hx2mn      0/1     CrashLoopBackOff   6 (2m10s ago)   9m\nrelay-worker-6c8d7f9b4-kq7zt   1/1     Running            4 (31m ago)     2d\nrelay-worker-6c8d7f9b4-p8vnr   0/1     Pending            0               12m",
+          "notes": [
+            "Two different hashes in the `relay-api` names mean two versions. `7d9f8c6b5d` is the old one, still serving. `5b7c9d4f8` is the new one from a rollout that is stuck.",
+            "**CrashLoopBackOff** proves the container starts and then exits, again and again. Kubernetes waits longer between restarts each time, up to five minutes. It does not say why.",
+            "A worker that is `Running` with 4 restarts is easy to miss. It is up now and has died four times.",
+            "**Pending** proves the pod has not been scheduled onto a node. Your code never ran, so there are no application logs to read."
+          ]},
+        {"t": "code",
+          "lang": "text",
+          "title": "kubectl describe pod, two excerpts",
+          "code": "relay-worker-6c8d7f9b4-kq7zt\n  Containers:\n    worker:\n      Image:          registry.example.com/relay-worker:3f9c2ab\n      State:          Running\n        Started:      Tue, 14 Jan 2025 02:31:40 +0000\n      Last State:     Terminated\n        Reason:       OOMKilled\n        Exit Code:    137\n        Started:      Tue, 14 Jan 2025 02:04:12 +0000\n        Finished:     Tue, 14 Jan 2025 02:31:38 +0000\n      Restart Count:  4\n      Limits:\n        memory:  1Gi\n      Requests:\n        cpu:     500m\n        memory:  512Mi\n\nrelay-worker-6c8d7f9b4-p8vnr\n  Events:\n    Type     Reason            From               Message\n    Warning  FailedScheduling  default-scheduler  0/6 nodes are available: 6 Insufficient memory.",
+          "notes": [
+            "`Reason: OOMKilled` proves the previous container was killed for exceeding its 1Gi memory limit. Exit code 137 is 128 plus 9, the SIGKILL signal, so the process had no chance to log anything.",
+            "It ran for 27 minutes before the kill. Memory that grows with work, such as a large batch, is more likely than a startup problem.",
+            "An OOM kill leaves no traceback in the application's logs. The evidence is here and in the platform's events.",
+            "`FailedScheduling ... Insufficient memory` proves no node has enough unreserved memory for this pod's request. The code is not involved.",
+            "A `Last State` with `Reason: Error` and `Exit Code: 1` would instead mean the app exited on its own, usually with a traceback in the previous container's logs."
+          ]},
+        {"t": "callout", "kind": "debug", "title": "Three commands, in this order", "text": "`kubectl get pods` for the pattern, `kubectl describe pod` for last state, exit code, and events, and `kubectl logs --previous` for the output of the container that died. Without `--previous` you read the fresh container, which has not failed yet."},
+        {"t": "check",
+          "q": "A pod has shown `Running` with READY `0/1` for ten minutes and zero restarts. What does that prove?",
+          "options": ["The process is up and its readiness probe keeps failing", "The container is crashing and being restarted", "No node has room to schedule the pod"],
+          "answer": 0,
+          "explain": "Running means the container is up, and zero restarts rules out a crash loop. Not ready means the readiness probe fails, so the service sends it no traffic. A pod that cannot be scheduled shows Pending."},
+        {"t": "p", "text": "Two autoscalers work together. The **Horizontal Pod Autoscaler** changes a deployment's replica count based on a metric such as CPU. The **cluster autoscaler** adds nodes when pods are Pending for lack of room, and removes underused ones. A scale-up can therefore wait minutes for a new node to boot."},
+        {"t": "callout", "kind": "pitfall", "title": "A liveness probe that calls the database", "text": "If liveness queries Postgres, a two-minute database incident makes every API pod fail liveness and restart at once. When Postgres returns, the pods are all still restarting, and the outage outlasts the database's. Keep shared dependencies out of liveness."},
+        {"t": "callout", "kind": "ai", "title": "Memory grows with model work", "text": "Workers that embed documents or hold long contexts use memory in proportion to batch size. Relay's nightly re-index is the job most likely to meet its memory limit, and a climbing restart count on workers is often the first sign."},
+        {"t": "reveal", "prompt": "A new release's pods go into CrashLoopBackOff, but users notice almost nothing. How can that be, in a rolling deployment?", "answer": "A rolling update removes only a limited number of old pods ahead of new ones becoming ready, a quarter by default. New pods that crash never become ready, so most old pods keep serving and the rollout stalls. It fails safely, but the cluster now runs mixed versions until someone acts."}
+      ]
+    },
+    {
+      "id": "d21-l3",
+      "title": "Releases: rolling, blue-green, canary, flags",
+      "minutes": 15,
+      "blocks": [
+        {"t": "p", "text": "A **release strategy** decides how a new version replaces the old one, and so how many users a bad version can hurt before you notice. That number is the **blast radius**. Each strategy trades speed, cost, and complexity against it."},
+        {"t": "compare",
+          "caption": "Three release strategies",
+          "columns": ["", "Rolling", "Blue-green", "Canary"],
+          "rows": [
+            ["How it works", "Replace pods a few at a time", "Start a full new copy, then switch all traffic", "Send a small share of traffic to the new version first"],
+            ["Blast radius", "Grows as the rollout proceeds", "Everyone, at the moment of the switch", "Only the canary share, until promoted"],
+            ["Rollback", "Another rolling update, minutes", "Switch traffic back, seconds", "Send the canary share back to the old version"],
+            ["Extra capacity", "A little surge room", "A second full copy during the switch", "A few extra pods"],
+            ["Two versions live", "For the whole rollout", "Both exist; traffic sees one at a time", "For the whole canary period"],
+            ["Needs", "Readiness probes and compatible versions", "Data that both versions can use", "Metrics split by version, and patience"]
+          ],
+          "verdict": "Rolling is the usual default. Add a canary for risky changes whose damage shows only in metrics. Choose blue-green when an instant, total rollback is worth double capacity."},
+        {"t": "p", "text": "A **feature flag** is a runtime switch that turns a code path on or off without a deploy. Flags separate **deploy**, putting new code on servers, from **release**, exposing new behavior to users. A new refund prompt can ship dark, turn on for 5 percent of conversations, then for everyone, and turn off in seconds if refunds misbehave."},
+        {"t": "callout", "kind": "pitfall", "title": "Flags left in forever", "text": "Each flag doubles the paths through the code it guards. Old flags become settings nobody understands, and a flag flipped by mistake is an outage with no deploy in the history. Remove flags when a release is complete, and log every flag change like a deploy."},
+        {"t": "h", "text": "Two versions at once"},
+        {"t": "p", "text": "During any rollout, old and new versions run together and share the same database, cache, and queues. With a canary this can last hours. Every change must therefore work in both directions. New code must handle data written by old code, and old code must survive data written by new code, because a rollback puts old code on top of new data."},
+        {"t": "flow",
+          "title": "Renaming a column while both versions run",
+          "steps": [
+            {"actor": "Migration", "label": "Add the new column, nullable", "detail": "Old code ignores it. In Postgres, adding a nullable column without a default changes only metadata, but it still needs a brief exclusive lock.", "fail": "If a long query holds the table, the migration waits for its lock and every query behind it waits too, which looks like errors only during deploys."},
+            {"actor": "Release N+1", "label": "Write both columns, read the old one", "detail": "New pods write both. Old pods, still running during the rollout, write only the old column, so reads stay on the column every version fills.", "fail": "Reading the new column now would miss rows that old pods wrote during the rollout."},
+            {"actor": "Backfill job", "label": "Copy old values into the new column", "detail": "Runs in small batches so it neither holds long locks nor floods replication.", "fail": "One giant UPDATE causes lock waits and replica lag."},
+            {"actor": "Release N+2", "label": "Read the new column, still write both", "detail": "Every row now has the new column filled. Writing both keeps a rollback to N+1 safe.", "fail": "Stopping the old writes here would break a rollback to N+1."},
+            {"actor": "Release N+3", "label": "Stop writing the old column", "detail": "Only once N+2 has proved stable and no rollback to N+1 is planned."},
+            {"actor": "Migration", "label": "Drop the old column", "detail": "The contract step. Nothing deployed reads or writes it any more.", "fail": "A forgotten worker that still reads the column fails right after this migration."}
+          ]},
+        {"t": "callout", "kind": "debug", "title": "One version cannot read the other's data", "text": "Look for a format change: a renamed field, a new enum value, a new JSON shape, or a cache entry or queued job serialized differently. Errors on only one version's pods, or only after a rollback, point here. Queues are easy to forget: old workers consume jobs that new API pods enqueued."},
+        {"t": "h", "text": "Errors only during deploys"},
+        {"t": "list", "items": [
+          "**No readiness probe**: new pods get traffic before the app listens, and requests fail with connection refused.",
+          "**No graceful shutdown**: Kubernetes sends SIGTERM, waits a grace period (30 seconds by default), then sends SIGKILL. An app that ignores SIGTERM drops requests in flight.",
+          "**Endpoint removal lag**: a pod can still receive a few requests just after SIGTERM, so a short delay before shutting down avoids dropping them.",
+          "**Locking migrations**: a schema change waits for a lock and blocks queries queued behind it.",
+          "**Version skew**: an old pod receives data or a request shape only the new version understands."
+        ]},
+        {"t": "check",
+          "q": "During a canary of Relay 2.17, which adds a ticket status `escalated`, errors rise on the old pods only. What is the likely cause?",
+          "options": ["Old pods read tickets with the new status and reject it", "The canary pods are overloaded and slowing the old ones", "The migration for 2.17 has not run yet"],
+          "answer": 0,
+          "explain": "Canary pods write the new status into the shared database, and old code that validates statuses against its own list fails on those rows. Errors confined to old pods point at data that only new code understands."},
+        {"t": "reveal", "prompt": "Why can a rollback be more dangerous than the deploy it undoes?", "answer": "The deploy only added code. The rollback puts old code on top of data, queued jobs, and cache entries that the new code already wrote. If the old version cannot read them, the rollback starts a second incident. Plan each release so the previous version can read everything the new one writes."}
+      ]
+    },
+    {
+      "id": "d21-l4",
+      "title": "Incidents, rollbacks, and postmortems",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "An **incident** is an unplanned event that harms users or threatens to. The first goal is to **mitigate**, which means reducing the harm, before you fully understand the cause. Diagnosis continues once users are safe, and it goes better without the pressure."},
+        {"t": "list", "style": "number", "items": [
+          "Confirm the impact from the user's side: error rate, latency, which features.",
+          "Declare an incident and name who is in charge, even if that is you.",
+          "Ask what changed: deploys, flags, config, traffic, provider status.",
+          "Mitigate with the cheapest reversible action: roll back, turn off a flag, shed load, fail over.",
+          "Confirm the mitigation worked using the same signal that showed the impact.",
+          "Then find the root cause and plan the real fix."
+        ]},
+        {"t": "tradeoff",
+          "title": "Roll back or fix forward",
+          "options": [
+            {"name": "Roll back", "gain": ["Fast and well practiced", "Returns to a known state", "Needs no understanding of the bug"], "cost": ["Unsafe if the new version wrote data the old one cannot read", "Removes the good changes in the release too"], "choose": "Choose this by default when the incident began with a deploy and the previous version can read current data."},
+            {"name": "Fix forward", "gain": ["Keeps the rest of the release", "Works when a rollback is unsafe"], "cost": ["Writing and testing code under pressure", "Waits for a full pipeline run", "A rushed fix can add a second bug"], "choose": "Choose this when a rollback is unsafe, or when the fix is small, certain, and faster than the rollback."}
+          ]},
+        {"t": "compare",
+          "caption": "Incident roles",
+          "columns": ["", "Responsible for", "Avoids"],
+          "rows": [
+            ["Incident commander", "Coordinating, deciding, keeping the response moving", "Debugging alone in a terminal"],
+            ["Operations lead", "Investigating and applying changes", "Changing things without saying so in the channel"],
+            ["Communications", "Updates to users, support, and leadership on a schedule", "Guessing at causes in public"],
+            ["Scribe", "Recording actions and findings with timestamps", "Reconstructing the story from memory afterwards"]
+          ],
+          "verdict": "On a small team one person may hold several roles. Naming them still matters, because it makes clear who decides."},
+        {"t": "code",
+          "lang": "log",
+          "title": "An incident timeline, as the scribe kept it",
+          "code": "14:02  Alert: chat 5xx at 18% (error budget burn alert)\n14:04  IC: Priya. Ops: Marco. Incident channel opened\n14:06  What changed: relay-api 2.17 rolled out at 13:51; no flag changes\n14:09  5xx only from pods on image 4c90e1a (2.17); 2.16 pods clean\n14:11  Decision: roll back to 2.16 (2.17 wrote no new data formats)\n14:15  Rollback complete; 5xx at 0.2% and falling\n14:24  5xx at baseline. Impact over. Status page updated\n14:40  Cause: 2.17 set the LLM client timeout to 0.5 s instead of 50 s",
+          "notes": [
+            "Mitigation took 13 minutes from the alert. The cause was found 25 minutes after that. Keeping the two separate is the point.",
+            "Splitting errors by image at 14:09 made the rollback a decision based on evidence.",
+            "The decision line records why rollback was safe: 2.17 wrote no new data formats. That check is the one most often skipped.",
+            "Each line has a time and a fact. The postmortem is built from this record, not from memory."
+          ]},
+        {"t": "p", "text": "A **postmortem** is a written review after an incident: what happened, the impact, the timeline, the contributing causes, and actions that make a repeat less likely or less harmful. **Blameless** means it asks why the system allowed the mistake rather than who made it. People who fear blame leave out details, and the details are what the review needs."},
+        {"t": "callout", "kind": "pitfall", "title": "Action items nobody will do", "text": "'Be more careful with timeouts' is a wish. A useful action item is specific, owned, dated, and checkable: add a CI check that fails when an LLM client timeout is under 30 seconds, owned by Marco, due by the end of the month. Track action items like bugs."},
+        {"t": "callout", "kind": "ai", "title": "Model incidents rarely raise 5xx", "text": "A bad prompt or model change shows up as worse answers, more tool errors, or more refunds, while the error rate stays flat. Put eval scores and agent tool-error rates next to deploy and flag markers so a quality regression can be rolled back as fast as a crash."},
+        {"t": "check",
+          "q": "Relay 2.18 has been writing a new refund status for an hour when errors appear. Version 2.17 crashes on any ticket with that status. What should the team do?",
+          "options": ["Fix forward, since rolling back would put 2.17 on data it cannot read", "Roll back to 2.17 at once, since rollback is the safe default", "Restore the database from last night's backup"],
+          "answer": 0,
+          "explain": "Rollback is safe only if the old version can read current data, and here it cannot, so it would add a second incident. Restoring a backup would destroy an hour of real customer data to fix a code bug."},
+        {"t": "reveal", "prompt": "Why does a blameless postmortem lead to better fixes than finding who made the mistake?", "answer": "The person who made the change usually did something reasonable that the system failed to catch: a missing check, an unclear alert, a risky default. Blame stops the review at the person and hides those details. Asking why the system allowed it produces fixes that protect everyone, such as a test, a guardrail, or a safer default."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Pod restarts in a loop: CrashLoopBackOff",
+      "causes": ["App exits at startup: missing config or secret, failed migration, import error", "Liveness probe keeps failing", "Container killed for exceeding its memory limit"],
+      "look": "`kubectl describe pod` for the last state's reason and exit code, then `kubectl logs --previous`.",
+      "confirm": "Exit code 1 with a traceback in the previous logs means the app exited; OOMKilled with 137 means memory; liveness failures appear in events.",
+      "fix": "Fix the startup error or config, or correct the probe. During a rolling update, old pods usually keep serving while you do."
+    },
+    {
+      "symptom": "OOMKilled, exit code 137",
+      "causes": ["Memory grows with batch or input size", "A leak that grows over time", "Limit set below the real peak"],
+      "look": "Container memory over time against its limit, and what the container was doing when it died.",
+      "confirm": "Memory climbs to the limit just before each kill, at the same job or time of day.",
+      "fix": "Bound memory per unit of work with batching or streaming, then set the limit above the measured peak. Raising the limit alone only moves the cliff."
+    },
+    {
+      "symptom": "Pod stuck in Pending",
+      "causes": ["No node has enough unreserved CPU or memory for the pod's requests", "Node selector or affinity matches no node", "A storage volume cannot be attached"],
+      "look": "Events in `kubectl describe pod`, especially FailedScheduling.",
+      "confirm": "The event names the shortfall, such as 'Insufficient memory' or 'Insufficient cpu'.",
+      "fix": "Lower oversized requests or add nodes. Requests set too low let nodes overcommit, and pods get evicted under pressure."
+    },
+    {
+      "symptom": "Errors only during deploys, even of an unchanged image",
+      "causes": ["No readiness probe, so traffic reaches pods before startup completes", "Pods stop with requests in flight", "A migration waits on a lock and blocks queries", "Old and new versions disagree on data or request shapes"],
+      "look": "Error timestamps next to rollout events, split by pod and version, and the proxy's error messages.",
+      "confirm": "Errors cluster within a minute or two of each rollout, including redeploys of the same image.",
+      "fix": "Add readiness probes, handle SIGTERM with a short drain, run lock-safe migrations, and keep versions compatible. Rollouts become slower."
+    },
+    {
+      "symptom": "New version cannot read data written by the old one",
+      "causes": ["A field renamed or reformatted without a compatibility period", "Cache entries or queued jobs serialized in a new shape"],
+      "look": "Errors split by version, and the payloads of the records or jobs that fail.",
+      "confirm": "Failures involve only records or jobs written by one version.",
+      "fix": "Expand, migrate, then contract over several releases, and make readers tolerate unknown fields and values. Each schema change takes several releases."
+    },
+    {
+      "symptom": "Errors began right after a rollback",
+      "causes": ["Old code cannot read data, jobs, or cache entries the new version wrote"],
+      "look": "Which records fail, and whether they were written while the new version ran.",
+      "confirm": "Every failing record was created or changed during the rollout window.",
+      "fix": "Fix forward with a version that reads both formats. Next time, make the previous version tolerant before shipping the new format."
+    },
+    {
+      "symptom": "Cold-start latency: first requests after idle or a scale-up are slow",
+      "causes": ["Function or container started from zero", "Heavy imports or model loading at startup", "Connections opened on the first request"],
+      "look": "Traces of slow requests: a long gap before the handler's first span, on new instances.",
+      "confirm": "The slow requests are the first ones each new instance serves.",
+      "fix": "Keep a minimum of warm instances, trim startup work, or warm up before taking traffic. Warm instances cost money while idle."
+    },
+    {
+      "symptom": "Latency rises while average CPU sits below the limit",
+      "causes": ["CPU limit throttles the container in short bursts"],
+      "look": "The container's CPU throttling metric, not its average CPU.",
+      "confirm": "Throttled periods rise in step with latency.",
+      "fix": "Raise the CPU limit or remove it while keeping accurate requests. Without a limit, one pod can take spare CPU its neighbors wanted."
+    }
+  ],
+  "glossary": [
+    {"term": "Region and availability zone", "def": "A region is a geographic area of datacenters. A zone is an isolated location inside a region with its own power and network."},
+    {"term": "Infrastructure as code", "def": "Describing cloud resources in reviewed files that a tool applies, so infrastructure has a history like code."},
+    {"term": "Serverless function", "def": "Code the platform runs per event, scaling to zero when idle, with limits on run time and memory."},
+    {"term": "Cold start", "def": "The delay while a platform starts a new instance before it can serve: loading code, starting the runtime, opening connections."},
+    {"term": "Pod", "def": "The smallest unit Kubernetes runs: one or more containers scheduled together with one network address."},
+    {"term": "Deployment", "def": "A Kubernetes object declaring which image to run, how many replicas, and how to roll out changes."},
+    {"term": "Service", "def": "A stable name and address in front of a changing set of pods. Only ready pods receive its traffic."},
+    {"term": "Liveness vs readiness probe", "def": "Liveness failing restarts the container. Readiness failing removes the pod from traffic without restarting it."},
+    {"term": "Requests and limits", "def": "Requests reserve CPU and memory for scheduling. Limits cap use: CPU over the limit is throttled, memory over it is killed."},
+    {"term": "CrashLoopBackOff", "def": "A pod status meaning the container keeps exiting and Kubernetes is waiting longer between each restart."},
+    {"term": "OOMKilled", "def": "The reason given when a container is killed for exceeding its memory limit. Its exit code is 137."},
+    {"term": "Canary release", "def": "Sending a small share of traffic to a new version and comparing its metrics with the old version before going further."},
+    {"term": "Feature flag", "def": "A runtime switch that turns code on or off without a deploy, separating deploying code from releasing behavior."},
+    {"term": "Blameless postmortem", "def": "A written incident review that asks why the system allowed a failure, and ends with specific, owned action items."}
+  ],
+  "apply": {
+    "title": "Rehearse a rollback on your own project",
+    "minutes": 15,
+    "steps": [
+      "Write down how your project is run or deployed today, and how you would return to the previous version within five minutes. If you cannot, note what is missing: a tag, a saved image, a pinned config.",
+      "Find one recent change to a data format: a new field in saved JSON, a renamed key in eval results, a new column. Check whether your previous code version can still read data written by the current one.",
+      "Measure the peak memory of your heaviest job, for example with `/usr/bin/time -v` on Linux or `/usr/bin/time -l` on macOS, and note what makes it grow: batch size, number of documents, context length.",
+      "Write a five-line timeline of the last time something of yours broke: when it started, when you noticed, what you tried, what fixed it, and what would have caught it sooner."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d21-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["oomkilled", "kubernetes"],
+      "diagnostic": true,
+      "q": "A container's last state shows `Reason: OOMKilled` and `Exit Code: 137`. What does this prove?",
+      "options": [
+        "The application raised an unhandled exception",
+        "The node ran out of disk space",
+        "The container exceeded its memory limit and was killed",
+        "The liveness probe failed several times in a row"
+      ],
+      "answer": 2,
+      "explain": "OOMKilled means the container went over its memory limit and was killed with SIGKILL, which is where 137 (128 plus 9) comes from. An unhandled exception usually exits with code 1 and leaves a traceback, and probe failures appear as events.",
+      "why": ["An app that exits on an exception usually returns 1 and shows a traceback in its previous logs.", "Disk pressure leads to evictions with their own messages, not OOMKilled.", "", "Liveness failures are recorded as events and restart the container; they do not report OOMKilled."]
+    },
+    {
+      "id": "d21-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["pending", "kubernetes", "requests-limits"],
+      "context": "A config change raised each Relay worker pod's CPU request from `500m` to `4`. The cluster's nodes each have 4 CPUs.",
+      "artifact": {"lang": "shell", "code": "$ kubectl get pods -n relay -l app=relay-worker\nNAME                           READY   STATUS    RESTARTS   AGE\nrelay-worker-8f6d5c7b9-4rtmz   0/1     Pending   0          18m\nrelay-worker-8f6d5c7b9-jx2lp   0/1     Pending   0          18m\n\n$ kubectl describe pod relay-worker-8f6d5c7b9-4rtmz -n relay\nEvents:\n  Type     Reason            From               Message\n  Warning  FailedScheduling  default-scheduler  0/4 nodes are available: 4 Insufficient cpu."},
+      "q": "What is the right next step?",
+      "options": [
+        "Read the worker logs for a startup error",
+        "Lower the CPU request, or add nodes with more CPU",
+        "Raise the worker's memory limit",
+        "Roll back the worker image to the previous build"
+      ],
+      "answer": 1,
+      "explain": "No node can offer 4 unreserved CPUs, since some capacity on every node is already reserved, so the scheduler cannot place the pods. The code never ran, which is why there are no logs and why the image is irrelevant.",
+      "why": ["A Pending pod has not started, so there are no logs to read.", "", "The event names CPU as the shortfall, not memory.", "The image did not change and is not involved in scheduling."]
+    },
+    {
+      "id": "d21-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["crashloopbackoff", "config"],
+      "context": "After release 2.22, new API pods are in CrashLoopBackOff while the old pods keep serving.",
+      "artifact": {"lang": "log", "title": "kubectl logs --previous", "code": "INFO:     Started server process [1]\nINFO:     Waiting for application startup.\nERROR:    Traceback (most recent call last):\n  File \"/app/app/main.py\", line 31, in lifespan\n    payments.init(os.environ[\"PAYMENT_API_KEY\"])\nKeyError: 'PAYMENT_API_KEY'\nERROR:    Application startup failed. Exiting."},
+      "q": "What fixes the crash loop?",
+      "options": [
+        "Raise the API container's memory limit",
+        "Lengthen the liveness probe's timeout",
+        "Delete the pod so it is scheduled on another node",
+        "Provide `PAYMENT_API_KEY` to the deployment for this release"
+      ],
+      "answer": 3,
+      "explain": "The previous container exited during startup because a variable the new release reads is not set. Every restart hits the same missing key on any node. Memory and probes are not involved, since the app exits on its own before any probe matters.",
+      "why": ["The log shows a KeyError exit, not a memory kill.", "The app exits by itself during startup, so the probe never decides anything.", "The missing variable is missing on every node.", ""]
+    },
+    {
+      "id": "d21-q04",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["probes", "kubernetes"],
+      "q": "Relay's liveness probe runs a query against Postgres. What happens during a three-minute Postgres outage?",
+      "options": [
+        "Every API pod is restarted, and the outage outlasts the database's",
+        "Pods are removed from traffic and return when Postgres does",
+        "Nothing, because liveness probes are paused while pods serve",
+        "Kubernetes fails Postgres over to a replica"
+      ],
+      "answer": 0,
+      "explain": "A failing liveness probe restarts the container, so every pod restarts together and is still starting when Postgres returns. Removing pods from traffic without restarting is what a readiness probe does, which is why the two are easy to confuse.",
+      "why": ["", "That describes a readiness probe, which removes pods from traffic without restarting them.", "Liveness probes run all the time; that is their job.", "Kubernetes knows nothing about database replication; failover belongs to the database."]
+    },
+    {
+      "id": "d21-q05",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["canary", "release-strategy"],
+      "context": "Relay is about to ship a new version of the refund agent. A bad version could issue wrong refunds, and its quality only shows in metrics after a few hundred conversations.",
+      "q": "Which release strategy fits best?",
+      "options": [
+        "A rolling update with the default settings",
+        "Blue-green with a single switch of all traffic",
+        "A canary on a small share of traffic, compared by version",
+        "Deploy to all pods at once and watch closely"
+      ],
+      "answer": 2,
+      "explain": "The damage shows only in metrics after many conversations, so you need a period where few users are exposed while data accumulates. A canary gives exactly that. A rolling update finishes in minutes, before the metric can move, and blue-green exposes everyone at once.",
+      "why": ["A rolling update reaches every pod in minutes, long before refund metrics can show a problem.", "Blue-green switches everyone at once, so every customer is exposed while you wait for data.", "", "All-at-once gives the largest blast radius and no comparison group."]
+    },
+    {
+      "id": "d21-q06",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["deploy-errors", "probes"],
+      "context": "Every Relay deploy, including redeploys of an unchanged image, causes about 40 seconds of 502s. The ingress logs `connect() failed (111: Connection refused) while connecting to upstream` with the addresses of the newest pods. The app takes about 30 seconds to load before it listens on its port.",
+      "q": "What is the most likely fix?",
+      "options": [
+        "Raise the number of API replicas",
+        "Raise the API container's memory limit",
+        "Switch from rolling updates to canary releases",
+        "Add a readiness probe that passes only after startup completes"
+      ],
+      "answer": 3,
+      "explain": "Without a readiness probe a pod counts as ready as soon as its container starts, so traffic arrives during the 30 seconds before the app listens. More replicas or a canary still send traffic to each new pod too early; a canary only shrinks the share of users who see the errors.",
+      "why": ["More replicas do not stop each new pod from receiving traffic before it listens.", "Connection refused is not a memory symptom; nothing was killed.", "A canary would still route its share of traffic to pods that are not listening yet.", ""]
+    },
+    {
+      "id": "d21-q07",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["rollback", "incidents"],
+      "q": "A deploy at 10:00 doubled chat latency. The release changed no data formats. The cause is not yet known. What should happen first?",
+      "options": [
+        "Roll back to the previous version, then investigate",
+        "Investigate until the cause is known, then fix forward",
+        "Add API replicas to absorb the extra latency",
+        "Write the postmortem while the details are fresh"
+      ],
+      "answer": 0,
+      "explain": "The harm began with a deploy and the previous version can read current data, so rollback is a fast, reversible mitigation. Investigating first keeps users hurting while you work. Extra replicas will not help if the new code is slower per request.",
+      "why": ["", "Diagnosis can wait until users are safe; fixing forward is for when rollback is unsafe.", "If each request is slower in the new code, more replicas do not make it faster.", "The postmortem comes after the incident is over."]
+    },
+    {
+      "id": "d21-q08",
+      "type": "multi",
+      "level": 2,
+      "tags": ["migrations", "rollback"],
+      "q": "Which of these keep a rollback safe while a schema change rolls out? Select all that apply.",
+      "options": [
+        "Adding the new column as nullable and keeping the old one",
+        "Writing both old and new columns until the new version has proved itself",
+        "Dropping the old column in the same release that stops reading it",
+        "Making readers tolerate status values they do not recognize",
+        "Renaming the column in one migration during the deploy"
+      ],
+      "answers": [0, 1, 3],
+      "explain": "Keeping the old column, writing both, and tolerant readers all let the previous version keep working on current data. Dropping or renaming during the release breaks every old pod still running and makes rollback impossible."
+    },
+    {
+      "id": "d21-q09",
+      "type": "order",
+      "level": 2,
+      "tags": ["migrations", "expand-contract"],
+      "q": "Put the steps for renaming a column without downtime in order.",
+      "items": [
+        "Add the new column as nullable",
+        "Deploy code that writes both columns and reads the old one",
+        "Backfill the new column in small batches",
+        "Deploy code that reads the new column and still writes both",
+        "Stop writing the old column once a rollback is no longer needed",
+        "Drop the old column"
+      ],
+      "explain": "Each step is safe while the previous and next versions run side by side. Reads move only after every row has the new value, and writes to the old column stop only once nobody needs to roll back to a version that reads it."
+    },
+    {
+      "id": "d21-q10",
+      "type": "match",
+      "level": 3,
+      "tags": ["kubernetes", "crashloopbackoff", "oomkilled", "pending"],
+      "q": "Match each pod signal to what it proves.",
+      "pairs": [
+        ["CrashLoopBackOff", "The container starts and exits again and again"],
+        ["OOMKilled, exit code 137", "Killed for exceeding its memory limit"],
+        ["Pending with FailedScheduling", "No node has room for the pod's requests"],
+        ["Running, READY 0/1", "Up, but failing its readiness probe"],
+        ["ImagePullBackOff", "The node cannot pull the image, such as a wrong tag or no registry access"]
+      ],
+      "explain": "Each status narrows the search to one layer: scheduling, image, process exit, memory, or readiness. Reading the status first tells you whether to look at the cluster, the registry, or your own code."
+    },
+    {
+      "id": "d21-q11",
+      "type": "open",
+      "level": 3,
+      "tags": ["version-skew", "rollback", "queues"],
+      "context": "Relay 2.19 changed the triage job payload from a `ticket_id` field to a nested `ticket` object. During the rolling deploy, API pods were updated before the workers, and triage jobs failed with `KeyError: 'ticket_id'` for twenty minutes. The team rolled back, and failures continued for a while afterwards.",
+      "q": "Explain what happened, including why failures continued after the rollback, and how to ship this kind of change safely.",
+      "rubric": [
+        "Old workers consumed new-format jobs enqueued by new API pods",
+        "After rollback, new-format jobs already in the queue still reached old workers",
+        "Consumers must accept both formats before producers start sending the new one",
+        "Failed jobs should be kept in a dead-letter queue and replayed after the fix",
+        "Removes support for the old format only after the queue holds none"
+      ],
+      "model": "New API pods enqueued jobs in the new shape, and old workers, which only knew `ticket_id`, failed on them. Rolling back the API stopped new ones, but jobs already in the queue kept failing until they drained. The safe order is to ship workers that accept both shapes first, then switch producers, replay dead-lettered jobs, and drop the old shape only once none remain."
+    },
+    {
+      "id": "d21-q12",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["serverless", "compute-choice"],
+      "q": "Relay's agent streams replies for up to 60 seconds and keeps a pool of Postgres connections. Why does a long-running container service fit better than serverless functions?",
+      "options": [
+        "Functions cannot call external APIs such as an LLM",
+        "Functions add cold starts and handle long streams and pools poorly",
+        "Containers never need to start up or warm caches",
+        "Functions cannot run Python code with dependencies"
+      ],
+      "answer": 1,
+      "explain": "Functions start per event, may cold start, have run-time limits, and do not keep a warm connection pool between invocations, which hurts a streaming, database-heavy service. Containers also have startup costs, but they pay them once per instance rather than per scale-from-zero.",
+      "why": ["Functions can call external APIs; the problem is how long and how often.", "", "Containers have startup costs too, paid once per instance.", "Common serverless platforms run Python with packaged dependencies."]
+    }
+  ],
+  "drills": [
+    {
+      "id": "d21-x1",
+      "title": "A minute of 502s at every deploy",
+      "brief": "For two weeks, Relay's on-call has seen short bursts of 502 errors, each lasting under a minute. A few customers report a failed message send. The team suspects release 2.21, which changed the chat endpoint and went out two weeks ago. The API deploys several times a day.",
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Roll back release 2.21",
+            "Line up the 502 bursts against rollout times",
+            "Add more API replicas",
+            "Read the 2.21 diff for the chat endpoint"
+          ],
+          "answer": 1,
+          "explain": "Short bursts several times a day suggest an event, and deploys happen several times a day. Lining up timestamps is cheap and tells you whether the bursts follow code or follow rollouts. Rolling back 2.21 acts on a suspicion before any evidence.",
+          "reveal": "Every burst starts within seconds of a rollout, including a config-only redeploy of the same image and a rollback test to 2.20.",
+          "artifact": {"lang": "text", "title": "Burst starts and rollout starts", "code": "502 burst   rollout start   what rolled out              image\nMon 10:14   Mon 10:13:51    relay-api 2.21.3             4c90e1a\nMon 15:42   Mon 15:42:02    relay-api 2.21.4             8d1f2b6\nTue 11:08   Tue 11:08:20    config change, same image    8d1f2b6\nWed 09:30   Wed 09:29:58    rollback test to 2.20        7be21c0"}
+        },
+        {
+          "q": "Bursts follow every rollout, even of an older image. Where do you look next?",
+          "options": [
+            "The 2.21 diff, in more detail",
+            "The ingress error log for the 502s",
+            "The Postgres slow query log",
+            "The LLM provider's status page"
+          ],
+          "answer": 1,
+          "explain": "The pattern clears the code in 2.21, since 2.20 shows it too, and points at the rollout mechanism. The proxy that returned the 502 records why it could not get a response, which is the next cheapest evidence.",
+          "reveal": "The ingress could not connect to pods that had just started.",
+          "artifact": {"lang": "log", "title": "ingress, Mon 10:14", "code": "10:14:06 [error] connect() failed (111: Connection refused) while connecting to upstream,\n         upstream: \"http://10.4.2.31:8000/chat/send\"\n10:14:07 [error] connect() failed (111: Connection refused) while connecting to upstream,\n         upstream: \"http://10.4.2.31:8000/chat/send\"\n# 10.4.2.31 belongs to relay-api-...-qz8kd, created 10:13:58"}
+        },
+        {
+          "q": "Connections to a brand-new pod are refused. What do you check?",
+          "options": [
+            "The pod's memory limit",
+            "The node's free disk space",
+            "The pod spec's readiness probe and the app's startup time",
+            "The service's balancing algorithm"
+          ],
+          "answer": 2,
+          "explain": "Connection refused means nothing was listening on the port yet. Traffic reaches a pod when it is marked ready, so the question is what marks it ready and how long the app takes to listen. Memory and disk problems would show as kills or evictions.",
+          "reveal": "The pod spec has a liveness probe and no readiness probe, so each pod counts as ready the moment its container starts. The app loads a tokenizer and a help-center cache and logs `Application startup complete` 31 seconds after start.",
+          "artifact": {"lang": "yaml", "title": "relay-api pod spec, excerpt", "code": "containers:\n- name: api\n  image: registry.example.com/relay-api:8d1f2b6\n  ports:\n  - containerPort: 8000\n  livenessProbe:\n    httpGet: {path: /healthz, port: 8000}\n    initialDelaySeconds: 60"}
+        },
+        {
+          "q": "What is the fix?",
+          "options": [
+            "Raise the liveness probe's initial delay to 120 seconds",
+            "Roll back to 2.20 until the cause is clearer",
+            "Slow the rollout to one pod at a time",
+            "Add a readiness probe that passes after startup, and drain on SIGTERM"
+          ],
+          "answer": 3,
+          "explain": "A readiness probe keeps traffic away until the app is listening, and draining on SIGTERM covers the other end of a rollout, when old pods stop. A slower rollout makes fewer users hit an unready pod at once but still sends them there, and the liveness delay controls restarts, not traffic.",
+          "reveal": "With the readiness probe and a short pre-stop delay in place, the next three deploys produce no 502s."
+        }
+      ],
+      "debrief": "Root cause: the API had no readiness probe, so every new pod received traffic about 30 seconds before it listened. Release 2.21 was the plausible wrong cause, cleared because the bursts followed every rollout of any image. Add readiness probes that reflect real startup, handle SIGTERM with a short drain, and watch error rate around deploy markers. The general lesson: errors that follow every deploy, whatever the code, come from the deploy mechanism."
+    },
+    {
+      "id": "d21-x2",
+      "title": "Worker restarts every night",
+      "brief": "A platform engineer posts that Relay's worker pods show four to six restarts each morning and asks whether yesterday's worker release, deployed Monday at 15:42, leaks memory. The nightly help-center re-index runs at 02:00. A few customers say this week's help-center answers seem out of date.",
+      "artifact": {"lang": "shell", "code": "$ kubectl get pods -n relay -l app=relay-worker\nNAME                           READY   STATUS    RESTARTS      AGE\nrelay-worker-6c8d7f9b4-kq7zt   1/1     Running   5 (6h ago)    17h\nrelay-worker-6c8d7f9b4-r2wln   1/1     Running   4 (6h ago)    17h"},
+      "steps": [
+        {
+          "q": "What do you ask the platform engineer for first?",
+          "options": [
+            "The worker's current logs",
+            "`kubectl describe pod` for one worker",
+            "A rollback of the worker to the previous release",
+            "A memory limit of 4Gi for the workers"
+          ],
+          "answer": 1,
+          "explain": "Describe shows how the last container ended: reason, exit code, and times. Current logs belong to the fresh container that has not failed. Rolling back or raising the limit acts before you know why the pods died.",
+          "reveal": "The last container was OOMKilled at 02:31 after running since 02:04, with a 1Gi limit.",
+          "artifact": {"lang": "text", "code": "Last State:     Terminated\n  Reason:       OOMKilled\n  Exit Code:    137\n  Started:      Tue, 14 Jan 2025 02:04:12 +0000\n  Finished:     Tue, 14 Jan 2025 02:31:38 +0000\nLimits:\n  memory:  1Gi"}
+        },
+        {
+          "q": "Memory kills around 02:30. Is yesterday's release the cause?",
+          "options": [
+            "Yes, since the kills came on the night after it shipped",
+            "Compare a week of kill times with the release and job schedule",
+            "Read the release diff carefully for memory leaks",
+            "Ask the platform team for more memory on the nodes"
+          ],
+          "answer": 1,
+          "explain": "A release just before the symptom is the obvious suspect, and a week of history tests it cheaply. If kills started before the release, it is cleared. Reading the diff for leaks assumes the answer.",
+          "reveal": "Kills began Friday night, three nights before Monday's release, and every one falls between 02:00 and 02:45, during the re-index.",
+          "artifact": {"lang": "text", "title": "Worker kills by night", "code": "night      kills  kill times (UTC)   worker image\nThu-Fri    0      -                  4c90e1a\nFri-Sat    5      02:22 to 02:39     4c90e1a\nSat-Sun    6      02:19 to 02:41     4c90e1a\nSun-Mon    4      02:24 to 02:37     4c90e1a\nMon-Tue    5      02:21 to 02:38     8d1f2b6 (deployed Mon 15:42)"}
+        },
+        {
+          "q": "Memory peaks during the re-index, starting Friday. What do you check next?",
+          "options": [
+            "What the re-index loads into memory, and whether its input grew on Friday",
+            "Whether Postgres was slow on Friday",
+            "Whether the node kernels were upgraded on Friday",
+            "Whether the provider changed its embedding model on Friday"
+          ],
+          "answer": 0,
+          "explain": "Memory that grows during one job and kills it points at how much that job holds at once. A change in the job's input is the cheapest thing to confirm. A slow database or a new embedding model would change timing or results, not memory use.",
+          "reveal": "A catalog import on Friday tripled the help-center articles from about 4,000 to about 12,000. The re-index reads every article and its chunks into one list before embedding."
+        },
+        {
+          "q": "What is the durable fix?",
+          "options": [
+            "Raise the memory limit to 4Gi and close the ticket",
+            "Roll the worker back to Thursday's image for now",
+            "Embed in fixed-size batches, then size the limit to the peak",
+            "Move the re-index job to a VM outside Kubernetes"
+          ],
+          "answer": 2,
+          "explain": "Batching makes memory depend on batch size instead of catalog size, so the job survives the next import. Raising the limit alone moves the cliff to the next growth spurt, and Thursday's image has the same code.",
+          "reveal": "With batches of 200 articles, peak memory during the re-index is about 300Mi."
+        },
+        {
+          "q": "What about the customers who see out-of-date answers?",
+          "options": [
+            "Clear the Redis cache for help-center answers",
+            "Check whether killed runs left the index partly updated",
+            "Redeploy the API pods to pick up fresh data",
+            "Ask the LLM provider about answer quality this week"
+          ],
+          "answer": 1,
+          "explain": "A job killed partway through each night may have updated only some articles. That matches stale answers better than any cache or model explanation, and it means the incident has a data side that the memory fix alone does not repair. One complete run with the fix restores it.",
+          "reveal": "About 40 percent of articles were last embedded on Thursday. After one full run with the fix, the index is current and the stale answers stop."
+        }
+      ],
+      "debrief": "Root cause: Friday's catalog import tripled the re-index input, and the job held everything in memory, so it hit its 1Gi limit and was OOMKilled every night, leaving the index partly updated. Monday's release was the plausible wrong cause, cleared by kills that began three nights earlier. Bound memory per batch, alert on worker restarts and on re-index completion, and treat an interrupted job as a data problem as well as a crash. The general lesson: line up when a symptom started before blaming the latest change."
+    }
+  ]
+}
