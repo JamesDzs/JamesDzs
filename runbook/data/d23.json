@@ -342,7 +342,7 @@
         "Repeat the rule five times inside the pasted policy"
       ],
       "answer": 1,
-      "explain": "The rule sits deep in a long prompt, the position most likely to be missed. Replaying with the rule moved and the bulk cut tests that hypothesis cheaply. A larger window does not help, because the prompt already fits.",
+      "explain": "The rule sits deep in a long prompt, after 25,000 tokens of policy, where instructions are followed less reliably. Replaying with the rule moved and the bulk cut tests that hypothesis cheaply. A larger window does not help, because the prompt already fits.",
       "why": ["The prompt already fits; a bigger window leaves the rule buried in the same place.", "", "Higher temperature adds randomness and would make rule-following less reliable.", "Repetition might help a little, but it keeps the prompt long and does not test the cause."]
     },
     {

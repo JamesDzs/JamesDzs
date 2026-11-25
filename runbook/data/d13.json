@@ -228,7 +228,7 @@
         "The p99 must be wrong, because it cannot exceed ten times the mean"
       ],
       "answer": 1,
-      "explain": "A low median with a high p99 means a fast majority and a slow minority. The mean sits close to the median because the slow 1 percent barely moves it. A saturated server would push the p50 up too, not just the tail.",
+      "explain": "A low median with a high p99 means a fast majority and a slow minority. The mean stays far below the p99 because the slow 1 percent is too small a share to pull it up much. A saturated server would push the p50 up too, not just the tail.",
       "why": ["A p99 of 5 s means one request in a hundred took at least 5 s. That is real data, not noise.", "", "Saturation makes most requests wait, which would raise the p50 as well.", "No such rule exists. A small slow minority can sit far above the mean."]
     },
     {
@@ -450,7 +450,7 @@
             "Cache LLM responses so fewer calls are made"
           ],
           "answer": 1,
-          "explain": "By Little's law, 30 rps times 2.1 s is about 63 connections in use, against 30 available, so requests queue. Before the deploy it was about 1. Committing before the model call restores millisecond hold times. A bigger pool would track LLM latency and could exceed Postgres's connection limit.",
+          "explain": "By Little's law, 30 rps times 2.1 s is about 63 connections needed, against 30 available, so requests queue. Before the deploy it was about 1. Committing before the model call restores millisecond hold times. A bigger pool would track LLM latency and could exceed Postgres's connection limit.",
           "reveal": "After the fix ships, `db.pool.acquire` drops to under 1 ms and p50 returns to 2.0 s. The provider's regional issue never affected Relay's region."
         }
       ],

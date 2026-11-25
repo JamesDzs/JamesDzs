@@ -112,7 +112,7 @@ function partIsEmpty(name, st) { return stableStr(docPart(name, st)) === stableS
 
 const Sync = {
   kind: 'local', text: 'Saved in this browser only', detail: 'Progress is kept in this browser. Account sync is not available in this view.',
-  refs: null, loaded: {}, last: {}, writing: {}, dirty: {}, halted: false, retried: {},
+  refs: null, loaded: {}, last: {}, writing: {}, dirty: {}, halted: false, retried: {}, sent: {}, repeat: {},
   schedule: function () { /* replaced once sync starts */ },
   set: function (kind, text, detail) {
     this.kind = kind; this.text = text; this.detail = detail || '';
@@ -147,7 +147,7 @@ function startSync() {
         const data = snap.exists ? snap.data() : null;
         if (!(snap.metadata && snap.metadata.fromCache)) {
           Sync.loaded[n] = true;
-          Sync.last[n] = data ? stableStr(data) : null;
+          Sync.last[n] = data ? canonPart(n, data) : null;
           if (Sync.loaded.progress && Sync.loaded.review) { clearTimeout(timer); if (!Sync.halted) Sync.set('synced', 'Synced to your Claude account', 'Progress follows you between devices signed in to this Claude account.'); }
         }
         if (data) {
@@ -169,6 +169,8 @@ function normalizePart(name, data) {
   const o = Object.assign(f, data); o.review = {};
   return normalize(o);
 }
+/* The remote body in the same canonical form as docPart(S), so a store that drops nulls or empty maps cannot make every comparison differ. */
+function canonPart(name, data) { try { return stableStr(docPart(name, normalizePart(name, JSON.parse(JSON.stringify(data))))); } catch (e) { return stableStr(data); } }
 function syncError(err, name) {
   const code = (err && err.code) || 'unavailable';
   if (code === 'invalid_argument') { Sync.halted = true; Sync.set('paused', 'Sync paused', 'Your Claude account would not accept this save, so progress stays in this browser.'); }
@@ -185,10 +187,12 @@ async function flushSync() {
     const body = docPart(n, S), ser = stableStr(body);
     if (ser === Sync.last[n]) continue;
     if (Sync.last[n] == null && partIsEmpty(n, S)) continue;
+    /* Never send the same body more than three times in a row, whatever the store reports back. */
+    if (ser === Sync.sent[n]) { Sync.repeat[n] = (Sync.repeat[n] || 0) + 1; if (Sync.repeat[n] > 2) continue; } else Sync.repeat[n] = 0;
     Sync.writing[n] = true;
     try {
       await Sync.refs[n].set(JSON.parse(JSON.stringify(body)));
-      Sync.last[n] = ser; Sync.retried[n] = false;
+      Sync.last[n] = ser; Sync.sent[n] = ser; Sync.retried[n] = false;
       if (!Sync.halted) Sync.set('synced', 'Synced to your Claude account', 'Progress follows you between devices signed in to this Claude account.');
     } catch (e) {
       const code = (e && e.code) || 'unavailable';

@@ -426,7 +426,7 @@
       "q": "Explain why the attacker kept access after the password change, and what you would change.",
       "rubric": [
         "Identifies that the attacker held an access token that stayed valid until its expiry",
-        "Notes that the password change did not revoke existing refresh tokens or sessions",
+        "Notes that the password change did not revoke the access token already issued, and that refresh tokens and sessions must be revoked explicitly",
         "Connects the 40 minutes to the remaining lifetime of a one-hour access token",
         "Proposes revoking all refresh tokens and sessions on password change",
         "Mentions shorter access tokens, a denylist, or a per-user token version check as the tradeoff for faster cutoff"
@@ -463,7 +463,7 @@
           "answer": 1,
           "explain": "An 'expired' error that starts at 60 minutes of uptime points at a token fetched once and kept. A wrong secret would fail at startup, when the token is first requested, not an hour later. Rate limits give 429.",
           "reveal": "The worker fetches a token when the pod starts and keeps it in memory. Decoded, `exp` minus `iat` is 3,600. The worker refreshes on a timer read from config, and yesterday's rotation change set that timer to 24 hours.",
-          "artifact": {"lang": "json", "code": "{\n  \"iss\": \"https://auth.store.example\",\n  \"aud\": \"orders-api\",\n  \"iat\": 1795600800,\n  \"exp\": 1795604400\n}"}
+          "artifact": {"lang": "json", "code": "{\n  \"iss\": \"https://auth.store.example\",\n  \"aud\": \"orders-api\",\n  \"iat\": 1795608180,\n  \"exp\": 1795611780\n}"}
         },
         {
           "q": "What is the right fix?",

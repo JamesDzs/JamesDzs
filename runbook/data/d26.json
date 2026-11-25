@@ -568,7 +568,7 @@
             "A higher turn limit so the agent could continue"
           ],
           "answer": 1,
-          "explain": "The refund's status was `pending_review`, so a check that compares the final message with the payment record catches it every time. Instructions about honesty help on average, but only a check against recorded state is reliable."
+          "explain": "The refund's status was `pending_review`, so a check that compares the final message with the payment record catches it without relying on the model. Instructions about honesty help on average, but only a check against recorded state is reliable."
         }
       ]
     }

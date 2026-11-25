@@ -581,7 +581,7 @@
     {
       "id": "d24-x2",
       "title": "Chat hangs, then fails, during a provider incident",
-      "brief": "At 14:10 Relay's chat error rate jumps from under 1 percent to 30 percent. Customers say the reply spinner runs for about a minute and then shows 'Something went wrong'. The on-call engineer's first instinct is to restart the API pods.",
+      "brief": "At 14:10 Relay's chat error rate jumps from under 1 percent to 30 percent. Customers say the reply spinner runs for a minute or more and then shows 'Something went wrong'. The on-call engineer's first instinct is to restart the API pods.",
       "steps": [
         {
           "q": "What do you do first?",

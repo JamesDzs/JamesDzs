@@ -340,14 +340,14 @@
       "tags": ["versioning", "breaking-changes"],
       "q": "You need to rename `customer_email` to `email` in Relay's ticket response, and you do not control every client. What is the safest plan?",
       "options": [
-        "Rename it and bump the API version in the URL the same day",
+        "Rename it in place and announce the change the same day",
         "Rename it and rely on clients ignoring unknown fields",
-        "Return `email` only to clients that send a new header",
+        "Rename it and keep the old field for clients that send a legacy header",
         "Add `email` next to the old field and remove the old one later"
       ],
       "answer": 3,
       "explain": "Expand and contract keeps old readers working while new ones move, and removal waits until nobody reads the old field. Ignoring unknown fields protects clients from additions, but a rename is also a removal, which nothing protects against.",
-      "why": ["A same-day version bump still breaks every client that has not moved to the new URL.", "Ignoring unknown fields helps with additions; the old field disappearing is what breaks clients.", "Header-gated fields work but add per-client branching for a change that expand and contract handles without it.", ""]
+      "why": ["An announcement does not update anyone's code; every reader of the old field breaks at deploy.", "Ignoring unknown fields helps with additions; the old field disappearing is what breaks clients.", "Existing clients do not know to send the legacy header, so they lose the old field at deploy.", ""]
     },
     {
       "id": "d04-q04",
@@ -527,7 +527,7 @@
           "answer": 0,
           "explain": "The process that sent both POSTs is the tool executor, so its log says why it sent the second one. nginx forwarded two distinct requests with distinct ids, and the prompt is already cleared by the trace.",
           "reveal": "The executor's HTTP client timed out after 10 seconds and retried. The first request was still running on the server and finished successfully a moment later.",
-          "artifact": {"lang": "log", "code": "10:42:11.121 tool=issue_refund call=toolu_8c1 attempt=1 error=ReadTimeout(10.0s)\n10:42:13.201 tool=issue_refund call=toolu_8c1 attempt=2 status=201"}
+          "artifact": {"lang": "log", "code": "10:42:11.121 tool=issue_refund call=toolu_8c1 attempt=1 error=ReadTimeout(10.0s)\n10:42:14.149 tool=issue_refund call=toolu_8c1 attempt=2 status=201"}
         },
         {
           "q": "What is the durable fix?",
@@ -542,7 +542,7 @@
           "reveal": "The team adds an `Idempotency-Key` header to every refund POST and a unique constraint on the key in Postgres."
         },
         {
-          "q": "In staging, the fix still lets a duplicate through. Where was the key most likely created?",
+          "q": "In staging, the client sends the header on every request, yet a duplicate still gets through. Where was the key most likely created?",
           "options": [
             "Once per tool call, before the first attempt",
             "By the API, after receiving the request",

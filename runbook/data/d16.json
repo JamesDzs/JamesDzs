@@ -1174,7 +1174,7 @@
           "reveal": "A commit from five months ago added `.env.dev` with the key. A later commit deleted the file. The repository was made public last Tuesday for a conference talk.",
           "artifact": {
             "lang": "shell",
-            "code": "$ git log --oneline -S 'relay-dev-old' --all\n9c2e1ab remove .env.dev\n41f07d3 add local dev config"
+            "code": "$ git log --oneline -S 'sk-dev-7Qf2' --all\n9c2e1ab remove .env.dev\n41f07d3 add local dev config"
           }
         },
         {

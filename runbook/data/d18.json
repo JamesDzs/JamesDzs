@@ -1071,7 +1071,7 @@
       "artifact": {
         "lang": "text",
         "title": "API, after rollback",
-        "code": "time      req/s   503/s   pods_ready\n09:04:00  2,610   1,800   8/8\n09:04:01    410       0   8/8\n09:04:05  2,580   1,780   8/8\n09:04:06    395       0   8/8"
+        "code": "time      req/s   503/s   pods_ready\n09:04:00  2,610   2,330   8/8\n09:04:01    410       0   8/8\n09:04:05  2,580   2,310   8/8\n09:04:06    395       0   8/8"
       },
       "steps": [
         {

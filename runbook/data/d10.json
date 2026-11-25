@@ -111,7 +111,7 @@
           "q": "Relay runs at read committed. Two workers each run `UPDATE tickets SET reply_count = reply_count + 1 WHERE id = 42` at the same moment, starting from 3. What is the result?",
           "options": ["5, because the second update waits and then applies to the new row", "4, because both updates computed from the value 3", "An error, because one worker gets a serialization failure"],
           "answer": 0,
-          "explain": "At read committed, the second UPDATE waits for the first one's row lock, then re-reads the committed row and adds 1 to it. A lost update needs a read in the application between the read and the write, which this statement does not have."},
+          "explain": "At read committed, the second UPDATE waits for the first one's row lock, then re-reads the committed row and adds 1 to it. A lost update needs the application to read the value and write back a result computed from it, which this single statement does not do."},
         {"t": "reveal", "prompt": "The atomic `SET credit = credit - 20` fixes the wallet race. Why does the same trick not fix the supervisors' write skew?", "answer": "The atomic update works because the read and the write touch the same row inside one statement. Write skew involves a decision based on several rows (a count) followed by writes to different rows, so no single row conflicts. You need serializable isolation, a lock on a shared row such as the on-call schedule, or a constraint that encodes the rule."}
       ]
     },

@@ -343,8 +343,8 @@
         "A lagging replica returned another user's row"
       ],
       "answer": 2,
-      "explain": "`X-Cache: HIT` and `Age: 87` show a shared cache answered, and `public, max-age=120` allowed it to store a response that depends on the cookie. Her own browser cache is the tempting answer, but a browser only holds responses that she herself received.",
-      "why": ["A browser cache only contains responses fetched by that browser, so it cannot hold another customer's data.", "A session mix-up would not produce cache headers showing a shared HIT.", "", "Replica lag returns older versions of the right row, never another user's row."]
+      "explain": "`X-Cache: HIT` and `Age: 87` show a shared cache answered, and `public, max-age=120` allowed it to store a response that depends on the cookie. Her own browser cache is the tempting answer, but `X-Cache: HIT` is set by a shared cache in front of the API, and her browser only holds responses fetched on her device.",
+      "why": ["`X-Cache: HIT` comes from a shared cache in front of the API, and her browser only holds responses fetched on her device.", "A session mix-up would not produce cache headers showing a shared HIT.", "", "Replica lag returns older versions of the right row, never another user's row."]
     },
     {
       "id": "d12-q03",
@@ -528,7 +528,7 @@
             "The refund transaction never committed"
           ],
           "answer": 2,
-          "explain": "The trace shows a Redis hit with 412 seconds left, and the status changed two minutes earlier, so the tool served a pre-refund copy. The model-ignoring theory is tempting but untested; the tool's own output decides it. No database query ran, so replica lag cannot be involved.",
+          "explain": "The trace shows a Redis hit with 412 seconds left, and the status changed less than three minutes earlier, so the tool served a pre-refund copy. The model-ignoring theory is tempting but untested; the tool's own output decides it. No database query ran, so replica lag cannot be involved.",
           "reveal": "The tool result in the trace says `status: paid`. The model repeated it faithfully."
         },
         {

@@ -76,7 +76,7 @@ function renderBlock(b) {
     case 'check': {
       REG.checks[k] = b;
       return '<div class="inline-q blk" data-check="' + k + '"><div class="blk-cap" style="margin:0">Check yourself</div><div class="q">' + md(b.q) + '</div><div class="opts">' +
-        (b.options || []).map((o, i) => '<button type="button" class="opt" data-i="' + i + '"><span class="k">' + String.fromCharCode(65 + i) + '</span><span>' + md(o) + '</span></button>').join('') +
+        shuffledPerm((b.options || []).length).map((i, pos) => '<button type="button" class="opt" data-i="' + i + '"><span class="k">' + String.fromCharCode(65 + pos) + '</span><span>' + md(b.options[i]) + '</span></button>').join('') +
         '</div><div class="fbwrap" aria-live="polite"></div></div>';
     }
     case 'reveal':
@@ -106,7 +106,7 @@ function wireBlocks(root) {
       const box = co.closest('[data-check]'); if (box.dataset.done) return;
       const b = REG.checks[box.dataset.check]; const i = +co.dataset.i; const ok = i === b.answer;
       box.dataset.done = '1';
-      $$('.opt', box).forEach((o, j) => { o.setAttribute('aria-disabled', 'true'); if (j === b.answer) o.classList.add('right'); else if (j === i) o.classList.add('wrong'); else o.classList.add('dim'); });
+      $$('.opt', box).forEach((o) => { const j = +o.dataset.i; o.setAttribute('aria-disabled', 'true'); if (j === b.answer) o.classList.add('right'); else if (j === i) o.classList.add('wrong'); else o.classList.add('dim'); });
       $('.fbwrap', box).innerHTML = '<div class="fb ' + (ok ? 'ok' : 'bad') + '"><div class="fb-h"><span class="mark">' + (ok ? '&#10003;' : '&#215;') + '</span>' + (ok ? 'Correct' : 'Not quite') + '</div><div>' + md(b.explain) + '</div></div>';
       announce((ok ? 'Correct. ' : 'Not quite. ') + plain(b.explain));
       return;

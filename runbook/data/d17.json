@@ -790,7 +790,7 @@
         "The scheduler is enqueuing every job twice"
       ],
       "answer": 2,
-      "explain": "All eight workers are busy with almost no errors, and LLM latency more than doubled when completions halved. Workers are healthy but slower per job. Crashed workers would show low busy counts; a poison loop would show a high error rate.",
+      "explain": "All eight workers are busy with almost no errors, and LLM latency more than doubled while completions fell by about a third. Workers are healthy but slower per job. Crashed workers would show low busy counts; a poison loop would show a high error rate.",
       "why": [
         "All 8 workers report busy, so they are consuming.",
         "A poison loop produces a steady stream of errors; errors here are near zero.",
@@ -1084,7 +1084,7 @@
           "reveal": "Nearly all errors come from 8 message IDs, each attempted thousands of times. The error is a 400 from the LLM API: the prompt exceeds the model's context window. All 8 tickets come from yesterday's bulk import.",
           "artifact": {
             "lang": "log",
-            "code": "11:02:14 worker-2 msg=m_901 ticket=20411 attempt=3112 error=400 prompt too long, requeue\n11:02:14 worker-5 msg=m_904 ticket=20417 attempt=3098 error=400 prompt too long, requeue\n11:02:14 worker-1 msg=m_903 ticket=20416 attempt=3105 error=400 prompt too long, requeue"
+            "code": "11:02:14 worker-2 msg=m_901 ticket=20411 attempt=15612 error=400 prompt too long, requeue\n11:02:14 worker-5 msg=m_904 ticket=20417 attempt=15598 error=400 prompt too long, requeue\n11:02:14 worker-1 msg=m_903 ticket=20416 attempt=15605 error=400 prompt too long, requeue"
           }
         },
         {

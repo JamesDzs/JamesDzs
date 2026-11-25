@@ -1144,7 +1144,7 @@
           "reveal": "The affected customers resolve the name to the old address. A public resolver returns the new one.",
           "artifact": {
             "lang": "shell",
-            "code": "# from an affected customer's machine\n$ dig +noall +answer relay.example.com\nrelay.example.com.   61200   IN   A   198.51.100.7\n\n# from a public resolver\n$ dig +noall +answer relay.example.com @1.1.1.1\nrelay.example.com.   86400   IN   A   203.0.113.10"
+            "code": "# from an affected customer's machine\n$ dig +noall +answer relay.example.com\nrelay.example.com.   46800   IN   A   198.51.100.7\n\n# from a public resolver\n$ dig +noall +answer relay.example.com @1.1.1.1\nrelay.example.com.   86400   IN   A   203.0.113.10"
           }
         },
         {
@@ -1157,7 +1157,7 @@
           ],
           "answer": 1,
           "explain": "A timeout with no answer at all fits a deleted endpoint. The request never touches the new load balancer, so its load is irrelevant. A certificate problem would require a successful connection first.",
-          "reveal": "The record's TTL was 86,400 seconds, one day. The companies' resolvers cached the old answer shortly before 22:00, and the countdown of 61,200 seconds left means they will keep serving it for about 17 more hours."
+          "reveal": "The record's TTL was 86,400 seconds, one day. The companies' resolvers cached the old answer shortly before 22:00, and the countdown of 46,800 seconds left means they will keep serving it for about 13 more hours."
         },
         {
           "q": "What restores service for these customers soonest?",
