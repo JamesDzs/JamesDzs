@@ -185,7 +185,7 @@
         {"t": "code",
           "lang": "python",
           "title": "A chained traceback from Relay's agent",
-          "code": "Traceback (most recent call last):\n  File \"/app/relay/tools/orders.py\", line 38, in lookup_order\n    order = await fetch_order(int(args[\"order_id\"]))\nValueError: invalid literal for int() with base 10: 'A-8812'\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/app/relay/api/chat.py\", line 88, in chat\n    reply = await run_agent_turn(ticket, message)\n  File \"/app/relay/agent/loop.py\", line 132, in run_agent_turn\n    result = await call_tool(name, args)\n  File \"/app/relay/agent/tools.py\", line 57, in call_tool\n    raise ToolError(f\"{name} failed\") from exc\nrelay.agent.tools.ToolError: lookup_order failed",
+          "code": "Traceback (most recent call last):\n  File \"/app/relay/agent/tools.py\", line 55, in call_tool\n    return await TOOLS[name](args)\n  File \"/app/relay/tools/orders.py\", line 38, in lookup_order\n    order = await fetch_order(int(args[\"order_id\"]))\nValueError: invalid literal for int() with base 10: 'A-8812'\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/app/relay/api/chat.py\", line 88, in chat\n    reply = await run_agent_turn(ticket, message)\n  File \"/app/relay/agent/loop.py\", line 132, in run_agent_turn\n    result = await call_tool(name, args)\n  File \"/app/relay/agent/tools.py\", line 57, in call_tool\n    raise ToolError(f\"{name} failed\") from exc\nrelay.agent.tools.ToolError: lookup_order failed",
           "notes": [
             "'Most recent call last' means the bottom frame of each block is where that exception was raised. Read each block from the bottom up.",
             "The last line, `ToolError: lookup_order failed`, is what your error tracker shows. It describes the symptom.",
@@ -344,7 +344,7 @@
       "type": "mcq",
       "level": 3,
       "tags": ["tracebacks", "root-cause"],
-      "artifact": {"lang": "python", "code": "Traceback (most recent call last):\n  File \"/app/relay/tools/orders.py\", line 38, in lookup_order\n    order = await fetch_order(int(args[\"order_id\"]))\nValueError: invalid literal for int() with base 10: 'A-8812'\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/app/relay/agent/tools.py\", line 57, in call_tool\n    raise ToolError(f\"{name} failed\") from exc\nrelay.agent.tools.ToolError: lookup_order failed"},
+      "artifact": {"lang": "python", "code": "Traceback (most recent call last):\n  File \"/app/relay/agent/tools.py\", line 55, in call_tool\n    return await TOOLS[name](args)\n  File \"/app/relay/tools/orders.py\", line 38, in lookup_order\n    order = await fetch_order(int(args[\"order_id\"]))\nValueError: invalid literal for int() with base 10: 'A-8812'\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/app/relay/agent/tools.py\", line 57, in call_tool\n    raise ToolError(f\"{name} failed\") from exc\nrelay.agent.tools.ToolError: lookup_order failed"},
       "q": "What should the investigation focus on?",
       "options": [
         "Why `call_tool` raises ToolError instead of returning a result",
@@ -381,10 +381,10 @@
       "artifact": {"lang": "text", "title": "Failures in the last 24 hours, grouped", "code": "by pod:      api-1: 0  api-2: 0  api-3: 212  api-4: 0  api-5: 0  api-6: 0\nby tool:     spread across all tools\nby ticket:   212 different tickets\nimage tag:   api-1..2,4..6: relay:v2.15   api-3: relay:v2.15"},
       "q": "What do you check next?",
       "options": [
-        "Add a retry for 500s in the web app",
-        "Roll back v2.15 on all pods",
-        "Profile the agent loop for slow tools",
-        "Compare api-3's effective config, node, and connections with another pod"
+        "Add a retry for 500s in the web app's client",
+        "Roll back v2.15 on all six pods at once",
+        "Profile the agent loop for slow tool calls",
+        "Diff api-3's config, node, and connections with a healthy pod"
       ],
       "answer": 3,
       "explain": "Every failure is on one pod running the same image as the others, so the code is ruled out and the difference lies in that pod's environment: its config, its node, or its connections. Rolling back the image on all pods targets code that five healthy pods also run.",
@@ -539,7 +539,7 @@
           "answer": 0,
           "explain": "The wrapper error says only that the tool failed. One full traceback, already stored, shows the original error and the line, which splits code, data, and infrastructure in one read. Reading 40 commits searches the whole release before you know what to look for.",
           "reveal": "The first block shows `ValueError: invalid literal for int() with base 10: 'A-8812'` at `orders.py` line 38. Other events show 'A-9020', 'A-9133'.",
-          "artifact": {"lang": "python", "code": "  File \"/app/relay/tools/orders.py\", line 38, in lookup_order\n    order = await fetch_order(int(args[\"order_id\"]))\nValueError: invalid literal for int() with base 10: 'A-8812'\n\nThe above exception was the direct cause of the following exception:\n..."}
+          "artifact": {"lang": "python", "code": "...\n  File \"/app/relay/tools/orders.py\", line 38, in lookup_order\n    order = await fetch_order(int(args[\"order_id\"]))\nValueError: invalid literal for int() with base 10: 'A-8812'\n\nThe above exception was the direct cause of the following exception:\n..."}
         },
         {
           "q": "The deploy is still the obvious suspect. Which cheap check tells you whether v2.14 is to blame?",
@@ -569,11 +569,11 @@
           "q": "How do you confirm the fix explains the whole incident?",
           "options": [
             "Watch the error tracker for an hour after deploying",
-            "Ask a few marketplace customers to try again",
-            "Replay Monday's failed tool calls against the fix and check failures by sales channel",
+            "Replay Monday's failed tool calls against the fix, by sales channel",
+            "Ask a few marketplace customers to try again and report back",
             "Run the existing nightly eval and compare the pass rate"
           ],
-          "answer": 2,
+          "answer": 1,
           "explain": "Replaying the captured failing inputs proves the fix handles exactly the cases that failed, and splitting by channel checks that marketplace orders account for all of them. The existing eval has no `A-` orders, so it cannot show anything about this bug.",
           "reveal": "All 1,906 failed calls succeed on replay, and every one of them was a marketplace order. The team adds recent marketplace tickets to the eval set."
         }
@@ -590,9 +590,9 @@
           "q": "What do you do first?",
           "options": [
             "Add an automatic retry on 500 in the web and mobile apps",
-            "Roll back the Postgres driver upgrade",
-            "Group the failed requests by their error text and by what else was happening on that ticket",
-            "Scale up Postgres in case it is overloaded"
+            "Roll back last Wednesday's Postgres driver upgrade",
+            "Group the failures by error text and by ticket activity",
+            "Scale up Postgres in case it is quietly overloaded"
           ],
           "answer": 2,
           "explain": "The daily rates already clear the driver: Thursday stayed at 0.4 percent after Wednesday's upgrade, and the jump came Friday with the mobile layout. Grouping the failures' errors costs minutes and says what kind of fault it is. A retry would hide it and could send a customer's message twice.",
@@ -602,9 +602,9 @@
         {
           "q": "A duplicate `(ticket_id, seq)` means two inserts chose the same sequence number. What do you compare next?",
           "options": [
-            "Whether each failure had another message for the same ticket within a second",
-            "Failure rates by hour of day",
-            "Failure rates by API pod",
+            "Other requests on the same ticket close to each failure",
+            "Failure rates by hour of day and by weekday",
+            "Failure rates broken down by API pod",
             "The driver's changelog for unique constraint changes"
           ],
           "answer": 0,
@@ -627,17 +627,17 @@
         {
           "q": "What is the right fix?",
           "options": [
-            "Disable the send button for one second after each tap",
-            "Catch the duplicate key error and return 200",
-            "Retry the whole request from the app on any 500",
-            "Assign the sequence atomically in Postgres, and dedupe sends by a client message id"
+            "Disable the send button for one second after each tap on mobile",
+            "Catch the duplicate key error in the handler and return 200",
+            "Retry the whole request from the app whenever it gets a 500",
+            "Assign the number atomically in Postgres and dedupe by client message id"
           ],
           "answer": 3,
           "explain": "The race is in the write, so it must be fixed there: lock the ticket row or let the database assign the number. A double tap would then create two identical messages, so a client-generated message id used as an idempotency key removes those. Disabling the button only shrinks the race, and returning 200 loses the message.",
           "reveal": "With both changes, concurrent pairs succeed in staging and duplicates are merged. Production 500s on this endpoint fall below 0.05 percent."
         }
       ],
-      "debrief": "Root cause: message numbering used read-then-write with no lock, a race that had always been there at a low rate. The new mobile layout made double taps common and raised the rate fourfold. The driver upgrade was the obvious suspect and the daily numbers cleared it for free. Fixes: atomic sequence assignment and a client message id. A concurrency test on the insert would have caught it early. The general lesson: an intermittent failure has a condition; find it and raise its rate."
+      "debrief": "Root cause: message numbering used read-then-write with no lock, a race that had always been there at a low rate. The new mobile layout made double taps common and raised the rate about fivefold. The driver upgrade was the obvious suspect and the daily numbers cleared it for free. Fixes: atomic sequence assignment and a client message id. A concurrency test on the insert would have caught it early. The general lesson: an intermittent failure has a condition; find it and raise its rate."
     }
   ]
 }

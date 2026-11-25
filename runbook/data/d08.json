@@ -417,14 +417,14 @@
       "tags": ["constraints", "race-conditions"],
       "q": "Relay's sign-up code checks that no user has an email before inserting. During a burst of sign-ups, duplicate accounts appeared. What is the reliable fix?",
       "options": [
+        "Add a unique constraint so the database rejects the second insert",
         "Run the check twice before inserting",
         "Keep a cache of known emails in Redis",
-        "Add a unique constraint so the database rejects the second insert",
         "Run a nightly job that merges duplicates"
       ],
-      "answer": 2,
+      "answer": 0,
       "explain": "Two concurrent requests can both pass any check made before the insert. A unique constraint is enforced at the moment of the write, so exactly one insert succeeds. A nightly merge cleans up after the damage instead of preventing it.",
-      "why": ["Checking twice narrows the window but two requests can still both pass.", "A cache has the same race between reading and writing.", "", "A cleanup job repairs damage after customers have already seen it."]
+      "why": ["", "Checking twice narrows the window but two requests can still both pass.", "A cache has the same race between reading and writing.", "A cleanup job repairs damage after customers have already seen it."]
     },
     {
       "id": "d08-q08",
@@ -499,12 +499,12 @@
       "options": [
         "The orders table is locked by a running migration",
         "The refund amount is larger than the order total",
-        "The model passes order IDs that do not exist, and the foreign key blocks them",
-        "The database user lacks permission to insert into refunds"
+        "The database user lacks permission to insert into refunds",
+        "The model passes order IDs that do not exist, and the foreign key blocks them"
       ],
-      "answer": 2,
+      "answer": 3,
       "explain": "The error says the order ID does not exist in orders, and the failures began with a prompt change, so the model is supplying wrong IDs. The foreign key is doing its job. A lock would cause waiting rather than this error.",
-      "why": ["A lock makes the insert wait or time out; it does not raise a foreign key error.", "An amount rule would be a CHECK violation with a different message.", "", "A permission problem raises 'permission denied', not a constraint violation."]
+      "why": ["A lock makes the insert wait or time out; it does not raise a foreign key error.", "An amount rule would be a CHECK violation with a different message.", "A permission problem raises 'permission denied', not a constraint violation.", ""]
     }
   ],
   "drills": [
@@ -554,9 +554,9 @@
         {
           "q": "Which fix keeps the tag breakdown and makes the total correct?",
           "options": [
-            "Compute the total from refunds alone, and build the tag breakdown as a separate query",
-            "Change `SUM` to `SUM(DISTINCT r.amount_cents)`",
-            "Change both joins to left joins",
+            "Use separate queries for the total and the tag breakdown",
+            "Change `SUM` to `SUM(DISTINCT r.amount_cents)` to drop repeats",
+            "Change both joins to left joins so untagged refunds return",
             "Divide the total by the average number of tags per ticket"
           ],
           "answer": 0,
@@ -581,7 +581,7 @@
           "answer": 2,
           "explain": "Only endpoints touching one table are stuck, which points at a lock on that table. Looking at sessions costs seconds and shows the chain. Rolling back the image does not stop a migration already running in the database, and a restart kills every session blindly.",
           "reveal": "Hundreds of API queries wait on a lock. So does the migration. One old session is idle inside an open transaction.",
-          "artifact": {"lang": "text", "title": "pg_stat_activity, abridged", "code": " pid  | state               | wait_event_type | wait_event | xact_start | query\n------+---------------------+-----------------+------------+------------+---------------------------\n 3117 | idle in transaction | Client          | ClientRead | 13:21:40   | SELECT count(*) FROM mes...\n 4502 | active              | Lock            | relation   | 14:02:05   | ALTER TABLE messages ALT...\n 4510 | active              | Lock            | relation   | 14:02:06   | SELECT id, role, body FR...\n 4511 | active              | Lock            | relation   | 14:02:06   | SELECT id, role, body FR...\n(180 more rows like 4510)"}
+          "artifact": {"lang": "text", "title": "pg_stat_activity, abridged", "code": " pid  | state               | wait_event_type | wait_event | xact_start | query\n------+---------------------+-----------------+------------+------------+---------------------\n 3117 | idle in transaction | Client          | ClientRead | 13:21:40   | SELECT count(*) FR...\n 4502 | active              | Lock            | relation   | 14:02:05   | ALTER TABLE messag...\n 4510 | active              | Lock            | relation   | 14:02:06   | SELECT id, role, b...\n 4511 | active              | Lock            | relation   | 14:02:06   | SELECT id, role, b...\n(180 more rows like 4510)"}
         },
         {
           "q": "Which session is the root of the queue?",
@@ -612,7 +612,7 @@
           "options": [
             "Rerun the same migration at 3 a.m., when traffic is low",
             "Run the same migration with a longer statement timeout",
-            "Expand and contract: a new bigint column, batched backfill, a short switch, and a lock timeout",
+            "Add a bigint column, backfill in batches, then switch, all with a lock timeout",
             "Drop and recreate the messages table with the new type"
           ],
           "answer": 2,

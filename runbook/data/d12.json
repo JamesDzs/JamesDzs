@@ -1,0 +1,619 @@
+{
+  "id": "d12",
+  "day": 12,
+  "phase": "p3",
+  "title": "Caching",
+  "tagline": "The fastest query is the one you never run, and the hardest bug to find is the one a cache is hiding.",
+  "minutes": 55,
+  "why": "A cache turns a slow system fast and a correct system subtly wrong: stale prices, one customer's page shown to another, a database that collapses the moment the cache empties. When something looks impossible, the first question worth asking is whether a cache answered. Caching also sits at the center of LLM cost and latency, through response caches and provider-side prompt caching, and the two are easy to confuse.",
+  "objectives": [
+    "Read Cache-Control, ETag, Age, and Vary headers and say who may store a response and for how long",
+    "Trace cache-aside through a read and a write, and name what each step looks like when it fails",
+    "Diagnose a stampede, a stale entry, and a near-zero hit ratio from metrics and keys",
+    "Choose between Redis and Memcached, and between caching a result and fixing the slow query",
+    "Tell an LLM response cache from provider prompt caching and say what each can break"
+  ],
+  "lessons": [
+    {
+      "id": "d12-l1",
+      "title": "Layers of cache",
+      "minutes": 11,
+      "blocks": [
+        {"t": "p", "text": "A **cache** keeps a copy of a result closer to whoever reads it, so the next read skips the expensive work. Every cache trades freshness for speed. The questions are always the same: how old can the copy be, who can see it, and what happens when it is wrong."},
+        {"t": "layers",
+          "title": "Where a Relay response can be cached, outermost first",
+          "layers": [
+            {"name": "Browser", "role": "Stores responses for one user, as Cache-Control allows.", "breaks": "Users see old data until the copy expires, and you cannot purge their browsers."},
+            {"name": "CDN", "role": "A shared cache at the network edge, close to users.", "breaks": "Caches a personalized response and serves it to everyone who asks for that URL."},
+            {"name": "Reverse proxy (nginx)", "role": "Can cache upstream responses in front of the API.", "breaks": "Same risk as a CDN when its cache key ignores the user."},
+            {"name": "Application memory", "role": "A dictionary or LRU inside each uvicorn worker.", "breaks": "Each worker has its own copy, so two requests can get different answers."},
+            {"name": "Redis", "role": "A shared cache for all API processes and workers.", "breaks": "A network hop on every lookup, stale entries after writes, and an outage path."},
+            {"name": "Database buffer cache", "role": "Postgres and the operating system keep recently used pages in memory.", "breaks": "After a restart it is cold, and queries are slow until it warms up."}
+          ]},
+        {"t": "h", "text": "HTTP caching headers"},
+        {"t": "code",
+          "lang": "http",
+          "title": "Three responses from Relay's API",
+          "code": "GET /api/help/articles/returns-policy HTTP/1.1\nHost: relay.example.com\n\nHTTP/1.1 200 OK\nCache-Control: public, max-age=300, stale-while-revalidate=60\nETag: \"a7f3c9\"\nVary: Accept-Encoding\nAge: 112\n\nGET /api/help/articles/returns-policy HTTP/1.1\nIf-None-Match: \"a7f3c9\"\n\nHTTP/1.1 304 Not Modified\nETag: \"a7f3c9\"\n\nGET /api/me/tickets HTTP/1.1\nCookie: session=...\n\nHTTP/1.1 200 OK\nCache-Control: private, no-store",
+          "notes": [
+            "`public, max-age=300`: any cache, including the CDN, may store this and reuse it for 300 seconds.",
+            "`Age: 112` means a shared cache answered, with a copy it has held for 112 seconds.",
+            "The **ETag** is a version tag. Sending it back in `If-None-Match` lets the server answer `304 Not Modified` with no body: a saved transfer, but still a round trip.",
+            "`stale-while-revalidate=60` lets a cache that supports it serve the old copy for up to 60 more seconds while it fetches a fresh one.",
+            "`/api/me/tickets` is personal, so it says `no-store`. Every response that depends on who is asking needs a header like this."
+          ]},
+        {"t": "compare",
+          "caption": "Cache-Control directives you will read most",
+          "columns": ["Directive", "Meaning", "Use it for"],
+          "rows": [
+            ["max-age=N", "Fresh for N seconds in any cache allowed to store it", "Versioned static assets, public articles"],
+            ["s-maxage=N", "Overrides max-age for shared caches such as CDNs", "A different lifetime at the CDN than in browsers"],
+            ["no-cache", "May be stored, but must be revalidated before every reuse", "Content that changes often and has an ETag"],
+            ["no-store", "Must not be stored anywhere", "Personal or sensitive responses"],
+            ["private", "Only the user's own browser may store it", "Per-user pages that are not sensitive"],
+            ["public", "Shared caches may store it, even for an authenticated request", "Truly public content served behind a login"]
+          ],
+          "verdict": "`no-cache` does not mean 'do not cache'. `no-store` does."},
+        {"t": "callout", "kind": "pitfall", "title": "One customer's data shown to another", "text": "A shared cache stores whatever it is allowed to, keyed by URL. If `/api/me` returns `public` or a CDN rule caches everything under `/api`, the first customer's response is served to the next one. The same bug happens in Redis when the cache key leaves out the user id."},
+        {"t": "callout", "kind": "debug", "title": "Did a cache answer?", "text": "Look for `Age` and any cache-status header your CDN adds, such as `X-Cache: HIT`. Repeat the request with a unique query string, which most caches treat as a new key. If the fresh request is correct and the normal one is not, the bug is in what was cached or how it is keyed."},
+        {"t": "h", "text": "Caching vs fixing the slow query"},
+        {"t": "tradeoff",
+          "title": "Caching vs fixing the slow query",
+          "options": [
+            {"name": "Fix the query", "gain": ["Every caller gets faster", "Results stay fresh", "No invalidation code"], "cost": ["May need an index, a rewrite, or a schema change", "Takes investigation time"], "choose": "Choose this when the query is slow for a fixable reason, such as a missing index or an N+1 pattern."},
+            {"name": "Cache the result", "gain": ["Fast even when the work is inherently expensive", "Shields the database from repeated reads"], "cost": ["Stale data and invalidation code", "A new failure mode", "Hides the slow query until a cold cache exposes it"], "choose": "Choose this when the work is already efficient and simply repeated, such as rendering a popular article."}
+          ]},
+        {"t": "check",
+          "q": "A response carries `Cache-Control: no-cache` and an ETag. What does the browser do on the next request for it?",
+          "options": ["Sends the ETag and reuses its copy if the server replies 304", "Fetches the full response, since nothing was stored", "Reuses its copy without contacting the server"],
+          "answer": 0,
+          "explain": "`no-cache` allows storing but requires checking with the server before reuse. With an ETag, that check is a conditional request that returns 304 when nothing changed. Refusing to store at all is what `no-store` does."}
+      ]
+    },
+    {
+      "id": "d12-l2",
+      "title": "Patterns: cache-aside, read-through, write-through, write-behind",
+      "minutes": 10,
+      "blocks": [
+        {"t": "p", "text": "A caching pattern decides who reads from and writes to the cache and the database, and in what order. In all four patterns below the database stays the **source of truth**, the copy that wins when the two disagree. They differ in how long the cache can be wrong and in what happens when a step fails."},
+        {"t": "flow",
+          "title": "Cache-aside: a read, a write, and how each step fails",
+          "steps": [
+            {"actor": "API", "label": "Looks up article:42 in Redis", "detail": "On a hit, the API returns the cached value and the database is never touched.", "fail": "If Redis is down and the client timeout is a full second, every request waits that second, and the cache makes the API slower than having no cache."},
+            {"actor": "Postgres", "label": "Serves the read on a miss", "detail": "The API runs the real query.", "fail": "When many requests miss at once, after a flush or when a hot key expires, they all hit Postgres together: a stampede."},
+            {"actor": "API", "label": "Stores the result in Redis with a TTL", "detail": "The **TTL** (time to live) makes the entry expire on its own.", "fail": "If this write fails, the next request misses again. If Redis is full under the default no-eviction policy, writes fail with `OOM command not allowed`."},
+            {"actor": "API", "label": "Returns the result", "detail": "Later reads hit until the entry expires or is deleted."},
+            {"actor": "Admin API", "label": "Updates the article in Postgres, then deletes article:42", "detail": "Deleting on write forces the next reader to load the new version.", "fail": "If the delete fails or is forgotten, readers get the old article until the TTL runs out."},
+            {"actor": "API", "label": "A slow reader writes back an old value", "detail": "A reader that loaded the article before the update can store it after the delete.", "fail": "The cache holds the old version for a full TTL, and nobody touched it after the delete."}
+          ]},
+        {"t": "compare",
+          "caption": "The four patterns",
+          "columns": ["", "Who fills the cache", "Write path", "Main risk"],
+          "rows": [
+            ["Cache-aside", "The application, on a miss", "Write the database, then delete the key", "Stale entries from races or missed deletes"],
+            ["Read-through", "The cache layer calls a loader on a miss", "Usually the same as cache-aside", "Same as cache-aside, hidden inside a library"],
+            ["Write-through", "Every write", "Write cache and database together, synchronously", "Slower writes; caches data nobody reads"],
+            ["Write-behind", "Every write", "Write the cache; it flushes to the database later", "Writes lost if the cache dies before flushing"]
+          ],
+          "verdict": "Cache-aside is the usual default. Write-behind trades durability for write speed and belongs only where losing recent writes is acceptable."},
+        {"t": "code",
+          "lang": "text",
+          "title": "The cache-aside race that outlives a delete",
+          "code": "     Reader (GET article 42)               Writer (edit article 42)\nt1   GET article:42 from Redis -> miss\nt2   SELECT ... FROM articles -> v1\nt3                                         UPDATE articles ... -> v2\n                                           COMMIT\nt4                                         DEL article:42\nt5   SET article:42 = v1  EX 3600\n\n     cache now serves v1 for an hour; the database has v2",
+          "notes": [
+            "The reader was slow between t2 and t5, perhaps a GC pause or a slow network. Rare per request, certain at volume.",
+            "The TTL is what bounds the damage. With a one-hour TTL the stale version lives up to an hour.",
+            "Mitigations: shorter TTLs on data that changes, a second delete shortly after the first, or storing a version number and refusing to overwrite a newer one."
+          ]},
+        {"t": "tradeoff",
+          "title": "Cache-aside vs write-through",
+          "options": [
+            {"name": "Cache-aside, delete on write", "gain": ["Simple to reason about", "Caches only what is actually read", "A Redis outage degrades to slower reads"], "cost": ["The first read after a write misses", "Race windows can leave stale entries until the TTL"], "choose": "Choose this as the default for read-heavy data such as articles, profiles, and order summaries."},
+            {"name": "Write-through", "gain": ["Reads right after a write hit fresh data", "Fewer misses on hot keys"], "cost": ["Every write pays for two writes", "A failure between them leaves the two disagreeing", "Fills the cache with data that may never be read"], "choose": "Choose this when data is read immediately after each write and misses are expensive."}
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "Update the cache, or delete it?", "text": "Writing the new value into the cache on every write looks fresher than deleting. With two concurrent writers, their cache writes can land in the opposite order from their database commits, leaving the older value cached. Deleting is safer, because the next reader loads whatever the database holds."},
+        {"t": "callout", "kind": "insight", "title": "Know where the truth lives", "text": "When the cache and the database disagree, the database is right in every pattern except write-behind, where the cache briefly holds the only copy. If you cannot say which store is the truth for a piece of data, you cannot debug it."},
+        {"t": "check",
+          "q": "In a write-behind setup, Redis crashes with 2,000 writes not yet flushed to Postgres and no persistence enabled. What happens to them?",
+          "options": ["They are lost", "Postgres already has them", "Redis replays them on restart"],
+          "answer": 0,
+          "explain": "In write-behind, the cache holds the only copy until the flush, so a crash without persistence loses those writes. Postgres has only what was flushed. This is why write-behind is rare for anything involving money."}
+      ]
+    },
+    {
+      "id": "d12-l3",
+      "title": "Invalidation, TTLs, and stampedes",
+      "minutes": 10,
+      "blocks": [
+        {"t": "p", "text": "**Invalidation** is removing or updating a cached entry when its source changes. You have two tools: a TTL, which expires the entry after a set time, and explicit invalidation, which deletes it when the code knows the data changed. Use both: explicit deletes for correctness, the TTL as a safety net for every delete you missed."},
+        {"t": "tradeoff",
+          "title": "Long TTL vs short TTL",
+          "options": [
+            {"name": "Long TTL (hours)", "gain": ["High hit ratio", "Little database load"], "cost": ["A missed invalidation is wrong for hours", "Changes need explicit purges to show up"], "choose": "Choose this for data that rarely changes and has reliable invalidation, such as published articles."},
+            {"name": "Short TTL (seconds to minutes)", "gain": ["Staleness is bounded and small", "Self-healing when invalidation has a bug"], "cost": ["More misses and more database load", "More frequent stampede opportunities on hot keys"], "choose": "Choose this for data that changes often or where stale values mislead, such as order status."}
+          ]},
+        {"t": "h", "text": "Stampedes"},
+        {"t": "p", "text": "A **cache stampede**, or thundering herd, happens when a hot key expires or the cache is emptied and many requests miss at the same moment. They all run the same expensive query at once. A database that served 50 queries per second behind a 99 percent hit ratio suddenly receives thousands."},
+        {"t": "code",
+          "lang": "text",
+          "title": "Relay's metrics around a deploy",
+          "code": "time   hit_ratio  pg_active_conns  pg_cpu  api_p99_ms\n14:00     0.97            12          31%       140\n14:01     0.97            11          30%       150\n14:02     0.04            98         100%     4,800   <- deploy\n14:03     0.21            97         100%     3,900\n14:05     0.62            60          88%       900\n14:08     0.95            14          34%       160",
+          "notes": [
+            "Hit ratio drops to almost zero at the deploy and climbs back as the cache refills. Latency tracks it exactly.",
+            "Postgres was not slow before the deploy and recovers without any database change, so the database is a victim here.",
+            "Rolling back would not help: the old version would start with an empty cache too, if the cause is the cache being emptied."
+          ]},
+        {"t": "list", "items": [
+          "**Request coalescing**: when many requests miss the same key, let one recompute it and the rest wait for that result.",
+          "A short lock in Redis around recomputation, so only the lock holder queries the database.",
+          "Random jitter on TTLs, so keys written together do not all expire together.",
+          "Refresh hot keys a little before they expire, or serve the stale value while one request refreshes it.",
+          "Warm the cache before sending traffic to it, and do not empty it as part of a deploy."
+        ]},
+        {"t": "callout", "kind": "debug", "title": "Latency spike right after a deploy or cache flush", "text": "Put hit ratio, database connections, and the deploy marker on one graph. If the hit ratio collapses at the deploy and latency recovers as it climbs, look for what emptied or renamed the cache: a flush in the deploy script, or a key prefix that includes the build version."},
+        {"t": "h", "text": "Negative caching and eviction"},
+        {"t": "p", "text": "**Negative caching** stores 'not found' so repeated lookups of missing keys do not reach the database, for example bots probing order numbers that do not exist. Give these entries a short TTL. A 'not found' becomes wrong the moment the row is created, and Relay would then tell a customer their brand-new order does not exist."},
+        {"t": "compare",
+          "caption": "When memory is full: Redis eviction policies",
+          "columns": ["", "Evicts", "Good for", "Weakness"],
+          "rows": [
+            ["LRU (allkeys-lru)", "The least recently used keys", "General cache traffic", "One large scan can push out the hot keys"],
+            ["LFU (allkeys-lfu)", "The least frequently used keys", "A stable set of popular keys", "Slow to adapt when popularity shifts"],
+            ["volatile-* policies", "Only keys that have a TTL", "Mixing cache entries with keys that must stay", "If few keys have TTLs, memory still fills"],
+            ["noeviction (the default)", "Nothing; writes fail when memory is full", "Data that must never silently disappear", "A full cache starts returning errors"]
+          ],
+          "verdict": "A pure cache wants an LRU or LFU policy. Keys that must not vanish, such as sessions, belong on an instance with a different policy."},
+        {"t": "callout", "kind": "ai", "title": "Negative caching in a tool", "text": "If Relay's `lookup_order` caches 'order not found' for ten minutes, a customer who orders and immediately asks Relay about it is told the order does not exist. The model will repeat the tool's answer confidently. Keep negative TTLs short, or skip negative caching for data a customer just created."},
+        {"t": "check",
+          "q": "Relay's cache of help articles has thousands of keys, all written with exactly a one-hour TTL by a warm-up job at 09:00. What happens at 10:00?",
+          "options": ["They expire together and the misses hit Postgres at once", "Nothing, since each key is read at a different time", "Redis refreshes them from Postgres automatically"],
+          "answer": 0,
+          "explain": "Keys written together with the same TTL expire together, producing a synchronized miss storm. Random jitter on the TTL spreads the expiries out. Redis never reloads data by itself; refilling is the application's job in cache-aside."}
+      ]
+    },
+    {
+      "id": "d12-l4",
+      "title": "Redis vs Memcached, and when the cache is the bug",
+      "minutes": 11,
+      "blocks": [
+        {"t": "p", "text": "Redis and Memcached are both in-memory key-value stores reached over the network. Memcached is a pure cache: opaque values in, the same values out, spread across many threads. Redis is a data structure server that is also a good cache: it adds structured values, optional persistence, replication, pub/sub, and atomic operations."},
+        {"t": "compare",
+          "caption": "Redis vs Memcached",
+          "columns": ["", "Redis", "Memcached"],
+          "rows": [
+            ["Values", "Strings, hashes, lists, sets, sorted sets, streams", "Opaque strings, with a size limit per item (1 MB by default)"],
+            ["Persistence", "Optional snapshots and append-only log", "None; a restart starts empty"],
+            ["Replication and failover", "Built in: replicas, Sentinel, Cluster", "None; clients spread keys across servers"],
+            ["Execution", "Runs commands one at a time per instance", "Multithreaded; uses many cores in one process"],
+            ["Beyond caching", "Pub/sub, atomic scripts, counters, rate limits, locks, simple queues", "Little: get, set, delete, increment, expiry"],
+            ["When memory is full", "By default refuses writes, unless you set an eviction policy", "Evicts least recently used items"]
+          ],
+          "verdict": "Pick Memcached when you need only a simple cache and want nothing to tune. Pick Redis when you also need sessions, counters, or rate limits, as Relay does."},
+        {"t": "tradeoff",
+          "title": "Redis vs Memcached for a new service",
+          "options": [
+            {"name": "Redis", "gain": ["One tool for cache, sessions, rate limits, and locks", "Atomic operations on structured values", "Can survive a restart with persistence"], "cost": ["Tempts you to keep data you cannot lose in a cache", "One slow command delays every other client", "More settings to get right"], "choose": "Choose this when you need more than get and set, or need the data to survive a restart."},
+            {"name": "Memcached", "gain": ["Simple to run and reason about", "Uses all cores in one process", "Nothing to persist or tune"], "cost": ["No structures beyond strings and counters", "A lost node is lost entries, with no replica"], "choose": "Choose this for a large, plain look-aside cache where every entry can be rebuilt."}
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "Sessions and cache on one Redis", "text": "Relay keeps cache entries, sessions, and rate-limit counters in Redis. If that instance uses `allkeys-lru` so the cache can evict, sessions get evicted too, and customers are logged out at random under load. Use separate instances, or a volatile policy with TTLs only on cache keys."},
+        {"t": "h", "text": "Hit ratio"},
+        {"t": "p", "text": "The **hit ratio** is hits divided by all lookups. Redis reports the totals as `keyspace_hits` and `keyspace_misses` in `INFO stats`. A ratio near zero means the cache adds a network hop to every request and saves nothing. The usual causes: something unique per request in the key, a TTL shorter than the time between reuses, or reads and writes building keys differently."},
+        {"t": "code",
+          "lang": "shell",
+          "title": "A cache that never hits",
+          "code": "$ redis-cli INFO stats | grep keyspace\nkeyspace_hits:1204\nkeyspace_misses:918233\n\n$ redis-cli --scan --pattern 'kb:search:*' | head -3\nkb:search:refund%20policy:2026-11-25T14:02:11.482Z\nkb:search:refund%20policy:2026-11-25T14:02:12.019Z\nkb:search:where%20is%20my%20order:2026-11-25T14:02:12.301Z",
+          "notes": [
+            "About 1,200 hits against 918,000 misses is a hit ratio near 0.1 percent.",
+            "Every key ends with a timestamp, so no key is ever looked up twice. The same query 'refund policy' was stored twice in one second.",
+            "`--scan` walks keys in small batches. `KEYS *` does the same job in one blocking command and can stall Redis for every client."
+          ]},
+        {"t": "h", "text": "When the cache is the bug"},
+        {"t": "callout", "kind": "debug", "title": "Bypass the cache to split the search space", "text": "Reproduce with the cache bypassed: a flag, a unique key, or reading straight from Postgres. If the bug disappears, it lives in what was cached, how it is keyed, or how it is invalidated. Then compare the cached value with the database row and check the key's remaining TTL with `TTL key`."},
+        {"t": "p", "text": "Relay can cache an LLM response: store the answer under a key built from everything that affects it, meaning the model, the full prompt, tool definitions, and sampling settings. It pays off for repeated, identical inputs, such as an eval rerun. For live customer messages, exact repeats are rare and answers often depend on live data, such as an order's current status."},
+        {"t": "callout", "kind": "ai", "title": "Response caching is not prompt caching", "text": "**Prompt caching** is done by the LLM provider: it reuses its processing of an identical prompt prefix, such as a long system prompt and tool list, to cut latency and input cost. It never returns a stored answer. It only matches an identical prefix, so put stable content first; a timestamp at the top of the system prompt defeats it. Some providers apply it automatically, others need the cacheable part marked."},
+        {"t": "check",
+          "q": "Relay's eval harness caches LLM responses keyed by prompt text. After switching to a new model version, every score is identical to the night before. What is the most likely reason?",
+          "options": ["The cache key omits the model, so old answers were replayed", "Provider prompt caching returned last night's outputs", "The new model happens to answer exactly like the old one"],
+          "answer": 0,
+          "explain": "A response cache keyed only on the prompt serves the old model's answers to the new model's requests. Prompt caching is the tempting answer, but it reuses input processing, never outputs. Identical scores on hundreds of cases is a sign of no new generations at all."},
+        {"t": "reveal", "prompt": "Semantic caching returns a stored answer when a new prompt is similar to an old one by embedding distance. What could go wrong for Relay?", "answer": "Two messages can be close in embedding space and need different answers: 'cancel my order' and 'do not cancel my order', or the same question from two customers with different orders. A similarity threshold trades hit rate against answering the wrong question, and the cache key must still separate users so personal answers are not shared."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Users see stale data after an update; it corrects itself after a few minutes",
+      "causes": ["The write path does not delete or update the cache key", "A read-write race stored an old value after the delete", "The read and the delete build the key differently"],
+      "look": "The key's value and remaining TTL in Redis, compared with the database row; the write path's invalidation code.",
+      "confirm": "The cached value is older than the row, and the staleness lasts about as long as the TTL.",
+      "fix": "Delete on write with one shared key-building function, and keep TTLs short on data that changes. A shorter TTL bounds the damage but does not fix a missed delete."
+    },
+    {
+      "symptom": "Latency spike and database CPU at 100% right after a deploy or cache flush",
+      "causes": ["Cache stampede: everything misses at once", "The deploy flushed Redis or changed every key's prefix"],
+      "look": "Hit ratio, database connections, and the deploy marker on one graph.",
+      "confirm": "Hit ratio collapses at the deploy, and latency recovers as it climbs back.",
+      "fix": "Stop emptying or renaming the cache on deploy, coalesce misses on hot keys, and warm critical keys before taking traffic."
+    },
+    {
+      "symptom": "One customer sees another customer's name, tickets, or orders",
+      "causes": ["A shared cache stored a per-user response marked public or cacheable", "An application cache key that omits the user"],
+      "look": "Response headers on the bad response (Cache-Control, Age, cache-status) and the cache key in code.",
+      "confirm": "The response came from a shared cache (Age greater than 0, HIT) or the key has no user component.",
+      "fix": "Mark per-user responses `private` or `no-store`, purge the CDN, and include the user in every per-user cache key. Treat it as a data exposure incident."
+    },
+    {
+      "symptom": "Hit ratio near zero; the cache adds latency and saves nothing",
+      "causes": ["A per-request value such as a timestamp or request id inside the key", "TTL shorter than the time between reuses", "Values never written because the set fails"],
+      "look": "keyspace_hits and keyspace_misses, and a sample of keys from `redis-cli --scan`.",
+      "confirm": "Sampled keys are all unique for the same logical query, or set errors appear in the logs.",
+      "fix": "Build keys only from what determines the answer. If the data is never reused, remove the cache instead."
+    },
+    {
+      "symptom": "OOM command not allowed when used memory > 'maxmemory'",
+      "causes": ["Redis is full and its policy is noeviction, the default", "Keys written without TTLs accumulate forever"],
+      "look": "`INFO memory` for used memory and the maxmemory policy; the share of keys without a TTL.",
+      "confirm": "The policy is noeviction and memory sits at the limit.",
+      "fix": "Set an eviction policy fit for a cache and add TTLs. Keep data that must not be evicted on a separate instance."
+    },
+    {
+      "symptom": "Customers logged out at random when cache traffic grows",
+      "causes": ["Sessions share a Redis instance with cache entries under an allkeys eviction policy"],
+      "look": "The instance's maxmemory policy and its `evicted_keys` counter in INFO stats.",
+      "confirm": "evicted_keys rises at the times logouts are reported.",
+      "fix": "Move sessions to their own instance, or use a volatile policy with TTLs only on cache keys."
+    },
+    {
+      "symptom": "Every Redis client slows down at once for a second or more",
+      "causes": ["A slow command such as KEYS * or a huge value blocks the instance", "A large persistence snapshot on a busy host"],
+      "look": "`SLOWLOG GET` on the instance, and which client issued the slow command.",
+      "confirm": "Slowlog entries line up with the latency spikes.",
+      "fix": "Replace KEYS with SCAN, split huge values, and keep admin scripts away from production instances."
+    },
+    {
+      "symptom": "The agent says 'order not found' for an order that exists",
+      "causes": ["A negative cache entry stored before the order was created", "A long TTL on not-found results"],
+      "look": "The tool's cache key for that order and its TTL; the order's creation time.",
+      "confirm": "The not-found entry was written before the order existed and has not yet expired.",
+      "fix": "Shorten negative TTLs, or delete the negative entry when the row is created."
+    },
+    {
+      "symptom": "Eval scores unchanged to the decimal after a model or prompt change",
+      "causes": ["A response cache whose key omits the model, prompt version, or settings"],
+      "look": "The harness's cache key and its hit count for the run.",
+      "confirm": "Nearly every case was a cache hit, and responses are byte-identical to the previous run.",
+      "fix": "Key on model, full prompt, tools, and sampling settings, and report the hit count beside every score."
+    }
+  ],
+  "glossary": [
+    {"term": "Cache", "def": "A copy of a result kept closer to the reader so the next read skips the expensive work, at the cost of possibly being out of date."},
+    {"term": "Hit ratio", "def": "The share of lookups answered by the cache: hits divided by hits plus misses."},
+    {"term": "TTL", "def": "Time to live: how long a cached entry stays before it expires on its own."},
+    {"term": "Invalidation", "def": "Removing or updating cached entries when the source data changes."},
+    {"term": "Cache-aside", "def": "A pattern in which the application checks the cache, loads from the database on a miss, stores the result, and deletes the key on writes."},
+    {"term": "Write-through", "def": "A pattern in which every write updates the cache and the database together, so reads after a write hit fresh data."},
+    {"term": "Write-behind", "def": "A pattern in which writes go to the cache first and reach the database later; recent writes are lost if the cache fails."},
+    {"term": "Cache stampede", "def": "Many requests missing the same key at once and all running the expensive query; also called a thundering herd."},
+    {"term": "Negative caching", "def": "Caching a 'not found' result so repeated lookups of missing data do not reach the database."},
+    {"term": "LRU and LFU", "def": "Eviction rules that remove the least recently used, or the least frequently used, entries when memory is full."},
+    {"term": "Cache-Control", "def": "The HTTP header that says who may store a response, for how long, and whether it must be revalidated."},
+    {"term": "ETag", "def": "A version tag for a response. A client sends it back in If-None-Match and receives 304 Not Modified if unchanged."},
+    {"term": "Prompt caching", "def": "An LLM provider feature that reuses processing of an identical prompt prefix to cut latency and input cost. It never returns stored outputs."}
+  ],
+  "apply": {
+    "title": "Measure what a cache would buy you",
+    "minutes": 15,
+    "steps": [
+      "Pick one repeated operation in your project, such as an LLM call in an eval run or a retrieval query. Log its inputs for one full run and count how many are exact repeats. That count is the best possible hit ratio for an exact-match cache.",
+      "If you already have a cache, compute its hit ratio from its counters or `INFO stats`, and sample ten keys to check that nothing unique per request is in them.",
+      "Write down every input that changes the answer for that operation (model, prompt version, tools, temperature, user) and check that each one is in the cache key.",
+      "Send the same long-system-prompt request to your LLM provider twice and look at the usage section for cached input tokens. Then put a timestamp at the start of the system prompt and send it twice again, and compare."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d12-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["http-caching", "cache-control"],
+      "diagnostic": true,
+      "q": "A response carries `Cache-Control: no-cache`. What may a browser do with it?",
+      "options": [
+        "Never store it, on disk or in memory",
+        "Reuse it freely for a short default period",
+        "Store it, but check with the server before each reuse",
+        "Store it only until the tab is closed"
+      ],
+      "answer": 2,
+      "explain": "`no-cache` permits storing and requires revalidation before every reuse, typically with a conditional request that can return 304. The common misconception is that it forbids storing, which is what `no-store` does.",
+      "why": ["That describes `no-store`.", "Reusing without checking is what `max-age` allows; `no-cache` forbids it.", "", "The directive says nothing about tab lifetime; it is about revalidation."]
+    },
+    {
+      "id": "d12-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["cache-key", "data-exposure"],
+      "context": "A customer reports that Relay's web app greeted her with another customer's name and order list. You fetch the same endpoint with her session.",
+      "artifact": {"lang": "http", "title": "The response she received", "code": "GET /api/me HTTP/1.1\nCookie: session=8f1c...\n\nHTTP/1.1 200 OK\nCache-Control: public, max-age=120\nAge: 87\nX-Cache: HIT\nContent-Type: application/json\n\n{\"name\": \"Daniel R.\", \"orders\": [\"A-10293\", \"A-10377\"]}"},
+      "q": "What is the most likely cause?",
+      "options": [
+        "Her browser reused a copy it had cached earlier",
+        "The session cookie was issued for the wrong user",
+        "A shared cache stored a per-user response marked public",
+        "A lagging replica returned another user's row"
+      ],
+      "answer": 2,
+      "explain": "`X-Cache: HIT` and `Age: 87` show a shared cache answered, and `public, max-age=120` allowed it to store a response that depends on the cookie. Her own browser cache is the tempting answer, but a browser only holds responses that she herself received.",
+      "why": ["A browser cache only contains responses fetched by that browser, so it cannot hold another customer's data.", "A session mix-up would not produce cache headers showing a shared HIT.", "", "Replica lag returns older versions of the right row, never another user's row."]
+    },
+    {
+      "id": "d12-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["stampede", "deploys"],
+      "context": "Relay's API slowed sharply right after the 14:02 deploy, then recovered on its own within six minutes.",
+      "artifact": {"lang": "text", "title": "Metrics around the deploy", "code": "time   hit_ratio  pg_active_conns  pg_cpu  api_p99_ms\n14:00     0.97            12          31%       140\n14:02     0.04            98         100%     4,800\n14:04     0.41            81          97%     2,600\n14:06     0.79            33          61%       450\n14:08     0.95            14          34%       160"},
+      "q": "What happened?",
+      "options": [
+        "The new code introduced a slow database query",
+        "The cache was emptied, and every miss went to Postgres at once",
+        "Redis ran out of memory and began refusing writes",
+        "The connection pool was too small for normal traffic"
+      ],
+      "answer": 1,
+      "explain": "Latency tracks the hit ratio exactly and recovers as the cache refills, with no rollback. A slow query in new code is the tempting answer, but it would keep latency high after the cache warmed up.",
+      "why": ["A slow query would persist after the hit ratio recovered, and here latency returns to 160 ms on the same code.", "", "Refused writes would keep the hit ratio low; here it climbs back steadily.", "The same pool handled the same traffic fine at 14:00 and 14:08."]
+    },
+    {
+      "id": "d12-q04",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["ttl", "staleness"],
+      "q": "Relay caches four things. Which one should get the shortest TTL?",
+      "options": [
+        "The rendered returns-policy article",
+        "The list of countries the store ships to",
+        "An order's shipping status shown to the agent",
+        "A product's image URL"
+      ],
+      "answer": 2,
+      "explain": "Shipping status changes several times per order, and a stale value makes the agent tell customers something false. The other three change rarely and are low-risk if briefly stale. The tempting idea is to give everything the same TTL; it should follow how often the data changes and what a stale value costs.",
+      "why": ["Policy articles change rarely and can be invalidated on edit.", "The shipping country list changes rarely.", "", "Image URLs change rarely, and a stale one at worst shows an old image."]
+    },
+    {
+      "id": "d12-q05",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["redis-vs-memcached", "redis"],
+      "context": "A new service needs a response cache, plus a sliding-window rate limiter built on sorted sets, plus sessions that should survive a restart.",
+      "q": "Which store fits?",
+      "options": [
+        "Memcached, since it is multithreaded and simple",
+        "Redis, with sessions on a separate instance",
+        "An in-process LRU in each API worker",
+        "Memcached for sessions and an in-process LRU for the rest"
+      ],
+      "answer": 1,
+      "explain": "Sorted sets and persistence are Redis features, and keeping sessions on their own instance stops cache eviction from logging users out. Memcached is the tempting answer for a cache, but it has no sorted sets and loses everything on restart.",
+      "why": ["Memcached has no sorted sets and no persistence.", "", "An in-process cache is per worker, so rate limits and sessions would not be shared across workers.", "Memcached sessions are lost on restart, and per-process rate limits are not shared."]
+    },
+    {
+      "id": "d12-q06",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["hit-ratio", "cache-key"],
+      "context": "Relay caches help-center search results in Redis with a ten-minute TTL. Search latency did not improve after the cache was added.",
+      "artifact": {"lang": "shell", "code": "$ redis-cli INFO stats | grep keyspace\nkeyspace_hits:2210\nkeyspace_misses:1402871\n\n$ redis-cli --scan --pattern 'kb:search:*' | head -2\nkb:search:refund%20policy:req_01HVA2\nkb:search:refund%20policy:req_01HVA7"},
+      "q": "What fixes it?",
+      "options": [
+        "Raise the TTL from ten minutes to one day",
+        "Switch the eviction policy to allkeys-lfu",
+        "Give Redis more memory so fewer keys are evicted",
+        "Remove the request id from the cache key"
+      ],
+      "answer": 3,
+      "explain": "Each key ends in a request id, so identical searches never share an entry and the hit ratio is near zero. A longer TTL is the tempting answer, but a key that is never looked up again misses no matter how long it lives.",
+      "why": ["The keys are unique per request, so a longer life does not create reuse.", "Eviction is not the problem; entries are never looked up a second time.", "More memory keeps more unique keys that are never read again.", ""]
+    },
+    {
+      "id": "d12-q07",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["llm-caching", "evals"],
+      "context": "Relay's eval harness caches model responses keyed by a hash of the prompt text. After switching to a new model version, all 300 scores match the previous night exactly, and the run finished in two minutes instead of forty.",
+      "q": "What is the most likely explanation?",
+      "options": [
+        "Provider prompt caching returned the previous night's outputs",
+        "The new model version answers exactly like the old one",
+        "The grader is cached and ignores the new outputs",
+        "The cache key omits the model, so old responses were replayed"
+      ],
+      "answer": 3,
+      "explain": "A forty-minute run finishing in two with identical scores means almost nothing was generated. A key built only from the prompt cannot tell models apart. Prompt caching is the tempting answer, but it reuses input processing at the provider and never returns stored outputs.",
+      "why": ["Prompt caching reuses processing of the prompt prefix; it always generates a new response.", "Two model versions do not produce identical outputs on 300 cases, and generation would still take time.", "A cached grader would not explain the run finishing twenty times faster.", ""]
+    },
+    {
+      "id": "d12-q08",
+      "type": "mcq",
+      "level": 1,
+      "tags": ["prompt-caching", "llm-caching"],
+      "q": "What does provider-side prompt caching reuse?",
+      "options": [
+        "The provider's processing of an identical prompt prefix",
+        "The full response to an identical earlier prompt",
+        "Responses to prompts that are similar in meaning",
+        "The embeddings of the user's most recent message"
+      ],
+      "answer": 0,
+      "explain": "Prompt caching saves the work of processing a repeated prefix, such as a long system prompt and tool list, which lowers latency and input cost. It never returns a stored answer. Returning stored responses is what an application-level response cache or a semantic cache does.",
+      "why": ["", "That is an application response cache, which the provider does not do for you.", "That is semantic caching, an application-level technique.", "Embeddings are unrelated to prompt caching."]
+    },
+    {
+      "id": "d12-q09",
+      "type": "multi",
+      "level": 2,
+      "tags": ["stampede", "ttl"],
+      "q": "Which of these reduce a cache stampede on a hot key? Select all that apply.",
+      "options": [
+        "Flush the whole cache on every deploy",
+        "Let one request recompute the key while others wait for it",
+        "Add random jitter to TTLs",
+        "Shorten the hot key's TTL",
+        "Refresh hot keys shortly before they expire"
+      ],
+      "answers": [1, 2, 4],
+      "explain": "Coalescing limits recomputation to one request, jitter stops keys from expiring together, and early refresh means the key never goes missing. Flushing on deploy causes stampedes, and a shorter TTL makes the hot key expire more often, which creates more chances for one."
+    },
+    {
+      "id": "d12-q10",
+      "type": "order",
+      "level": 2,
+      "tags": ["cache-aside", "invalidation"],
+      "q": "Put in order the events that leave an old article in the cache for a full TTL.",
+      "items": [
+        "A reader misses article:42 in Redis",
+        "The reader loads version 1 from Postgres",
+        "An editor commits version 2 to Postgres",
+        "The editor's code deletes article:42",
+        "The reader stores version 1 in Redis with a one-hour TTL",
+        "Later readers get version 1 until the TTL expires"
+      ],
+      "explain": "The delete happened before the slow reader's write, so it had nothing to remove, and the stale value landed afterward. The TTL is the only thing that bounds this race, which is why even well-invalidated data deserves one."
+    },
+    {
+      "id": "d12-q11",
+      "type": "match",
+      "level": 3,
+      "tags": ["diagnosis", "cache-key"],
+      "q": "Match each observation to its most likely cause.",
+      "pairs": [
+        ["Stale for minutes after every edit", "The write path never deletes the cache key"],
+        ["Latency spike right after a deploy", "The cache was emptied and misses stampeded the database"],
+        ["A customer sees another customer's data", "A shared cache keyed without the user"],
+        ["Hit ratio near zero", "A per-request value inside the cache key"],
+        ["Customers logged out at random under load", "Eviction removing sessions stored beside cache entries"]
+      ],
+      "explain": "Most cache bugs trace back to the key, the invalidation path, or the eviction policy. Ask what the key contains, who deletes it, and what Redis does when memory is full."
+    },
+    {
+      "id": "d12-q12",
+      "type": "open",
+      "level": 3,
+      "tags": ["llm-caching", "prompt-caching"],
+      "context": "To cut LLM cost, a teammate proposes caching Relay's full answer to each customer message, keyed by the message text, for 24 hours.",
+      "q": "Explain the risks and what you would do instead.",
+      "rubric": [
+        "Answers depend on live data such as order status, so a cached answer can be wrong",
+        "The key lacks the customer, so one customer's personal answer could be served to another",
+        "Exact repeats of free-text messages are rare, so the hit ratio would be low",
+        "Suggests provider prompt caching for the stable prefix as a safer cost saving",
+        "Suggests caching narrower, safe results instead, such as help-center search with a TTL"
+      ],
+      "model": "Relay's answers depend on who is asking and on live data such as order status, so a cached answer can be stale or, keyed only on text, sent to the wrong customer, which is a data exposure. Free-text messages rarely repeat exactly, so savings would be small anyway. I would use provider prompt caching for the long, stable system prompt and tool list, and cache narrow, shared results such as help-center search with a short TTL."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d12-x1",
+      "title": "The agent insists the refund has not happened",
+      "brief": "Since last Thursday, customers who were just refunded ask Relay about it and are told 'your order is still being processed'. A few minutes later the same question gets the right answer. The refund rows are correct in Postgres. A teammate suspects the model is ignoring the tool result.",
+      "artifact": {"lang": "trace", "title": "One affected turn", "code": "trace 9b31  POST /chat  ticket=7730  started 11:20:44\n  tool.lookup_order order=A-20511            2 ms\n    redis GET order:v2:A-20511               1 ms   hit  ttl_left=412s\n  llm.call                               1,960 ms\n\naudit: order A-20511 status -> refunded at 11:18:02"},
+      "steps": [
+        {
+          "q": "What do you conclude first?",
+          "options": [
+            "The model ignored a correct tool result",
+            "Replica lag returned the old status",
+            "lookup_order returned a cached value written before the refund",
+            "The refund transaction never committed"
+          ],
+          "answer": 2,
+          "explain": "The trace shows a Redis hit with 412 seconds left, and the status changed two minutes earlier, so the tool served a pre-refund copy. The model-ignoring theory is tempting but untested; the tool's own output decides it. No database query ran, so replica lag cannot be involved.",
+          "reveal": "The tool result in the trace says `status: paid`. The model repeated it faithfully."
+        },
+        {
+          "q": "Why was the entry not removed when the refund happened?",
+          "options": [
+            "Check the refund path's cache delete against the key lookup_order reads",
+            "Check whether Redis is evicting keys under memory pressure",
+            "Check Redis replication lag between primary and replica",
+            "Check the TTL configured on order keys"
+          ],
+          "answer": 0,
+          "explain": "A stale entry after a write points to the invalidation path first. Eviction would remove entries, not keep stale ones, and the TTL only says how long the damage lasts, not why the delete missed.",
+          "reveal": "Last Thursday's refactor changed the read key and left the delete alone.",
+          "artifact": {"lang": "diff", "title": "Thursday's change, and the refund path", "code": "--- a/relay/tools/orders.py\n+++ b/relay/tools/orders.py\n-    key = f\"order:{order_id}\"\n+    key = f\"order:v2:{order_id}\"   # new shape with shipment events\n     cached = redis.get(key)\n\n  relay/refunds.py (unchanged since March)\n     db.commit()\n     redis.delete(f\"order:{order_id}\")"}
+        },
+        {
+          "q": "What is the right fix?",
+          "options": [
+            "Drop the order TTL to ten seconds",
+            "Stop caching lookup_order entirely",
+            "Flush Redis after every refund",
+            "Build the key in one shared function used by both read and delete"
+          ],
+          "answer": 3,
+          "explain": "The bug is two pieces of code building the same key separately. One function for both makes them unable to drift again. A ten-second TTL is a reasonable extra safety net but leaves every refund stale for that long, and flushing Redis causes a stampede.",
+          "reveal": "With the shared function deployed, a refund followed immediately by a lookup returns `refunded`."
+        },
+        {
+          "q": "How could the eval harness have caught this before release?",
+          "options": [
+            "A recorded case that issues a refund and then asks for the order's status",
+            "Running the nightly eval twice to check scores are stable",
+            "Raising the eval's sampling temperature to find edge cases",
+            "Adding more single-turn questions about refund policy"
+          ],
+          "answer": 0,
+          "explain": "The bug only appears when a write and a later read happen in sequence, so only a multi-step case exercises the invalidation path. Single-turn questions and score stability never write anything, so they pass with the bug in place."
+        }
+      ],
+      "debrief": "Root cause: a refactor renamed the cache key in the read path, and the refund path kept deleting the old name, so post-refund lookups served pre-refund data for up to the TTL. The obvious suspect, the model, was cleared by reading the tool output in the trace. The fix is one key-building function and a write-then-read eval case. The general lesson: when an agent states something false, check what its tools returned before blaming the model."
+    },
+    {
+      "id": "d12-x2",
+      "title": "The database melts after every deploy",
+      "brief": "For two weeks, every deploy of Relay's API is followed by five to eight minutes of timeouts and Postgres at 100 percent CPU. Before that, deploys were uneventful. The on-call engineer wants to add two read replicas. Redis uptime is 41 days.",
+      "artifact": {"lang": "text", "title": "Dashboard, last deploy at 15:30", "code": "time   api_p99_ms  pg_cpu  pg_active_conns  redis_used_mem\n15:28       150      30%             12          3.1 GB\n15:30     5,200     100%             97          3.1 GB\n15:33     2,900      99%             88          3.4 GB\n15:37       300      45%             20          3.9 GB\n15:40       155      31%             12          4.0 GB"},
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Roll back to the version from two weeks ago",
+            "Add the hit ratio to the same graph, around the deploy",
+            "Add two read replicas to absorb the load",
+            "Raise Postgres max_connections"
+          ],
+          "answer": 1,
+          "explain": "The pattern of a spike at deploy that recovers on its own suggests a cache that starts cold. The hit ratio confirms or rules that out in a minute. Replicas and more connections add capacity for a load that should not exist, and rolling back two weeks of changes is a guess.",
+          "reveal": "Hit ratio falls from 0.96 to 0.03 at 15:30 and climbs back by 15:40. Redis memory grows by almost a gigabyte over the same period."
+        },
+        {
+          "q": "Redis did not restart and its memory grew. What explains the hit ratio dropping to near zero?",
+          "options": [
+            "The deploy ran FLUSHALL on Redis",
+            "The network between the API and Redis broke",
+            "All the TTLs happened to expire at 15:30",
+            "The new code looks up keys under new names, so old entries are never read"
+          ],
+          "answer": 3,
+          "explain": "A flush would have dropped memory, and a network failure would show errors, not misses. Memory growing while hits vanish means new keys are being written beside old ones, which happens when key names change on each deploy.",
+          "reveal": "A change two weeks ago added the build's git hash to every cache key prefix, so each deploy starts with an empty keyspace and leaves the old keys to expire."
+        },
+        {
+          "q": "What is the best fix?",
+          "options": [
+            "Version keys by the cached data's shape, not the build, and coalesce misses on hot keys",
+            "Pre-warm the cache by replaying an hour of traffic before every deploy",
+            "Give Postgres more CPU so it survives the cold start",
+            "Raise every TTL to a day so the cache stays full longer"
+          ],
+          "answer": 0,
+          "explain": "The key prefix should change only when the cached value's shape changes, which is rare. Coalescing protects against the remaining cold starts. Pre-warming every deploy treats a self-inflicted cold start, and longer TTLs do nothing when the keys are new.",
+          "reveal": "After the change, the next deploy shows the hit ratio staying above 0.9 and no latency spike."
+        }
+      ],
+      "debrief": "Root cause: a key prefix tied to the build version emptied the cache logically on every deploy, causing a stampede on Postgres. The obvious response, more database capacity, would have paid permanently for a self-inflicted cold start. Fix: version keys by data shape, coalesce misses, and keep the hit ratio on the deploy dashboard. The general lesson: when a slowdown follows deploys and heals itself, check the cache before the database."
+    }
+  ]
+}
