@@ -1,0 +1,409 @@
+{
+  "title": "Thirty-Day Backend Runbook",
+  "phases": [
+    {"id": "p1", "name": "The request path", "from": 1, "to": 5, "blurb": "Follow one request from the browser to the database and back."},
+    {"id": "p2", "name": "Seeing and debugging", "from": 6, "to": 7, "blurb": "A method for finding faults, and the signals that make it possible."},
+    {"id": "p3", "name": "Data and speed", "from": 8, "to": 13, "blurb": "How state is stored, kept correct, and served fast."},
+    {"id": "p4", "name": "Trust, scale, ship", "from": 14, "to": 21, "blurb": "Tests, security, queues, failure, design, and getting code to production."},
+    {"id": "p5", "name": "AI systems", "from": 22, "to": 29, "blurb": "Models, LLM backends, retrieval, agents, evals, RL, and training infrastructure."},
+    {"id": "p6", "name": "Capstone", "from": 30, "to": 30, "blurb": "Cross-domain incidents and the final exam."}
+  ],
+  "checkpoints": [
+    {"id": "c1", "afterDay": 7, "title": "Checkpoint 1", "covers": "Days 1 to 7", "from": 1, "to": 7, "count": 20},
+    {"id": "c2", "afterDay": 13, "title": "Checkpoint 2", "covers": "Days 8 to 13", "from": 8, "to": 13, "count": 20},
+    {"id": "c3", "afterDay": 21, "title": "Checkpoint 3", "covers": "Days 14 to 21", "from": 14, "to": 21, "count": 20},
+    {"id": "c4", "afterDay": 29, "title": "Checkpoint 4", "covers": "Days 22 to 29", "from": 22, "to": 29, "count": 20},
+    {"id": "final", "afterDay": 30, "title": "Final exam", "covers": "All thirty days", "from": 1, "to": 30, "count": 40}
+  ],
+  "days": [
+    {
+      "day": 1, "id": "d01", "phase": "p1",
+      "title": "The life of a request",
+      "tagline": "What happens between pressing Enter and seeing a response, hop by hop.",
+      "lessons": [
+        {"title": "Clients, servers, and the contract between them", "scope": "Client-server model, request-response cycle, what 'backend' covers, statelessness, the difference between the protocol, the server process, and the application code."},
+        {"title": "From URL to bytes: DNS, TCP, TLS", "scope": "URL anatomy, DNS resolution and caching (TTL), TCP handshake and ports, TLS handshake and certificates, where connection setup time goes, connection reuse."},
+        {"title": "Inside the datacenter: proxy, app, database", "scope": "CDN, load balancer, reverse proxy (nginx), app server, database, cache, and back. What each hop adds and what each hop can break. Time to first byte."},
+        {"title": "Which hop is lying? A map for debugging", "scope": "Using the hop map to localize a fault: DNS vs connect vs TLS vs server vs app vs DB. Browser devtools network timing, curl -v output read as evidence, the idea of bisecting the path."}
+      ],
+      "mustCover": ["stateless vs stateful servers", "one long-lived connection vs many short ones", "terminating TLS at the load balancer vs at the app"],
+      "failureSignatures": ["DNS failure vs connection refused vs connection timeout vs TLS error vs 5xx: what each proves about how far the request got"]
+    },
+    {
+      "day": 2, "id": "d02", "phase": "p1",
+      "title": "HTTP, read fluently",
+      "tagline": "Methods, status codes, and headers as a diagnostic language.",
+      "lessons": [
+        {"title": "Anatomy of a request and a response", "scope": "Start line, headers, body; content types and encodings; query string vs path vs body; reading a raw exchange line by line."},
+        {"title": "Methods, safety, and idempotency", "scope": "GET, POST, PUT, PATCH, DELETE, OPTIONS, HEAD; safe vs idempotent; why idempotency decides what can be retried."},
+        {"title": "Status codes tell you where the fault is", "scope": "2xx, 3xx, 4xx, 5xx families; 400 vs 401 vs 403 vs 404 vs 409 vs 422 vs 429; 500 vs 502 vs 503 vs 504 and who emitted each; redirects."},
+        {"title": "Headers, cookies, CORS, and HTTP versions", "scope": "Headers that change behavior (Content-Type, Authorization, Cache-Control, Accept, User-Agent, X-Request-ID); cookies and their flags; CORS and preflight as a browser rule; HTTP/1.1 vs HTTP/2 vs HTTP/3; keep-alive and timeouts."}
+      ],
+      "mustCover": ["PUT vs PATCH", "cookies vs Authorization header", "HTTP/1.1 vs HTTP/2 vs HTTP/3"],
+      "failureSignatures": ["502 vs 503 vs 504", "CORS error in the browser while curl works", "wrong Content-Type producing 415 or 422", "a retried POST creating duplicates"]
+    },
+    {
+      "day": 3, "id": "d03", "phase": "p1",
+      "title": "Inside the server: concurrency and runtimes",
+      "tagline": "How one machine serves thousands of requests, and what each language trades to do it.",
+      "lessons": [
+        {"title": "What a server process does all day", "scope": "Listening socket, accept loop, worker models (process per worker, thread pool, event loop), ASGI/WSGI in Python terms, what 'a worker is busy' means."},
+        {"title": "Threads, event loops, and coroutines", "scope": "Concurrency vs parallelism; blocking vs non-blocking I/O; async/await as cooperative scheduling; the Python GIL; what blocks an event loop and how it shows up."},
+        {"title": "CPU-bound vs I/O-bound, pools, and backpressure", "scope": "Classifying work; connection pools and pool exhaustion; queues inside the server; backpressure; memory growth and garbage collection pauses."},
+        {"title": "Languages and runtimes: Python, Node, Go, Java, PHP", "scope": "What each runtime optimizes: concurrency model, raw speed, ecosystem, deployment shape, typical failure modes. How to reason about a choice, and why most teams should not switch languages to fix a slow endpoint."}
+      ],
+      "mustCover": ["threads vs async vs processes", "sync vs async frameworks", "language choice tradeoffs across Python, JavaScript, Go, Java, PHP"],
+      "failureSignatures": ["one slow sync call inside async code stalls every request", "connection pool exhausted", "all workers busy while CPU is idle", "memory climbs until the process is killed"]
+    },
+    {
+      "day": 4, "id": "d04", "phase": "p1",
+      "title": "API design: REST done properly",
+      "tagline": "Resources, pagination, errors, idempotency, and changing an API without breaking its clients.",
+      "lessons": [
+        {"title": "Resources, verbs, and statelessness", "scope": "Modeling nouns and relationships, URL design, using methods and status codes consistently, why statelessness helps scaling and debugging."},
+        {"title": "Pagination, filtering, and error shapes", "scope": "Offset vs cursor pagination, sorting and filtering conventions, consistent machine-readable errors, validation at the edge."},
+        {"title": "Idempotency keys, retries, and rate limits", "scope": "Why networks force retries, idempotency keys for POST, rate limiting algorithms at concept level (fixed window, sliding window, token bucket), 429 and Retry-After."},
+        {"title": "Contracts and versioning", "scope": "OpenAPI as a contract, backward-compatible vs breaking changes, versioning strategies, deprecation, why contract drift is a top source of integration bugs."}
+      ],
+      "mustCover": ["offset vs cursor pagination", "URL versioning vs header versioning vs additive evolution", "strict vs lenient input validation"],
+      "failureSignatures": ["duplicate or missing rows while paging", "client broke after a field rename", "double charge after a timeout and retry", "sudden 429s from one noisy client"]
+    },
+    {
+      "day": 5, "id": "d05", "phase": "p1",
+      "title": "Beyond REST: GraphQL, gRPC, streaming, webhooks",
+      "tagline": "The other ways services talk, and how to choose between them.",
+      "lessons": [
+        {"title": "GraphQL: the client chooses the shape", "scope": "Schema, queries, mutations, resolvers; over-fetching and under-fetching; the N+1 resolver problem; caching and authorization difficulties; errors inside a 200."},
+        {"title": "gRPC and protobuf: contracts between services", "scope": "Protobuf schemas and code generation, HTTP/2 transport, unary vs streaming calls, deadlines and status codes, schema evolution rules, why browsers need a proxy."},
+        {"title": "Real time: polling, SSE, WebSockets", "scope": "Short polling, long polling, server-sent events, WebSockets; how LLM token streaming uses SSE; proxies, timeouts, and reconnects."},
+        {"title": "Webhooks, and choosing a style", "scope": "Webhooks as reverse APIs: signatures, retries, ordering, replay; a decision guide for REST vs GraphQL vs gRPC vs events."}
+      ],
+      "mustCover": ["REST vs GraphQL vs gRPC", "SSE vs WebSockets vs polling", "webhooks vs polling"],
+      "failureSignatures": ["GraphQL returns 200 with an errors array", "stream cuts off at exactly 60 seconds", "webhook delivered twice or out of order", "gRPC DEADLINE_EXCEEDED"]
+    },
+    {
+      "day": 6, "id": "d06", "phase": "p2",
+      "title": "Debugging as a method",
+      "tagline": "A repeatable loop for going from 'it is broken' to the line, config, or row that broke it.",
+      "lessons": [
+        {"title": "The loop: observe, hypothesize, test, narrow", "scope": "Debugging as experiments; stating the expected vs the actual precisely; one change at a time; keeping a log of what was ruled out; the first question, 'what changed?'."},
+        {"title": "Reproduce and reduce", "scope": "Getting a reliable reproduction, minimal reproductions, capturing inputs, differences between local, staging, and production, intermittent failures and how to raise their rate."},
+        {"title": "Bisecting everything", "scope": "Binary search over commits (git bisect), over layers of the request path, over config, over data, over time. Why halving beats guessing."},
+        {"title": "Reading errors and stack traces, and the traps", "scope": "Reading a Python traceback bottom up, root cause vs symptom, chained exceptions, swallowed errors; cognitive traps: confirmation bias, fixing the symptom, assuming the newest code is at fault, trusting a stale log."}
+      ],
+      "mustCover": ["reproduce first vs read the code first", "adding logging vs attaching a debugger vs writing a failing test", "fix forward vs roll back"],
+      "failureSignatures": ["works locally and fails in production", "fails one time in fifty", "error message points far from the cause", "the fix made the error disappear without explaining it"]
+    },
+    {
+      "day": 7, "id": "d07", "phase": "p2",
+      "title": "Observability: logs, metrics, traces",
+      "tagline": "The three signals, what question each answers, and how to connect them.",
+      "lessons": [
+        {"title": "Logs worth reading", "scope": "Structured logs, levels, request and correlation IDs, what to log and what never to log (secrets, personal data), log volume and sampling."},
+        {"title": "Metrics and percentiles", "scope": "Counters, gauges, histograms; rate, errors, duration (RED) and utilization, saturation, errors (USE); p50 vs p95 vs p99 and why averages hide problems; cardinality."},
+        {"title": "Traces and spans", "scope": "A trace as a tree of timed spans, context propagation across services and queues, reading a waterfall, OpenTelemetry in one paragraph, sampling."},
+        {"title": "SLOs, alerts, and what to instrument first", "scope": "SLI, SLO, error budget; alert on symptoms rather than causes; dashboards that answer 'is it broken, where, since when'; instrumenting an LLM or agent service (tokens, latency per step, tool errors)."}
+      ],
+      "mustCover": ["logs vs metrics vs traces", "sampling vs full capture", "alerting on symptoms vs causes"],
+      "failureSignatures": ["average latency looks fine while users complain", "cannot find the log for a failed request because there is no request ID", "alert fatigue", "a metric with exploding cardinality"]
+    },
+    {
+      "day": 8, "id": "d08", "phase": "p3",
+      "title": "Data modeling and SQL",
+      "tagline": "Tables, keys, joins, and constraints: the shape of the data decides which bugs are possible.",
+      "lessons": [
+        {"title": "Tables, keys, and relationships", "scope": "Rows and columns, primary and foreign keys, one-to-many and many-to-many, natural vs surrogate keys, UUID vs integer IDs."},
+        {"title": "Joins and aggregations, conceptually", "scope": "What inner, left, and cross joins return; GROUP BY; how a wrong join silently multiplies or drops rows; NULL and three-valued logic."},
+        {"title": "Normalize or denormalize, and constraints", "scope": "Normal forms as 'store each fact once'; when duplication is a deliberate performance choice; NOT NULL, UNIQUE, CHECK, and foreign keys as tests that run on every write."},
+        {"title": "Migrations and ORMs", "scope": "Schema migrations, expand and contract for zero-downtime changes, backfills; what an ORM hides (queries, lazy loading) and how to see the SQL it emits."}
+      ],
+      "mustCover": ["normalized vs denormalized", "UUID vs auto-increment IDs", "ORM vs raw SQL", "enforcing rules in the database vs in application code"],
+      "failureSignatures": ["a report total that doubled after adding a join", "NULL comparisons that match nothing", "a migration that locked a table", "orphaned rows where a foreign key was missing"]
+    },
+    {
+      "day": 9, "id": "d09", "phase": "p3",
+      "title": "Indexes and the query planner",
+      "tagline": "Why a query is slow, and how to read the database's own explanation.",
+      "lessons": [
+        {"title": "Why a query is slow: scans", "scope": "Sequential scan vs index scan, how row count changes everything, selectivity, why the same query is fast in development and slow in production."},
+        {"title": "Indexes: B-tree, composite, covering", "scope": "A B-tree as a sorted lookup structure, column order in composite indexes, covering indexes, partial and unique indexes, the write and storage cost of each index."},
+        {"title": "Reading a query plan", "scope": "EXPLAIN and EXPLAIN ANALYZE output read line by line: estimated vs actual rows, node types, where time goes, stale statistics."},
+        {"title": "The usual suspects: N+1, pools, long queries", "scope": "N+1 queries from ORMs, missing index on a foreign key, SELECT *, unbounded result sets, connection pooling and PgBouncer, slow query logs, table bloat in one paragraph."}
+      ],
+      "mustCover": ["more indexes vs faster writes", "composite index vs several single-column indexes", "fixing the query vs adding hardware"],
+      "failureSignatures": ["endpoint slows as the table grows", "hundreds of near-identical queries per request", "planner estimates wildly off from actual rows", "'too many connections'"]
+    },
+    {
+      "day": 10, "id": "d10", "phase": "p3",
+      "title": "Transactions and concurrency",
+      "tagline": "What the database promises when two things happen at once, and what it does not.",
+      "lessons": [
+        {"title": "ACID and what a transaction promises", "scope": "Atomicity, consistency, isolation, durability in plain terms; commit and rollback; what happens on a crash; autocommit."},
+        {"title": "Isolation levels and their anomalies", "scope": "Read committed, repeatable read, serializable; dirty read, non-repeatable read, phantom, lost update, write skew; which level prevents which."},
+        {"title": "Locks, MVCC, and deadlocks", "scope": "Row locks and table locks, MVCC as snapshots, lock waits, deadlock detection, long transactions holding everything up."},
+        {"title": "Race conditions in application code", "scope": "Check-then-act and read-modify-write races; optimistic locking with a version column vs pessimistic SELECT FOR UPDATE; unique constraints as a race guard; idempotency."}
+      ],
+      "mustCover": ["optimistic vs pessimistic locking", "stronger isolation vs throughput", "short transactions vs convenience"],
+      "failureSignatures": ["two users both got the last seat", "balance off by one update under load", "'deadlock detected'", "queries piling up behind an idle-in-transaction session"]
+    },
+    {
+      "day": 11, "id": "d11", "phase": "p3",
+      "title": "Beyond one database: NoSQL, replication, partitioning",
+      "tagline": "The other datastore families, and what changes when data lives on more than one machine.",
+      "lessons": [
+        {"title": "The NoSQL families and what each optimizes", "scope": "Document (MongoDB), key-value (Redis, DynamoDB), wide-column (Cassandra), graph, search (Elasticsearch), time-series, and vector stores; access patterns first, then the store."},
+        {"title": "Replication and replica lag", "scope": "Leader and followers, synchronous vs asynchronous replication, read replicas, replica lag, read-your-writes, failover."},
+        {"title": "Partitioning and sharding", "scope": "Splitting data by key, hash vs range partitioning, hot keys and skew, cross-shard queries, rebalancing."},
+        {"title": "Consistency models and choosing a store", "scope": "CAP and PACELC in practical terms, strong vs eventual consistency, a decision guide, and why PostgreSQL is a sound default until a specific need appears."}
+      ],
+      "mustCover": ["SQL vs NoSQL", "PostgreSQL vs MongoDB", "strong vs eventual consistency", "read replicas vs caching", "sync vs async replication"],
+      "failureSignatures": ["user saves, refreshes, and sees the old value", "one shard at 100% while others idle", "documents with inconsistent shapes", "data lost after failover"]
+    },
+    {
+      "day": 12, "id": "d12", "phase": "p3",
+      "title": "Caching",
+      "tagline": "The fastest query is the one you do not run, and the hardest bug is the one a cache hides.",
+      "lessons": [
+        {"title": "Layers of cache", "scope": "Browser, CDN, reverse proxy, application memory, Redis, database buffer cache; HTTP caching headers (Cache-Control, ETag); what is safe to cache."},
+        {"title": "Patterns: cache-aside, read-through, write-through, write-behind", "scope": "How each pattern reads and writes, consistency consequences, where the source of truth lives."},
+        {"title": "Invalidation, TTLs, and stampedes", "scope": "TTL choice, explicit invalidation, stale data windows, cache stampede and thundering herd, cold starts, negative caching, eviction policies (LRU, LFU)."},
+        {"title": "Redis vs Memcached, and when the cache is the bug", "scope": "What Redis offers beyond a cache (data structures, persistence, pub/sub), Memcached's simplicity; hit ratio; debugging by bypassing the cache; caching LLM responses and prompt caching."}
+      ],
+      "mustCover": ["Redis vs Memcached", "long TTL vs short TTL", "cache-aside vs write-through", "caching vs fixing the slow query"],
+      "failureSignatures": ["users see stale data after an update", "latency spike right after a deploy or cache flush", "one user's data shown to another", "hit ratio near zero"]
+    },
+    {
+      "day": 13, "id": "d13", "phase": "p3",
+      "title": "Performance: finding the bottleneck",
+      "tagline": "Measure first: latency, throughput, saturation, and the one resource that is holding everything back.",
+      "lessons": [
+        {"title": "Latency, throughput, and percentiles", "scope": "Definitions, the latency budget of a request, tail latency and why fan-out makes it worse, percentiles vs averages."},
+        {"title": "Saturation and queues", "scope": "Utilization vs latency and the hockey-stick curve, queueing in pools and workers, why systems fall over suddenly, Amdahl's law in one example."},
+        {"title": "Profiling and flame graphs", "scope": "Wall-clock vs CPU time, sampling profilers, how to read a flame graph, the usual suspects: database calls, network calls, serialization, lock contention."},
+        {"title": "Load testing and capacity", "scope": "Load, stress, soak, and spike tests; realistic traffic shapes; finding the knee; capacity planning; when optimization is premature."}
+      ],
+      "mustCover": ["optimize the code vs scale the hardware", "latency vs throughput", "batching vs responsiveness", "measuring vs guessing"],
+      "failureSignatures": ["p99 climbs while p50 stays flat", "latency fine until a traffic threshold, then collapse", "CPU low and latency high", "a benchmark that does not match production"]
+    },
+    {
+      "day": 14, "id": "d14", "phase": "p4",
+      "title": "Testing strategy",
+      "tagline": "What each kind of test can and cannot tell you, and why some tests lie.",
+      "lessons": [
+        {"title": "What each level of test buys you", "scope": "Unit, integration, end-to-end, and contract tests; the pyramid and the trophy; speed vs confidence; smoke and regression tests."},
+        {"title": "Mocks, fakes, and the over-mocking trap", "scope": "Stubs, mocks, fakes, spies; testing behavior vs implementation; tests that pass against a mock while production fails; using real dependencies in containers."},
+        {"title": "Flaky tests", "scope": "Causes: time, ordering, shared state, network, concurrency, randomness; how to diagnose a flake; quarantine vs fix; why retries hide real bugs."},
+        {"title": "Test data, coverage, and what to test first", "scope": "Fixtures and factories, isolation between tests, coverage as a floor and its limits, property-based and snapshot testing in brief, turning every bug into a regression test, a preview of testing non-deterministic systems."}
+      ],
+      "mustCover": ["unit vs integration vs end-to-end", "mock vs real dependency", "coverage percentage vs meaningful assertions", "retrying flaky tests vs fixing them"],
+      "failureSignatures": ["tests green, production broken", "test passes alone and fails in the suite", "test fails only in CI", "a test that cannot fail"]
+    },
+    {
+      "day": 15, "id": "d15", "phase": "p4",
+      "title": "Authentication",
+      "tagline": "How a server becomes confident about who is calling.",
+      "lessons": [
+        {"title": "Proving identity: passwords and hashing", "scope": "Authentication vs authorization; password hashing with salts and slow hashes (bcrypt, argon2); credential stuffing, MFA, passkeys in brief."},
+        {"title": "Sessions vs JWTs", "scope": "Server-side sessions with cookies, stateless JWTs (header, payload, signature, expiry), refresh tokens, revocation, where tokens are stored and the risks of each place."},
+        {"title": "OAuth2 and OpenID Connect", "scope": "Roles (resource owner, client, authorization server, resource server), authorization code flow with PKCE, client credentials, scopes, access vs ID tokens, 'Sign in with Google' walked through."},
+        {"title": "API keys, service-to-service auth, and debugging a 401", "scope": "API keys vs OAuth tokens, mTLS and service accounts in brief, key rotation, a checklist for a 401: missing, malformed, expired, wrong audience, wrong environment, clock skew."}
+      ],
+      "mustCover": ["sessions vs JWT", "short-lived vs long-lived tokens", "API keys vs OAuth2", "cookie storage vs local storage"],
+      "failureSignatures": ["401 after exactly one hour", "token valid in staging and rejected in production", "logout that does not log out", "redirect URI mismatch"]
+    },
+    {
+      "day": 16, "id": "d16", "phase": "p4",
+      "title": "Authorization and security",
+      "tagline": "Deciding what a caller may do, and the classic ways systems get broken.",
+      "lessons": [
+        {"title": "Authorization models and broken access control", "scope": "RBAC, ABAC, relationship-based access; least privilege; insecure direct object references; enforcing checks on the server for every request."},
+        {"title": "The classic web attacks", "scope": "SQL injection, cross-site scripting, cross-site request forgery, server-side request forgery; what each exploits and the standard defense; prompt injection as the same class of bug for LLM systems."},
+        {"title": "Encryption, hashing, encoding, and TLS", "scope": "The three are different things; symmetric vs asymmetric; encryption in transit and at rest; certificates and expiry; what TLS does and does not protect."},
+        {"title": "Secrets, least privilege, and threat modeling", "scope": "Secret managers vs environment variables vs code, rotation, leaked keys, dependency and supply chain risk, security headers, a simple threat-modeling routine."}
+      ],
+      "mustCover": ["RBAC vs ABAC", "hashing vs encryption vs encoding", "symmetric vs asymmetric", "security vs usability"],
+      "failureSignatures": ["403 for a user who should have access", "user A can read user B's record by changing an ID", "certificate expired", "a secret committed to Git"]
+    },
+    {
+      "day": 17, "id": "d17", "phase": "p4",
+      "title": "Asynchronous processing: queues and streams",
+      "tagline": "Moving work out of the request, and the new failure modes that come with it.",
+      "lessons": [
+        {"title": "Why move work off the request", "scope": "Background jobs, decoupling, smoothing load, scheduled work; the cost: eventual results, harder debugging, more moving parts."},
+        {"title": "Job queues, brokers, and logs: RabbitMQ vs Kafka", "scope": "Task queues (Celery, BullMQ), message brokers with routing and acknowledgements (RabbitMQ), append-only logs with offsets and consumer groups (Kafka), pub/sub; which fits which problem."},
+        {"title": "Delivery guarantees, retries, and dead letters", "scope": "At-most-once, at-least-once, effectively-once through idempotent consumers; acknowledgements and visibility timeouts; retry with backoff; poison messages and dead-letter queues."},
+        {"title": "Ordering, the outbox, and watching lag", "scope": "Ordering per partition vs global ordering, the dual-write problem and the outbox pattern, monitoring queue depth and consumer lag, tracing across a queue."}
+      ],
+      "mustCover": ["RabbitMQ vs Kafka", "synchronous call vs queue", "at-least-once vs at-most-once", "ordering vs parallelism"],
+      "failureSignatures": ["job ran twice", "queue depth grows without bound", "one bad message blocks the queue", "event published but the database write rolled back"]
+    },
+    {
+      "day": 18, "id": "d18", "phase": "p4",
+      "title": "Distributed systems: how things fail",
+      "tagline": "Partial failure, and the small set of patterns that keep one slow service from taking everything down.",
+      "lessons": [
+        {"title": "Partial failure and the fallacies", "scope": "The network is not reliable, latency is not zero; a call can succeed, fail, or time out without telling you which; slow is worse than down."},
+        {"title": "Timeouts, retries, backoff, and jitter", "scope": "Every remote call needs a timeout, timeout budgets across a call chain, retries with exponential backoff and jitter, retry storms, idempotency as the precondition."},
+        {"title": "Circuit breakers, bulkheads, and load shedding", "scope": "Failing fast, isolating resources, shedding load, graceful degradation, cascading failure walked through step by step."},
+        {"title": "Consistency across services", "scope": "Why distributed transactions are hard, two-phase commit vs sagas with compensation, clocks and ordering, consensus and leader election at concept level."}
+      ],
+      "mustCover": ["retry vs fail fast", "long timeout vs short timeout", "two-phase commit vs saga", "availability vs consistency during a partition"],
+      "failureSignatures": ["one slow dependency exhausts every thread upstream", "recovery followed by a second outage from retries", "order charged but never created", "timestamps from two machines disagree"]
+    },
+    {
+      "day": 19, "id": "d19", "phase": "p4",
+      "title": "System design: scaling and architecture",
+      "tagline": "Scaling up, scaling out, splitting services, and reasoning about a design before building it.",
+      "lessons": [
+        {"title": "Scaling up vs scaling out, and statelessness", "scope": "Vertical vs horizontal scaling, why state is the obstacle, moving sessions and files out of the app server, autoscaling signals."},
+        {"title": "Load balancing", "scope": "Layer 4 vs layer 7, algorithms (round robin, least connections, consistent hashing), health checks, sticky sessions, API gateways and reverse proxies."},
+        {"title": "Monolith, modular monolith, microservices", "scope": "What each costs in operations, debugging, and team coordination; service boundaries; service discovery; when splitting helps and when it only distributes the mess."},
+        {"title": "Walking through a design", "scope": "A worked example: the backend for an LLM chat product. Requirements, back-of-envelope numbers, the data path, bottlenecks, and the tradeoff made at each step."}
+      ],
+      "mustCover": ["vertical vs horizontal scaling", "monolith vs microservices", "sticky sessions vs external session store", "build vs buy a managed service"],
+      "failureSignatures": ["users randomly logged out behind a load balancer", "one instance receives most of the traffic", "a deploy needs five services released in order", "health check passes while the service is broken"]
+    },
+    {
+      "day": 20, "id": "d20", "phase": "p4",
+      "title": "Shipping: Git, CI/CD, containers",
+      "tagline": "How a change travels from a laptop to a running service, and how to trace it back.",
+      "lessons": [
+        {"title": "Git as a debugging tool", "scope": "Commits, branches, merge vs rebase, revert vs reset; log, blame, diff, and bisect as investigation tools; trunk-based vs long-lived branches; pull requests."},
+        {"title": "CI/CD pipelines", "scope": "Stages (lint, test, build, scan, deploy), build artifacts, caching, gates, continuous delivery vs continuous deployment, why a pipeline fails when local runs pass."},
+        {"title": "Containers and images", "scope": "Image vs container, layers and caching, registries and tags, what a Dockerfile describes, containers vs virtual machines, 'works on my machine' explained."},
+        {"title": "Config, environments, and reproducibility", "scope": "Twelve-factor config, environment variables and secrets, dev/staging/production parity, lockfiles and pinned dependencies, immutable artifacts."}
+      ],
+      "mustCover": ["merge vs rebase", "trunk-based vs feature branches", "containers vs virtual machines", "pinning dependencies vs staying current", "'latest' tag vs immutable tags"],
+      "failureSignatures": ["works on my machine, fails in CI", "production runs code nobody can find in Git", "behavior changed with no code change (dependency drift)", "wrong environment variable in one environment"]
+    },
+    {
+      "day": 21, "id": "d21", "phase": "p4",
+      "title": "Running in production: cloud, Kubernetes, releases",
+      "tagline": "Where the code runs, how new versions roll out safely, and what to do when one does not.",
+      "lessons": [
+        {"title": "Cloud building blocks", "scope": "Compute, storage, networking, managed databases; virtual machines vs containers vs serverless; regions and zones; infrastructure as code; cost as an engineering signal."},
+        {"title": "Kubernetes in concepts", "scope": "Pods, deployments, services, ingress; liveness and readiness probes; requests and limits; reading OOMKilled, CrashLoopBackOff, and Pending; autoscaling."},
+        {"title": "Releases: rolling, blue-green, canary, flags", "scope": "How each strategy limits blast radius, feature flags to separate deploy from release, database migrations during a rollout, backward compatibility between versions."},
+        {"title": "Incidents, rollbacks, and postmortems", "scope": "Mitigate first, then diagnose; rollback vs fix forward; incident roles and timeline; blameless postmortems and action items."}
+      ],
+      "mustCover": ["serverless vs containers vs virtual machines", "rolling vs blue-green vs canary", "managed service vs self-hosted", "roll back vs fix forward"],
+      "failureSignatures": ["pod restarts in a loop", "OOMKilled", "errors only during deploys", "new version cannot read data written by the old one", "cold-start latency"]
+    },
+    {
+      "day": 22, "id": "d22", "phase": "p5",
+      "title": "Machine learning fundamentals for engineers",
+      "tagline": "What a model is, how training works, and why ML bugs are silent.",
+      "lessons": [
+        {"title": "Models, parameters, training vs inference", "scope": "A model as a function with learned parameters; supervised, unsupervised, self-supervised, and reinforcement learning on one map; training vs inference as two different systems."},
+        {"title": "Loss, gradients, and optimization", "scope": "Loss as a score to minimize, gradient descent as repeated small corrections, learning rate, batches and epochs, what convergence looks like."},
+        {"title": "Generalization: splits, overfitting, leakage", "scope": "Train, validation, and test sets; overfitting and underfitting; regularization and early stopping; data leakage; distribution shift between training and production."},
+        {"title": "Metrics, and why ML bugs are silent", "scope": "Accuracy, precision, recall, F1, AUC, calibration; choosing a metric for the cost of each error; ML code that runs without errors and is still wrong; baselines and sanity checks."}
+      ],
+      "mustCover": ["precision vs recall", "bigger model vs more data", "simple baseline vs complex model", "bias vs variance"],
+      "failureSignatures": ["great validation score and poor production results", "accuracy of 99% on a class that is 99% of the data", "training loss falls while validation loss rises", "test set leaked into training"]
+    },
+    {
+      "day": 23, "id": "d23", "phase": "p5",
+      "title": "Neural networks, transformers, and LLMs",
+      "tagline": "From layers and embeddings to why a language model answers the way it does.",
+      "lessons": [
+        {"title": "From neurons to embeddings", "scope": "Layers, weights, activations, backpropagation as blame assignment; embeddings as learned coordinates of meaning."},
+        {"title": "Transformers and attention, conceptually", "scope": "Tokens, positional information, attention as 'which earlier tokens matter for this one', stacked layers, parameters and scale, the context window."},
+        {"title": "How an LLM is made", "scope": "Pretraining on next-token prediction, fine-tuning, instruction tuning, reinforcement learning from feedback, LoRA and parameter-efficient tuning, distillation and quantization."},
+        {"title": "Generation: sampling, context, and hallucination", "scope": "Tokenization, temperature and top-p, why outputs differ run to run, context window limits and what falls out, why models state false things confidently, reasoning tokens, knowledge cutoffs."}
+      ],
+      "mustCover": ["temperature low vs high", "bigger model vs smaller faster model", "fine-tuning vs prompting", "long context vs retrieval"],
+      "failureSignatures": ["same prompt, different answers", "model ignores an instruction buried mid-context", "confident wrong facts", "output cut off at the token limit"]
+    },
+    {
+      "day": 24, "id": "d24", "phase": "p5",
+      "title": "The LLM application backend",
+      "tagline": "An LLM call is a slow, expensive, rate-limited, non-deterministic dependency. Build accordingly.",
+      "lessons": [
+        {"title": "Anatomy of an LLM call", "scope": "Messages, system prompt, tools, max tokens, stop reasons, usage accounting; reading a request and response; statelessness of the API."},
+        {"title": "Latency, streaming, and cost", "scope": "Time to first token vs total time, output tokens dominate latency, streaming over SSE, token cost math, prompt caching, batch APIs."},
+        {"title": "Reliability: rate limits, retries, fallbacks, structured output", "scope": "Requests-per-minute and tokens-per-minute limits, 429 and overload errors, timeouts for long generations, retries and idempotency, model fallbacks and gateways, JSON schema outputs and validation, guardrails."},
+        {"title": "Prompt vs retrieval vs fine-tuning, and prompt management", "scope": "A decision guide for changing model behavior; prompts as versioned code; logging prompts and responses safely; regression risk when a model version changes."}
+      ],
+      "mustCover": ["prompting vs RAG vs fine-tuning", "streaming vs waiting for the full response", "large model vs small model routing", "caching responses vs fresh generation"],
+      "failureSignatures": ["stop reason 'max_tokens' with truncated JSON", "429s during a batch job", "latency doubled after the prompt grew", "behavior changed after a model upgrade", "cost spike from a retry loop"]
+    },
+    {
+      "day": 25, "id": "d25", "phase": "p5",
+      "title": "Retrieval and RAG",
+      "tagline": "Giving a model the right documents, and telling a retrieval failure from a generation failure.",
+      "lessons": [
+        {"title": "Embeddings and vector search", "scope": "Text to vectors, similarity measures, approximate nearest neighbor indexes (HNSW, IVF), recall vs latency, pgvector vs a dedicated vector database."},
+        {"title": "The RAG pipeline", "scope": "Ingest, chunk, embed, index, retrieve, rerank, assemble context, generate, cite; chunk size and overlap; hybrid keyword plus vector search; query rewriting."},
+        {"title": "Debugging RAG: retrieval or generation?", "scope": "Checking whether the right chunk was retrieved before blaming the model; stale indexes; permissions; context stuffing and lost-in-the-middle; prompt injection through documents."},
+        {"title": "Evaluating retrieval, and the alternatives", "scope": "Recall at k, precision, MRR, a small labeled set; groundedness checks; long context vs RAG vs agentic search."}
+      ],
+      "mustCover": ["vector vs keyword vs hybrid search", "small chunks vs large chunks", "RAG vs long context vs fine-tuning", "pgvector vs dedicated vector database"],
+      "failureSignatures": ["answer is fluent and wrong because the right chunk was never retrieved", "right chunk retrieved and ignored", "answers cite outdated documents", "retrieval quality dropped after changing the embedding model"]
+    },
+    {
+      "day": 26, "id": "d26", "phase": "p5",
+      "title": "Agents",
+      "tagline": "A model, tools, and a loop: how agents work and the specific ways they go wrong.",
+      "lessons": [
+        {"title": "The agent loop and tool calling", "scope": "Model proposes a tool call, the harness executes it, the result returns to the model, repeat until done; tool schemas and descriptions; stop conditions; who is responsible for what."},
+        {"title": "Context, memory, and state", "scope": "The context window as working memory, compaction and summarization, external memory and files, checkpointing and resuming long runs, durable execution."},
+        {"title": "Orchestration: workflows vs agents, multi-agent, MCP", "scope": "Fixed workflows vs model-directed loops, orchestrator and worker patterns, handoffs and context loss, the Model Context Protocol as a standard for tools."},
+        {"title": "Failure modes, safety, and reading a trajectory", "scope": "Loops, tool misuse, compounding errors, premature stopping, context overflow, prompt injection through tool results; sandboxing and permissions; human approval; reading a run trace step by step."}
+      ],
+      "mustCover": ["workflow vs agent", "single agent vs multi-agent", "more tools vs fewer sharper tools", "autonomy vs human approval"],
+      "failureSignatures": ["agent repeats the same failing tool call", "agent declares success without verifying", "run degrades after context compaction", "tool result contains instructions the agent follows", "cost grows with every turn"]
+    },
+    {
+      "day": 27, "id": "d27", "phase": "p5",
+      "title": "Evaluating LLM and agent systems",
+      "tagline": "Evals are the tests of a non-deterministic system. Building them well is most of the job.",
+      "lessons": [
+        {"title": "Evals vs tests", "scope": "Why exact-match assertions fail for model output, pass rates instead of pass or fail, capability evals vs regression evals, what an eval result does and does not prove."},
+        {"title": "Datasets and graders", "scope": "Building an eval set from real failures and realistic tasks, held-out data, code-based graders, LLM-as-judge and its calibration, human review, grader bugs."},
+        {"title": "Statistics for evals", "scope": "Variance across runs, sample size, confidence intervals, comparing two versions, multiple trials per task, why a two-point change on fifty samples means little."},
+        {"title": "Agent evals, online evals, and debugging an eval", "scope": "Outcome grading vs trajectory grading, checking environment state, resetting sandboxes, infrastructure failures counted as model failures; A/B tests and production signals; Goodhart's law, contamination, and overfitting to the eval."}
+      ],
+      "mustCover": ["code grader vs LLM judge vs human", "offline eval vs online A/B test", "grading the outcome vs grading the trajectory", "large noisy eval vs small careful eval"],
+      "failureSignatures": ["score moved and nobody knows whether it is noise", "eval passes while users complain", "a grader that accepts wrong answers", "failures caused by the harness timing out", "eval set leaked into the prompt or training data"]
+    },
+    {
+      "day": 28, "id": "d28", "phase": "p5",
+      "title": "Reinforcement learning",
+      "tagline": "Learning from reward: the loop, the algorithm families, and why the agent optimizes what you measured.",
+      "lessons": [
+        {"title": "The RL loop: states, actions, rewards", "scope": "Agent and environment, episodes, return and discounting, the Markov decision process as a frame, exploration vs exploitation, bandits as the simplest case."},
+        {"title": "Value, policy, and the algorithm families", "scope": "Value functions and policies; value-based methods (Q-learning, DQN), policy gradients (REINFORCE, PPO), actor-critic; on-policy vs off-policy; model-free vs model-based. Concepts and tradeoffs only."},
+        {"title": "Reward design and reward hacking", "scope": "Sparse vs dense rewards, credit assignment, reward shaping, specification gaming with concrete examples, why a rising reward curve is not proof of the behavior you wanted."},
+        {"title": "RL for LLMs and agents, and why runs are hard to debug", "scope": "RL from human feedback, RL on agent tasks with graders and verifiers as reward, environments and their bugs, instability, seed sensitivity, reproducibility, offline RL in brief."}
+      ],
+      "mustCover": ["exploration vs exploitation", "on-policy vs off-policy", "sparse vs shaped reward", "value-based vs policy-based", "supervised fine-tuning vs RL"],
+      "failureSignatures": ["reward climbs while the task is not being solved", "results differ wildly across seeds", "policy collapses to one action", "agent exploits a bug in the environment or grader"]
+    },
+    {
+      "day": 29, "id": "d29", "phase": "p5",
+      "title": "Training and serving infrastructure",
+      "tagline": "Data pipelines, GPUs, checkpoints, and the signals that tell you a run is healthy.",
+      "lessons": [
+        {"title": "The training pipeline end to end", "scope": "Data collection, cleaning, versioning, tokenization, the training loop, checkpoints, evaluation; GPUs, memory, and batch size; distributed training and mixed precision at concept level."},
+        {"title": "Reading a training run", "scope": "Loss curves: healthy, diverging, plateaued, overfitting, NaN; learning rate and warmup, gradient clipping; experiment tracking; changing one thing at a time."},
+        {"title": "Serving models", "scope": "Latency vs throughput on GPUs, dynamic batching, quantization and distillation, token streaming, autoscaling and cold starts, hosted API vs self-hosted model."},
+        {"title": "MLOps: versioning, drift, and reproducibility", "scope": "Versioning data, code, config, and weights together; model registry and staged rollout; monitoring data drift and quality in production; feedback loops; how MLOps differs from DevOps."}
+      ],
+      "mustCover": ["hosted API vs self-hosted model", "batch size large vs small", "quantized vs full-precision model", "train from scratch vs fine-tune"],
+      "failureSignatures": ["loss becomes NaN", "out-of-memory on the GPU", "cannot reproduce last week's result", "quality decays slowly in production", "training resumed from the wrong checkpoint"]
+    },
+    {
+      "day": 30, "id": "d30", "phase": "p6",
+      "title": "Capstone: incidents across the whole stack",
+      "tagline": "Six incidents that cross layers, then the final exam.",
+      "lessons": [
+        {"title": "The master map: from symptom to layer", "scope": "A synthesis lesson. One decision procedure that starts from the symptom (error, slow, wrong, intermittent, costly) and narrows to a layer: network, HTTP, app runtime, database, cache, queue, dependency, deploy, model, retrieval, agent harness, eval."},
+        {"title": "The tradeoff ledger", "scope": "A synthesis lesson. The recurring tradeoffs of the month side by side: consistency vs availability, latency vs throughput, simplicity vs flexibility, speed of change vs safety, cost vs quality, determinism vs capability."},
+        {"title": "Keeping the skill", "scope": "A short lesson on practice after day 30: write postmortems for your own bugs, keep a debugging journal, read one incident report a week, turn each failure into a regression test or eval case."}
+      ],
+      "mustCover": ["cross-layer reasoning: each drill must involve at least two different days' topics, and at least three drills must involve the AI system (LLM calls, RAG, agent, or eval harness) interacting with classic backend parts"],
+      "failureSignatures": ["a symptom whose obvious cause is wrong", "two simultaneous changes", "an eval regression caused by infrastructure", "a cache or queue masking the real fault"]
+    }
+  ]
+}

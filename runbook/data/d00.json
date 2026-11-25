@@ -1,0 +1,276 @@
+{
+  "id": "d00",
+  "day": 0,
+  "example": true,
+  "phase": "p1",
+  "title": "Worked example: rate limiting",
+  "tagline": "A short sample day that uses every block and question type. Not part of the thirty days.",
+  "minutes": 20,
+  "why": "Rate limits are the most common reason an eval run or a batch job fails halfway. If you can read a 429 and its headers, you can tell in seconds whether the fault is your client, your quota, or the server.",
+  "objectives": [
+    "Explain what a token bucket allows that a fixed window does not",
+    "Read a 429 response and say how long to wait before retrying",
+    "Tell a rate limit from an overloaded server using the status code and headers"
+  ],
+  "lessons": [
+    {
+      "id": "d00-l1",
+      "title": "How a rate limit decides",
+      "minutes": 7,
+      "blocks": [
+        {"t": "p", "text": "A **rate limit** is a rule that caps how many requests one caller may make in a period of time. The server keeps a counter per caller, usually in Redis, and rejects requests that exceed the cap with status `429 Too Many Requests`."},
+        {"t": "p", "text": "The limit protects the service from one noisy client. For Relay, it stops a single customer's script from using all the LLM quota that every other customer shares."},
+        {"t": "h", "text": "Three ways to count"},
+        {"t": "compare",
+          "caption": "Rate limiting algorithms",
+          "columns": ["", "Fixed window", "Sliding window", "Token bucket"],
+          "rows": [
+            ["How it counts", "Requests per calendar minute", "Requests in the last 60 seconds", "Tokens refill at a steady rate; each request spends one"],
+            ["Allows bursts", "Yes, and double at the window edge", "No", "Yes, up to the bucket size"],
+            ["State per caller", "One counter", "A timestamp list or two counters", "A token count and a timestamp"],
+            ["Typical surprise", "200 requests in two seconds around the boundary", "More memory per caller", "A long idle period buys a large burst"]
+          ],
+          "verdict": "Token bucket is the usual default because it permits short bursts while holding the long-run average."},
+        {"t": "analogy", "text": "A token bucket is a parking garage with a fixed number of spaces that free up at a steady rate. A burst of cars can enter while spaces remain, then arrivals must wait. The analogy stops at one point: cars leave when they choose, tokens refill on a clock."},
+        {"t": "flow",
+          "title": "One request through the limiter",
+          "steps": [
+            {"actor": "Client", "label": "Sends request with an API key", "detail": "The key identifies who to count against. Without it, the limiter falls back to the IP address.", "fail": "Many users behind one office IP share a single limit and block each other."},
+            {"actor": "nginx", "label": "Forwards to the API", "detail": "The proxy adds the original client IP in a header so the API does not see the proxy's own address.", "fail": "If the header is missing, every request appears to come from the proxy and one counter throttles everyone."},
+            {"actor": "API", "label": "Asks Redis to take one token", "detail": "The check and the decrement happen in one atomic Redis operation so two concurrent requests cannot both take the last token.", "fail": "If Redis is down, the API must choose: reject everything or allow everything."},
+            {"actor": "API", "label": "Returns 200 or 429", "detail": "A 429 carries `Retry-After` so a well-behaved client knows how long to wait."}
+          ]},
+        {"t": "tradeoff",
+          "title": "When the limiter's own store is down",
+          "options": [
+            {"name": "Fail open", "gain": ["The product keeps working", "No outage caused by the limiter"], "cost": ["No protection during the incident", "A burst can reach the database or the LLM quota"], "choose": "Choose this when the limiter exists for fairness and a short gap is tolerable."},
+            {"name": "Fail closed", "gain": ["Downstream systems stay protected", "Abuse is still blocked"], "cost": ["A Redis outage becomes a full outage", "Harder to explain to users"], "choose": "Choose this when the limit protects money or a hard quota, such as paid LLM calls."}
+          ]},
+        {"t": "callout", "kind": "insight", "title": "A 429 is the server working correctly", "text": "A 429 means the request arrived, was identified, and was refused on purpose. The network, TLS, and the server process are all healthy. The fix is on the caller's side: slow down, or ask for a higher limit."},
+        {"t": "check",
+          "q": "A limit of 100 requests per minute uses fixed windows. A client sends 100 requests at 12:00:59 and 100 more at 12:01:00. What happens?",
+          "options": ["All 200 succeed", "The second 100 are rejected", "Every other request is rejected"],
+          "answer": 0,
+          "explain": "Each burst falls in a different calendar minute, so each window sees exactly 100. This boundary burst is the known weakness of fixed windows."}
+      ]
+    },
+    {
+      "id": "d00-l2",
+      "title": "Reading a 429 and reacting to it",
+      "minutes": 6,
+      "blocks": [
+        {"t": "p", "text": "A good rate limiter tells you its state in response headers on every request, including the ones that succeed. Reading them turns a mystery failure into a schedule."},
+        {"t": "code",
+          "lang": "http",
+          "title": "A throttled LLM API call",
+          "code": "POST /v1/messages HTTP/1.1\nHost: api.llm-provider.example\nAuthorization: Bearer sk-...\nContent-Type: application/json\n\nHTTP/1.1 429 Too Many Requests\nretry-after: 12\nx-ratelimit-limit-tokens: 400000\nx-ratelimit-remaining-tokens: 0\nx-ratelimit-reset-tokens: 2025-01-14T09:31:12Z\nx-request-id: req_01HV9Z\n\n{\"error\": {\"type\": \"rate_limit_error\", \"message\": \"Token limit exceeded\"}}",
+          "notes": [
+            "`retry-after: 12` is the answer to 'when may I try again', in seconds.",
+            "The exhausted budget is **tokens**, not requests. Sending fewer, larger requests would not help.",
+            "`x-request-id` is what you quote to the provider's support, and what you search for in your own logs."
+          ]},
+        {"t": "layers",
+          "title": "Where a limit can be enforced",
+          "layers": [
+            {"name": "CDN or edge", "role": "Blocks abusive traffic by IP before it reaches you.", "breaks": "Legitimate users behind a shared IP are blocked together."},
+            {"name": "API gateway or nginx", "role": "Per-key limits on request count.", "breaks": "Limits apply per gateway instance if state is not shared, so the real limit is a multiple of the configured one."},
+            {"name": "Application", "role": "Limits that need business context, such as tokens per customer per day.", "breaks": "The counter and the work are not atomic, so concurrent requests overshoot."},
+            {"name": "Upstream provider", "role": "The LLM provider's own limits on your account.", "breaks": "All your customers share it, so one heavy customer starves the rest."}
+          ]},
+        {"t": "list", "style": "number", "items": [
+          "Read the status code. 429 means you are over a limit; 503 or 529 means the server is overloaded regardless of your usage.",
+          "Read `retry-after` and wait at least that long.",
+          "Retry with exponential backoff and random jitter so that many clients do not all retry at the same instant.",
+          "If 429s persist at low volume, check that you are using the key and environment you think you are."
+        ]},
+        {"t": "callout", "kind": "pitfall", "title": "Retrying immediately makes it worse", "text": "A tight retry loop spends the budget the moment it refills, so the client stays throttled forever and every other job sharing the key is throttled with it."},
+        {"t": "callout", "kind": "debug", "title": "429s in an eval run", "text": "Count failures by status code before reading any model output. If the failed cases are 429s, the eval measured your concurrency setting, and the scores for that run are not comparable with earlier runs."},
+        {"t": "callout", "kind": "ai", "title": "LLM limits are measured in tokens", "text": "Providers limit requests per minute and tokens per minute separately. A long prompt can exhaust the token budget while the request count looks tiny."},
+        {"t": "callout", "kind": "rule", "title": "Rule of thumb", "text": "Set client concurrency so that steady-state usage sits near 70 percent of the limit. The remaining headroom absorbs retries."},
+        {"t": "reveal", "prompt": "Your nightly eval ran 300 cases with 50 concurrent workers and 41 failed. Before opening any transcript, what single breakdown tells you whether the model got worse?", "answer": "Failures grouped by error type. If most of the 41 are 429 or timeout errors, the failures come from infrastructure. Only cases that completed and were graded as wrong say anything about the model."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "429 Too Many Requests on a fraction of calls during a batch or eval run",
+      "causes": ["Concurrency is higher than the account's rate limit allows", "Another job shares the same API key"],
+      "look": "The response headers on a failed call: which budget is at zero, requests or tokens, and the `retry-after` value.",
+      "confirm": "Failures cluster in time and disappear when concurrency is halved.",
+      "fix": "Lower concurrency and add backoff with jitter. This trades a longer run for a complete one."
+    },
+    {
+      "symptom": "Every user is throttled at once, at low total traffic",
+      "causes": ["The limiter keys on the proxy's IP instead of the real client", "One shared counter for all callers"],
+      "look": "The key the limiter uses, and whether the forwarded-for header reaches the application.",
+      "confirm": "The limiter's store holds a single key with a very high count.",
+      "fix": "Key the limit on the API key or the forwarded client IP."
+    },
+    {
+      "symptom": "Throttled clients never recover",
+      "causes": ["Clients retry immediately and spend each refill"],
+      "look": "Request timestamps from one throttled client.",
+      "confirm": "Retries arrive within milliseconds of each 429.",
+      "fix": "Honor `retry-after` and use exponential backoff with jitter."
+    }
+  ],
+  "glossary": [
+    {"term": "Rate limit", "def": "A cap on how many requests or tokens a caller may use in a period of time."},
+    {"term": "Token bucket", "def": "A limiting algorithm in which allowance refills at a steady rate up to a maximum, and each request spends some of it."},
+    {"term": "Backoff", "def": "Waiting longer between each successive retry, usually doubling the wait."},
+    {"term": "Jitter", "def": "A random amount added to a wait so that many clients do not retry at the same instant."}
+  ],
+  "apply": {
+    "title": "Find your own rate limit headroom",
+    "minutes": 10,
+    "steps": [
+      "Make one call to the LLM API your project uses and print every response header.",
+      "Find the headers that report the limit and the remaining allowance for requests and for tokens.",
+      "Work out how many of your typical calls fit in one minute, and compare that with the concurrency your eval or batch script uses."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d00-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["rate-limit", "status-codes"],
+      "diagnostic": true,
+      "q": "A client receives `429 Too Many Requests` from an API. What does this prove about the request?",
+      "options": [
+        "It reached the server and was refused on purpose",
+        "It was lost in the network before arriving",
+        "It crashed the application while being handled",
+        "It carried credentials the server did not accept"
+      ],
+      "answer": 0,
+      "explain": "A 429 is a deliberate refusal by a healthy server that identified the caller and found it over its allowance. A lost request produces a timeout, a crash produces a 500, and bad credentials produce a 401.",
+      "why": ["", "A lost request produces a timeout or connection error, with no status code at all.", "A crash while handling produces a 500.", "Rejected credentials produce a 401."]
+    },
+    {
+      "id": "d00-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["rate-limit", "llm-api"],
+      "context": "Relay's nightly eval sends 20 requests per minute, far below the limit of 1,000 requests per minute, and still receives 429s.",
+      "artifact": {"lang": "http", "code": "HTTP/1.1 429 Too Many Requests\nretry-after: 31\nx-ratelimit-remaining-requests: 962\nx-ratelimit-remaining-tokens: 0"},
+      "q": "What is the most likely cause?",
+      "options": [
+        "The eval prompts are long and exhaust the tokens-per-minute budget",
+        "The provider is overloaded and shedding load from everyone",
+        "The API key has been revoked or has expired",
+        "The requests are malformed and fail validation"
+      ],
+      "answer": 0,
+      "explain": "Remaining requests is 962 while remaining tokens is 0, so the token budget is the one that ran out. Overload would return 503 or 529, a revoked key 401, and malformed input 400.",
+      "why": ["", "Overload is reported as 503 or 529, and would not show a per-account token budget at zero.", "A revoked key returns 401.", "Validation failures return 400 or 422."]
+    },
+    {
+      "id": "d00-q03",
+      "type": "multi",
+      "level": 2,
+      "tags": ["retries", "backoff"],
+      "q": "Which of these make a retry policy safe under rate limiting? Select all that apply.",
+      "options": [
+        "Waiting at least the `retry-after` value",
+        "Doubling the wait after each failed attempt",
+        "Adding a random offset to each wait",
+        "Retrying at once so the request is first in line",
+        "Raising concurrency to finish before the limit resets"
+      ],
+      "answers": [0, 1, 2],
+      "explain": "Honoring the server's hint, backing off exponentially, and adding jitter all reduce pressure. Immediate retries and higher concurrency spend each refill instantly and keep the client throttled."
+    },
+    {
+      "id": "d00-q04",
+      "type": "order",
+      "level": 2,
+      "tags": ["rate-limit", "request-path"],
+      "q": "Put the steps of a rate-limited request in the order they happen.",
+      "items": [
+        "The client sends a request with its API key",
+        "The proxy forwards it and records the client IP in a header",
+        "The API atomically takes one token from the caller's bucket in Redis",
+        "The API runs the handler",
+        "The API returns the response with rate limit headers"
+      ],
+      "explain": "The limiter runs before the handler so that refused requests cost almost nothing. The check and decrement are one atomic step so concurrent requests cannot share the last token."
+    },
+    {
+      "id": "d00-q05",
+      "type": "match",
+      "level": 3,
+      "tags": ["rate-limit", "diagnosis"],
+      "q": "Match each observation to its most likely cause.",
+      "pairs": [
+        ["Every user throttled at low traffic", "The limiter is keyed on the proxy's IP"],
+        ["429s only at minute boundaries", "Fixed windows with bursty clients"],
+        ["Real limit is three times the configured one", "Three gateway instances keep separate counters"],
+        ["Throttled client never recovers", "Immediate retries spend each refill"]
+      ],
+      "explain": "Each symptom follows from where the count is kept and what it is keyed on. Asking 'what is the key, and where is the counter stored' resolves most rate limit mysteries."
+    },
+    {
+      "id": "d00-q06",
+      "type": "open",
+      "level": 3,
+      "tags": ["rate-limit", "evals"],
+      "context": "Last night's eval pass rate fell from 86 percent to 71 percent. The prompt did not change. Concurrency was raised from 10 to 50 to make the run faster.",
+      "q": "Explain how you would decide whether the model's quality dropped.",
+      "rubric": [
+        "Separates infrastructure failures (429, timeout) from graded wrong answers",
+        "Checks failure counts by error type before reading transcripts",
+        "Links the higher concurrency to rate limiting as the likely cause",
+        "Proposes rerunning at the old concurrency, or excluding and retrying errored cases, before comparing scores"
+      ],
+      "model": "Group the failed cases by error type first. If the new failures are mostly 429s or timeouts, they come from raising concurrency past the rate limit, and the model was never graded on those cases. Rerun the errored cases with lower concurrency and backoff, then compare pass rates only over cases that completed in both runs. Only a drop among completed, graded cases says anything about quality."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d00-x1",
+      "title": "The eval that failed at 2 a.m.",
+      "brief": "Relay's nightly eval reported a pass rate of 58 percent, down from 85 percent the night before. Yesterday a teammate merged two changes: a longer system prompt, and a second scheduled job that re-embeds help-center articles at the same hour using the same API key.",
+      "artifact": {"lang": "log", "title": "eval-runner, last 5 lines", "code": "02:04:11 case=217 status=error err=RateLimitError retry=0\n02:04:11 case=218 status=error err=RateLimitError retry=0\n02:04:12 case=219 status=pass\n02:04:12 case=220 status=error err=RateLimitError retry=0\n02:04:13 summary pass=174 fail=31 error=95 total=300"},
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Revert the longer system prompt, since it changed model behavior",
+            "Recompute the pass rate over only the cases that completed",
+            "Open the failing transcripts and read the model's answers",
+            "Ask the provider to raise the account's rate limit"
+          ],
+          "answer": 1,
+          "explain": "The summary shows 95 errors, so the 58 percent mixes two different things. Separating errored cases from graded ones is free and tells you which problem you have. Reverting or escalating before that is guessing.",
+          "reveal": "Of the 205 cases that completed, 174 passed. That is 85 percent, the same as the night before. The model did not get worse."
+        },
+        {
+          "q": "The errors are all `RateLimitError`. Which change is the more likely cause?",
+          "options": [
+            "The longer system prompt alone",
+            "The re-embedding job on the same API key",
+            "A provider outage that happened to coincide",
+            "A bug in the grader"
+          ],
+          "answer": 1,
+          "explain": "Rate limits are per account or key, so a second heavy job on the same key at the same hour takes budget from the eval. The longer prompt adds some tokens per case, which contributes, and the response headers would say how much.",
+          "reveal": "The headers on a failed call show remaining tokens at zero and remaining requests healthy. The re-embedding job's logs show it sending large batches between 02:00 and 02:20.",
+          "artifact": {"lang": "http", "code": "HTTP/1.1 429 Too Many Requests\nretry-after: 22\nx-ratelimit-remaining-requests: 940\nx-ratelimit-remaining-tokens: 0"}
+        },
+        {
+          "q": "The log shows `retry=0` on every errored case. What is the most durable fix?",
+          "options": [
+            "Move the re-embedding job to a different hour and leave the runner as it is",
+            "Add retries with backoff and jitter, and report errored cases separately from failed ones",
+            "Lower the eval to 100 cases so it fits in the budget",
+            "Raise concurrency so the eval finishes before the other job starts"
+          ],
+          "answer": 1,
+          "explain": "Moving the job removes tonight's collision but leaves the runner unable to survive any future throttling, and leaves the misleading score. Retrying with backoff makes the run complete, and reporting errors separately stops infrastructure trouble from looking like a quality regression."
+        }
+      ],
+      "debrief": "Root cause: two jobs shared one token-per-minute budget, and the eval runner treated rate limit errors as failed cases with no retry. The fix has two parts: retry with backoff and jitter, and report errors separately from graded failures. The general lesson is to split 'did not run' from 'ran and was wrong' before interpreting any score."
+    }
+  ]
+}
