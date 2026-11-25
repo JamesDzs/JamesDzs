@@ -19,8 +19,12 @@
       "title": "Evals vs tests",
       "minutes": 13,
       "blocks": [
-        {"t": "p", "text": "An **eval** is a set of tasks run against a system, with a **grader** that scores each output, producing a rate rather than a single pass or fail. A unit test asserts that deterministic code returns an exact value. Model output changes wording from run to run and has many acceptable forms, so exact-match assertions either fail on correct answers or get loosened until they catch nothing."},
-        {"t": "code",
+        {
+          "t": "p",
+          "text": "An **eval** is a set of tasks run against a system, with a **grader** that scores each output, producing a rate rather than a single pass or fail. A unit test asserts that deterministic code returns an exact value. Model output changes wording from run to run and has many acceptable forms, so exact-match assertions either fail on correct answers or get loosened until they catch nothing."
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "One case, three runs, an exact-match grader",
           "code": "case T-40211  \"Can I return a swimsuit I bought on sale?\"\nexpected (exact): \"No. Final sale items cannot be returned.\"\n\nrun 1: \"Unfortunately not. Items bought as final sale can't be returned.\"   FAIL\nrun 2: \"No. Final sale items cannot be returned.\"                           PASS\nrun 3: \"Yes, you can return it within 14 days.\"                             FAIL",
@@ -28,29 +32,86 @@
             "Run 1 is correct and fails. Run 3 is wrong and fails. The grader cannot tell them apart.",
             "A useful grader checks the decision (no return) and the reason (final sale), not the wording.",
             "Three runs of one case gave two different correct phrasings and one wrong answer. That variation is normal, and it is why one run proves little."
-          ]},
-        {"t": "compare",
+          ]
+        },
+        {
+          "t": "compare",
           "caption": "What changes when the system is non-deterministic",
-          "columns": ["", "Unit test", "Eval"],
-          "rows": [
-            ["Output", "The same every run", "Varies run to run"],
-            ["Check", "Exact equality", "A grader scoring against criteria"],
-            ["Result", "Pass or fail", "A rate, with uncertainty"],
-            ["One failure means", "A bug to fix", "Possibly noise; look at the distribution"],
-            ["When it runs", "Every commit", "Every prompt, model, or tool change, and nightly"]
+          "columns": [
+            "",
+            "Unit test",
+            "Eval"
           ],
-          "verdict": "Keep unit tests for the deterministic parts, such as parsers, tools, and the harness. Use evals for anything a model produces."},
-        {"t": "h", "text": "Capability evals and regression evals"},
-        {"t": "p", "text": "A **capability eval** holds hard tasks the system may not handle yet; it starts low and you hope to see it climb. A **regression eval** holds tasks the system already handles; it should sit near 100 percent, and any drop is news. Relay keeps both. Averaging them into one number hides both signals: a gain on hard tasks can mask a break in old behavior."},
-        {"t": "p", "text": "A pass rate is an estimate of performance on tasks like those in the set, run through this harness, graded by this grader, at this time. It does not cover tasks unlike the set, it does not prove the grader is right, and it carries sampling error. Every one of those limits is a way for an eval to pass while users complain."},
-        {"t": "callout", "kind": "pitfall", "title": "Loosening the check until it passes", "text": "A grader that fails on correct paraphrases tempts you to check for a keyword instead. A check for the word 'no' then passes 'No problem, you can return it within 14 days'. Each loosening should come with a known-wrong output that must still fail."},
-        {"t": "callout", "kind": "insight", "title": "The eval set is the specification", "text": "For a model-driven system, the eval set is the closest thing to a spec. If a behavior matters and no case checks it, you will not notice when it breaks. Every production bug should become a case."},
-        {"t": "check",
+          "rows": [
+            [
+              "Output",
+              "The same every run",
+              "Varies run to run"
+            ],
+            [
+              "Check",
+              "Exact equality",
+              "A grader scoring against criteria"
+            ],
+            [
+              "Result",
+              "Pass or fail",
+              "A rate, with uncertainty"
+            ],
+            [
+              "One failure means",
+              "A bug to fix",
+              "Possibly noise; look at the distribution"
+            ],
+            [
+              "When it runs",
+              "Every commit",
+              "Every prompt, model, or tool change, and nightly"
+            ]
+          ],
+          "verdict": "Keep unit tests for the deterministic parts, such as parsers, tools, and the harness. Use evals for anything a model produces."
+        },
+        {
+          "t": "h",
+          "text": "Capability evals and regression evals"
+        },
+        {
+          "t": "p",
+          "text": "A **capability eval** holds hard tasks the system may not handle yet; it starts low and you hope to see it climb. A **regression eval** holds tasks the system already handles; it should sit near 100 percent, and any drop is news. Relay keeps both. Averaging them into one number hides both signals: a gain on hard tasks can mask a break in old behavior."
+        },
+        {
+          "t": "p",
+          "text": "A pass rate is an estimate of performance on tasks like those in the set, run through this harness, graded by this grader, at this time. It does not cover tasks unlike the set, it does not prove the grader is right, and it carries sampling error. Every one of those limits is a way for an eval to pass while users complain."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Loosening the check until it passes",
+          "text": "A grader that fails on correct paraphrases tempts you to check for a keyword instead. A check for the word 'no' then passes 'No problem, you can return it within 14 days'. Each loosening should come with a known-wrong output that must still fail."
+        },
+        {
+          "t": "callout",
+          "kind": "insight",
+          "title": "The eval set is the specification",
+          "text": "For a model-driven system, the eval set is the closest thing to a spec. If a behavior matters and no case checks it, you will not notice when it breaks. Every production bug should become a case."
+        },
+        {
+          "t": "check",
           "q": "Relay's regression eval has 200 cases. A prompt change moves it from 194 passing to 182, while the capability eval rises from 41 to 48 percent. Thirteen cases went from pass to fail and one from fail to pass. What do you do next?",
-          "options": ["Ship, because the capability gain outweighs the regression", "Read the 13 newly failing cases before deciding anything", "Rerun the capability eval to confirm the gain", "Average the two evals and ship if the average rose"],
+          "options": [
+            "Ship, because the capability gain outweighs the regression",
+            "Read the 13 newly failing cases before deciding anything",
+            "Rerun the capability eval to confirm the gain",
+            "Average the two evals and ship if the average rose"
+          ],
           "answer": 1,
-          "explain": "Regression cases are behavior users already rely on, so 13 new failures are 13 things that broke. Reading them tells you whether they are real breaks or grader artifacts. Trading old behavior for new capability is a decision to make knowingly, not by averaging."},
-        {"t": "reveal", "prompt": "Relay passes 90 percent of its nightly eval. Why might customers still see far more than 10 percent bad answers?", "answer": "The eval measures the tasks in the set, not the traffic. If the set was built from easy or old tickets, if the grader accepts some wrong answers, or if production has kinds of question the set lacks, the live failure rate can be much higher. Sample real conversations with bad outcomes and add them to the set."}
+          "explain": "Regression cases are behavior users already rely on, so 13 new failures are 13 things that broke. Reading them tells you whether they are real breaks or grader artifacts. Trading old behavior for new capability is a decision to make knowingly, not by averaging."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Relay passes 90 percent of its nightly eval. Why might customers still see far more than 10 percent bad answers?",
+          "answer": "The eval measures the tasks in the set, not the traffic. If the set was built from easy or old tickets, if the grader accepts some wrong answers, or if production has kinds of question the set lacks, the live failure rate can be much higher. Sample real conversations with bad outcomes and add them to the set."
+        }
       ]
     },
     {
@@ -58,33 +119,100 @@
       "title": "Datasets and graders",
       "minutes": 15,
       "blocks": [
-        {"t": "p", "text": "An eval is only as good as its cases and its grader. The cases decide what you measure. The grader decides whether you measure it correctly. Most bad eval results trace back to one of the two, not to the model."},
-        {"t": "list", "style": "bullet", "items": [
-          "**Real failures**: every bug report or bad production conversation, turned into a case with the correct outcome.",
-          "**Sampled traffic**: recorded tickets drawn to match the real mix of questions, so the score reflects what users ask.",
-          "**Edge cases**: ambiguous requests, two orders in one ticket, out-of-scope questions, attempts to talk Relay into a refund.",
-          "**Cases where the right answer is to refuse or escalate**, so a system that always acts does not score well.",
-          "**Synthetic variants**: model-written rephrasings of real cases, each one reviewed by a person before it enters the set."
-        ]},
-        {"t": "p", "text": "Keep a **held-out set** that you do not look at while tuning prompts. If you edit the prompt until the development set passes, the development score overstates real quality, exactly like overfitting a model to its training data. The held-out score tells you whether a gain generalizes."},
-        {"t": "tradeoff",
+        {
+          "t": "p",
+          "text": "An eval is only as good as its cases and its grader. The cases decide what you measure. The grader decides whether you measure it correctly. Most bad eval results trace back to one of the two, not to the model."
+        },
+        {
+          "t": "list",
+          "style": "bullet",
+          "items": [
+            "**Real failures**: every bug report or bad production conversation, turned into a case with the correct outcome.",
+            "**Sampled traffic**: recorded tickets drawn to match the real mix of questions, so the score reflects what users ask.",
+            "**Edge cases**: ambiguous requests, two orders in one ticket, out-of-scope questions, attempts to talk Relay into a refund.",
+            "**Cases where the right answer is to refuse or escalate**, so a system that always acts does not score well.",
+            "**Synthetic variants**: model-written rephrasings of real cases, each one reviewed by a person before it enters the set."
+          ]
+        },
+        {
+          "t": "p",
+          "text": "Keep a **held-out set** that you do not look at while tuning prompts. If you edit the prompt until the development set passes, the development score overstates real quality, exactly like overfitting a model to its training data. The held-out score tells you whether a gain generalizes."
+        },
+        {
+          "t": "tradeoff",
           "title": "Large noisy eval or small careful eval",
           "options": [
-            {"name": "Large, auto-collected set", "gain": ["Narrow confidence intervals", "Broad coverage of the traffic"], "cost": ["Some labels are wrong", "Graders must be automatic, so shortcuts creep in", "Slower and costlier per run"], "choose": "Choose this when you need to detect small differences and correctness can be checked by code."},
-            {"name": "Small, hand-labeled set", "gain": ["Every label trusted", "Failures are few enough to read", "Fast to run"], "cost": ["Wide intervals: only large changes show", "Narrow coverage"], "choose": "Choose this early in a project, or when each case needs human judgment to grade."}
-          ]},
-        {"t": "compare",
+            {
+              "name": "Large, auto-collected set",
+              "gain": [
+                "Narrow confidence intervals",
+                "Broad coverage of the traffic"
+              ],
+              "cost": [
+                "Some labels are wrong",
+                "Graders must be automatic, so shortcuts creep in",
+                "Slower and costlier per run"
+              ],
+              "choose": "Choose this when you need to detect small differences and correctness can be checked by code."
+            },
+            {
+              "name": "Small, hand-labeled set",
+              "gain": [
+                "Every label trusted",
+                "Failures are few enough to read",
+                "Fast to run"
+              ],
+              "cost": [
+                "Wide intervals: only large changes show",
+                "Narrow coverage"
+              ],
+              "choose": "Choose this early in a project, or when each case needs human judgment to grade."
+            }
+          ]
+        },
+        {
+          "t": "compare",
           "caption": "Three kinds of grader",
-          "columns": ["", "Code grader", "LLM judge", "Human review"],
-          "rows": [
-            ["Good for", "Exact facts, tool called, valid JSON, database state", "Tone, helpfulness, rubric points, groundedness", "Ground truth, ambiguous cases, checking the other two"],
-            ["Cost and speed", "Free and instant", "A model call per case", "Slow and expensive"],
-            ["Consistency", "Deterministic", "Varies with judge prompt and model", "Varies between people"],
-            ["Typical failure", "Too strict or too loose matching", "Lenient, favors long or confident answers", "Fatigue and unclear rubrics"]
+          "columns": [
+            "",
+            "Code grader",
+            "LLM judge",
+            "Human review"
           ],
-          "verdict": "Use code wherever correctness is checkable, an LLM judge for what code cannot check, and humans to calibrate the judge and settle disagreements."},
-        {"t": "p", "text": "An **LLM judge** is a model asked to grade an output against a rubric. Before trusting one, have a person label a sample of outputs, run the judge on the same sample, and compare. The direction of disagreement matters: a judge that passes outputs a human would fail inflates your score. Recheck whenever the judge prompt or model changes."},
-        {"t": "code",
+          "rows": [
+            [
+              "Good for",
+              "Exact facts, tool called, valid JSON, database state",
+              "Tone, helpfulness, rubric points, groundedness",
+              "Ground truth, ambiguous cases, checking the other two"
+            ],
+            [
+              "Cost and speed",
+              "Free and instant",
+              "A model call per case",
+              "Slow and expensive"
+            ],
+            [
+              "Consistency",
+              "Deterministic",
+              "Varies with judge prompt and model",
+              "Varies between people"
+            ],
+            [
+              "Typical failure",
+              "Too strict or too loose matching",
+              "Lenient, favors long or confident answers",
+              "Fatigue and unclear rubrics"
+            ]
+          ],
+          "verdict": "Use code wherever correctness is checkable, an LLM judge for what code cannot check, and humans to calibrate the judge and settle disagreements."
+        },
+        {
+          "t": "p",
+          "text": "An **LLM judge** is a model asked to grade an output against a rubric. Before trusting one, have a person label a sample of outputs, run the judge on the same sample, and compare. The direction of disagreement matters: a judge that passes outputs a human would fail inflates your score. Recheck whenever the judge prompt or model changes."
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "Judge calibration on 100 human-labeled outputs",
           "code": "                 human PASS   human FAIL   total\njudge PASS           61           14          75\njudge FAIL            5           20          25\ntotal                66           34         100\n\nagreement        = (61 + 20) / 100 = 81%\njudge pass rate  = 75%    human pass rate = 66%\nfalse passes     = 14 of 34 human failures = 41%",
@@ -92,33 +220,61 @@
             "81 percent agreement sounds fine, yet the judge overstates the pass rate by 9 points.",
             "The judge passed 41 percent of the outputs a person failed. Read those 14 first: they show what the judge cannot see.",
             "Raw agreement flatters a judge when most outputs pass. A chance-corrected measure such as Cohen's kappa is about 0.55 here."
-          ]},
-        {"t": "code",
+          ]
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "One disagreement, read closely",
           "code": "case T-51877  \"I was charged twice for order 90412. Can one be refunded?\"\nfinal reply:  \"I've refunded the duplicate charge of $62.00. It will appear\n               in 5 to 10 days.\"\ntool calls:   lookup_order(90412)        (no issue_refund call)\njudge:        PASS 9/10  \"helpful, polite, resolves the issue\"\nhuman:        FAIL       \"claims a refund that was never issued\"",
           "notes": [
             "The judge graded the text it was shown, and the text is excellent. It never saw the tool calls.",
             "This is a grader bug, not a judge being dumb. Give the grader the trajectory, or check the payment record in code."
-          ]},
-        {"t": "h", "text": "Grader bugs"},
-        {"t": "p", "text": "A **grader bug** is a fault in the scoring code, rubric, or reference answers that makes the score wrong. Common ones: keyword matching that accepts wrong answers, reference answers that are themselves wrong or out of date, a parse error scored as a pass, a judge that cannot see the evidence it needs. A grader that accepts wrong answers is worse than none, because it reports progress."},
-        {"t": "callout", "kind": "debug", "title": "Auditing a grader", "text": "Read 20 passing cases, not only failing ones. Feed the grader outputs you know are wrong, including an empty reply and an error message, and confirm each fails. When the policy changes, check the reference answers, or the new correct behavior will be graded as wrong."},
-        {"t": "check",
+          ]
+        },
+        {
+          "t": "h",
+          "text": "Grader bugs"
+        },
+        {
+          "t": "p",
+          "text": "A **grader bug** is a fault in the scoring code, rubric, or reference answers that makes the score wrong. Common ones: keyword matching that accepts wrong answers, reference answers that are themselves wrong or out of date, a parse error scored as a pass, a judge that cannot see the evidence it needs. A grader that accepts wrong answers is worse than none, because it reports progress."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Auditing a grader",
+          "text": "Read 20 passing cases, not only failing ones. Feed the grader outputs you know are wrong, including an empty reply and an error message, and confirm each fails. When the policy changes, check the reference answers, or the new correct behavior will be graded as wrong."
+        },
+        {
+          "t": "check",
           "q": "In the calibration table, which fact matters most before using the judge as Relay's release gate?",
-          "options": ["Overall agreement is 81 percent", "The judge passes 14 outputs a person failed", "The judge fails 5 outputs a person passed", "The judge and the person label 100 cases"],
+          "options": [
+            "Overall agreement is 81 percent",
+            "The judge passes 14 outputs a person failed",
+            "The judge fails 5 outputs a person passed",
+            "The judge and the person label 100 cases"
+          ],
           "answer": 1,
-          "explain": "A release gate exists to stop bad outputs, so false passes are the dangerous direction: they let regressions through looking like successes. The 5 false fails cost some investigation time. Overall agreement hides which way the errors lean."}
+          "explain": "A release gate exists to stop bad outputs, so false passes are the dangerous direction: they let regressions through looking like successes. The 5 false fails cost some investigation time. Overall agreement hides which way the errors lean."
+        }
       ]
     },
     {
       "id": "d27-l3",
       "title": "Statistics for evals",
-      "minutes": 16,
+      "minutes": 15,
       "blocks": [
-        {"t": "p", "text": "A pass rate is an estimate. A different sample of similar tasks would give a different number, and a non-deterministic system gives a different number on the same tasks tomorrow. The question for every score change is whether it is bigger than that noise. You can answer it with one formula and one habit."},
-        {"t": "p", "text": "For a pass rate p measured on n independent cases, the **standard error** is the square root of p(1 − p) / n. A 95 percent **confidence interval** is roughly p plus or minus 1.96 standard errors, about two. At p = 0.7 and n = 50 the standard error is about 0.065, so the interval is about plus or minus 13 points: anything from 57 to 83 percent is consistent with the measurement."},
-        {"t": "code",
+        {
+          "t": "p",
+          "text": "A pass rate is an estimate. A different sample of similar tasks would give a different number, and a non-deterministic system gives a different number on the same tasks tomorrow. The question for every score change is whether it is bigger than that noise. You can answer it with one formula and one habit."
+        },
+        {
+          "t": "p",
+          "text": "For a pass rate p measured on n independent cases, the **standard error** is the square root of p(1 − p) / n. A 95 percent **confidence interval** is roughly p plus or minus 1.96 standard errors, about two. At p = 0.7 and n = 50 the standard error is about 0.065, so the interval is about plus or minus 13 points: anything from 57 to 83 percent is consistent with the measurement."
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "How the interval shrinks with more cases",
           "code": "pass rate  cases  standard error  95% interval (1.96 x SE)\n0.70        50     0.065           +/- 12.7 points   57% to 83%\n0.70       200     0.032           +/-  6.4 points   64% to 76%\n0.70       800     0.016           +/-  3.2 points   67% to 73%\n0.90        50     0.042           +/-  8.3 points   82% to 98%\n0.50        50     0.071           +/- 13.9 points   36% to 64%",
@@ -126,12 +282,28 @@
             "Four times the cases halves the interval. Precision is expensive.",
             "The interval is widest at 50 percent and narrower near 0 or 100. Near the extremes, and with few cases, this simple formula gets rough.",
             "At n = 50, one case is 2 points. A move from 70 to 72 percent is a single case changing."
-          ]},
-        {"t": "callout", "kind": "rule", "title": "A quick bound", "text": "For a single pass rate on n cases, the 95 percent margin is at most about 1 divided by the square root of n: 14 points at 50 cases, 10 at 100, 5 at 400. To get within 5 points of a rate near 70 percent, you need roughly 320 cases."},
-        {"t": "h", "text": "Comparing two versions"},
-        {"t": "p", "text": "If two versions are scored on independent samples, the standard error of their difference is the square root of the sum of the two squared standard errors. At 70 percent on 50 cases each, that is about 0.092, so the difference needs to exceed about 18 points to clear the 95 percent bar. Small evals compared this way can only detect large changes."},
-        {"t": "p", "text": "A **paired comparison** runs both versions on the same cases and compares them case by case. Cases that both pass or both fail cancel out, because each case's difficulty is shared. Only the cases that flipped carry information. Removing the case-to-case variation makes a paired comparison detect much smaller differences with the same number of cases."},
-        {"t": "code",
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "rule",
+          "title": "A quick bound",
+          "text": "For a single pass rate on n cases, the 95 percent margin is at most about 1 divided by the square root of n: 14 points at 50 cases, 10 at 100, 5 at 400. To get within 5 points of a rate near 70 percent, you need roughly 320 cases."
+        },
+        {
+          "t": "h",
+          "text": "Comparing two versions"
+        },
+        {
+          "t": "p",
+          "text": "If two versions are scored on independent samples, the standard error of their difference is the square root of the sum of the two squared standard errors. At 70 percent on 50 cases each, that is about 0.092, so the difference needs to exceed about 18 points to clear the 95 percent bar. Small evals compared this way can only detect large changes."
+        },
+        {
+          "t": "p",
+          "text": "A **paired comparison** runs both versions on the same cases and compares them case by case. Cases that both pass or both fail cancel out, because each case's difficulty is shared. Only the cases that flipped carry information. Removing the case-to-case variation makes a paired comparison detect much smaller differences with the same number of cases."
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "The same 200 cases, current prompt A against new prompt B",
           "code": "                 B pass   B fail\nA pass             128        9\nA fail              21       42\n\nA pass rate = 137/200 = 68.5%     B pass rate = 149/200 = 74.5%\nflipped cases = 30: 21 fixed by B, 9 broken by B\n\npaired:       (21 - 9) / sqrt(21 + 9) = 12 / 5.48 = 2.2 standard errors\nindependent:  0.060 / 0.045 = 1.3 standard errors (ignores the pairing)",
@@ -139,38 +311,161 @@
             "Same data, two analyses. Treated as independent samples, a 6-point gain looks inconclusive; paired, it clears the usual bar.",
             "Under no real difference, the 30 flips would split about evenly. A 21 to 9 split is unlikely by chance.",
             "Read the 9 cases B broke before shipping. Each is a regression a customer will meet."
-          ]},
-        {"t": "h", "text": "Multiple trials per task"},
-        {"t": "p", "text": "Run each task several times and record the share of trials that pass. This separates a task that always fails, a capability gap, from one that fails one time in three, a reliability problem. It also averages out run-to-run noise. For an agent that acts for customers, consistency matters: a task that passes with probability 0.8 per trial passes all three trials only 0.8 × 0.8 × 0.8 = 51 percent of the time."},
-        {"t": "tradeoff",
+          ]
+        },
+        {
+          "t": "h",
+          "text": "Multiple trials per task"
+        },
+        {
+          "t": "p",
+          "text": "Run each task several times and record the share of trials that pass. This separates a task that always fails, a capability gap, from one that fails one time in three, a reliability problem. It also averages out run-to-run noise. For an agent that acts for customers, consistency matters: a task that passes with probability 0.8 per trial passes all three trials only 0.8 × 0.8 × 0.8 = 51 percent of the time."
+        },
+        {
+          "t": "tradeoff",
           "title": "Spend the budget on more cases or more trials",
           "options": [
-            {"name": "More cases", "gain": ["Narrows the interval on the overall pass rate", "Covers more kinds of task"], "cost": ["Each case needs a correct label", "More grader work and review"], "choose": "Choose this when the question is how good the system is across the tasks users bring."},
-            {"name": "More trials per case", "gain": ["Measures reliability per task", "Separates flaky from impossible", "No new labels needed"], "cost": ["Adds no coverage", "Trials of one task are correlated, so the interval shrinks less than with new cases"], "choose": "Choose this when outputs vary a lot run to run, or when you must know whether failures are consistent."}
-          ]},
-        {"t": "callout", "kind": "pitfall", "title": "Trials are not extra cases", "text": "Fifty tasks run four times each are not 200 independent cases. Trials of the same task share its difficulty, so the uncertainty about task coverage stays close to that of 50 cases. And testing 20 prompt variants on one small set and keeping the best almost guarantees the winner's score is inflated by luck."},
-        {"t": "check",
+            {
+              "name": "More cases",
+              "gain": [
+                "Narrows the interval on the overall pass rate",
+                "Covers more kinds of task"
+              ],
+              "cost": [
+                "Each case needs a correct label",
+                "More grader work and review"
+              ],
+              "choose": "Choose this when the question is how good the system is across the tasks users bring."
+            },
+            {
+              "name": "More trials per case",
+              "gain": [
+                "Measures reliability per task",
+                "Separates flaky from impossible",
+                "No new labels needed"
+              ],
+              "cost": [
+                "Adds no coverage",
+                "Trials of one task are correlated, so the interval shrinks less than with new cases"
+              ],
+              "choose": "Choose this when outputs vary a lot run to run, or when you must know whether failures are consistent."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Trials are not extra cases",
+          "text": "Fifty tasks run four times each are not 200 independent cases. Trials of the same task share its difficulty, so the uncertainty about task coverage stays close to that of 50 cases. And testing 20 prompt variants on one small set and keeping the best almost guarantees the winner's score is inflated by luck."
+        },
+        {
+          "t": "check",
           "q": "On 50 cases, the current prompt passes 70 percent and a new one passes 74 percent. What do you conclude?",
-          "options": ["Inconclusive: the gap is two cases, well inside the noise", "The new prompt is better and should ship", "The new prompt is better by exactly 4 points", "The current prompt is better, since it was tested first"],
+          "options": [
+            "Inconclusive: the gap is two cases, well inside the noise",
+            "The new prompt is better and should ship",
+            "The new prompt is better by exactly 4 points",
+            "The current prompt is better, since it was tested first"
+          ],
           "answer": 0,
-          "explain": "Four points at n = 50 is two cases, while each rate carries an interval of about plus or minus 13 points. The tempting reading treats the point estimate as the truth. Look at the flipped cases, run more trials, or grow the set."},
-        {"t": "reveal", "prompt": "Relay's nightly eval scored the same, unchanged version at 71 percent on Monday and 77 percent on Tuesday, on the same 100 cases. Is something broken?", "answer": "Not necessarily. With a non-deterministic agent, a 6-point swing on 100 cases is within ordinary run-to-run noise, since the margin there is up to about 10 points. Running each case three times and reporting the average would make the nightly number steadier."}
+          "explain": "Four points at n = 50 is two cases, while each rate carries an interval of about plus or minus 13 points. The tempting reading treats the point estimate as the truth. Look at the flipped cases, run more trials, or grow the set."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Relay's nightly eval scored the same, unchanged version at 71 percent on Monday and 77 percent on Tuesday, on the same 100 cases. Is something broken?",
+          "answer": "Not necessarily. With a non-deterministic agent, a 6-point swing on 100 cases is within ordinary run-to-run noise, since the margin there is up to about 10 points. Running each case three times and reporting the average would make the nightly number steadier."
+        }
       ]
     },
     {
       "id": "d27-l4",
       "title": "Agent evals, online evals, and debugging an eval",
-      "minutes": 16,
+      "minutes": 15,
       "blocks": [
-        {"t": "p", "text": "An agent eval grades a run, not a reply. You can grade the **outcome**, the state of the world after the run, such as whether a refund of the right amount exists in the payment record. You can also grade the **trajectory**, the path: which tools were called, in what order, with what arguments, in how many turns."},
-        {"t": "tradeoff",
+        {
+          "t": "p",
+          "text": "An agent eval grades a run, not a reply. You can grade the **outcome**, the state of the world after the run, such as whether a refund of the right amount exists in the payment record. You can also grade the **trajectory**, the path: which tools were called, in what order, with what arguments, in how many turns."
+        },
+        {
+          "t": "tradeoff",
           "title": "Grading the outcome or the trajectory",
           "options": [
-            {"name": "Outcome grading", "gain": ["Checks what the customer actually cares about", "Accepts any valid path", "Cannot be fooled by a confident message"], "cost": ["Needs an environment whose state the grader can read", "Blind to wasteful or unsafe paths that end well"], "choose": "Choose this as the main measure of task success."},
-            {"name": "Trajectory grading", "gain": ["Catches unsafe steps even when the outcome is fine", "Explains why a run failed", "Catches runaway turn counts and cost"], "cost": ["Penalizes valid paths you did not expect", "Breaks when tools are renamed or reordered"], "choose": "Choose this for hard rules, such as no refund without a lookup first, and for cost, alongside outcome checks."}
-          ]},
-        {"t": "p", "text": "Outcome grading needs a real environment: a test Postgres with known orders and a fake payment service that records refunds. Each trial must start from a clean reset. If trial 2 inherits the refund trial 1 issued, it may pass without doing anything, or fail because the order is already refunded. Verify the starting state at the top of each trial."},
-        {"t": "code",
+            {
+              "name": "Outcome grading",
+              "gain": [
+                "Checks what the customer actually cares about",
+                "Accepts any valid path",
+                "Cannot be fooled by a confident message"
+              ],
+              "cost": [
+                "Needs an environment whose state the grader can read",
+                "Blind to wasteful or unsafe paths that end well"
+              ],
+              "choose": "Choose this as the main measure of task success."
+            },
+            {
+              "name": "Trajectory grading",
+              "gain": [
+                "Catches unsafe steps even when the outcome is fine",
+                "Explains why a run failed",
+                "Catches runaway turn counts and cost"
+              ],
+              "cost": [
+                "Penalizes valid paths you did not expect",
+                "Breaks when tools are renamed or reordered"
+              ],
+              "choose": "Choose this for hard rules, such as no refund without a lookup first, and for cost, alongside outcome checks."
+            }
+          ]
+        },
+        {
+          "t": "p",
+          "text": "Outcome grading needs a real environment: a test Postgres with known orders and a fake payment service that records refunds. Each trial must start from a clean reset. If trial 2 inherits the refund trial 1 issued, it may pass without doing anything, or fail because the order is already refunded. Verify the starting state at the top of each trial."
+        },
+        {
+          "t": "flow",
+          "title": "One trial of a Relay agent eval",
+          "steps": [
+            {
+              "actor": "Runner",
+              "label": "Reset the sandbox",
+              "detail": "Restore the test database and fake payment service from a snapshot, then check the task's preconditions, such as the order being unrefunded.",
+              "fail": "The reset fails silently and the trial starts with state left by an earlier trial."
+            },
+            {
+              "actor": "Runner",
+              "label": "Start the agent on the task",
+              "detail": "The recorded ticket is sent to the agent under test, with the same tools and limits as production.",
+              "fail": "A different prompt, model, or tool list than intended is loaded, so the eval measures the wrong version."
+            },
+            {
+              "actor": "Agent",
+              "label": "Run to a stop",
+              "detail": "The agent calls tools against the sandbox until it ends its turn or hits a limit.",
+              "fail": "Rate limits or a harness timeout end the run early; this is an infra error, not a graded failure."
+            },
+            {
+              "actor": "Runner",
+              "label": "Collect evidence",
+              "detail": "Save the full trajectory, the final reply, and the sandbox state after the run.",
+              "fail": "Only the final reply is saved, so later graders cannot check what actually happened."
+            },
+            {
+              "actor": "Grader",
+              "label": "Grade outcome and trajectory",
+              "detail": "Code checks the payment and order records; trajectory rules and an LLM judge check the path and the reply.",
+              "fail": "The grader reads only the reply and passes a refund that was claimed but never issued."
+            },
+            {
+              "actor": "Runner",
+              "label": "Record pass, fail, or error",
+              "detail": "Each trial gets one of three labels, with the error type when it did not finish.",
+              "fail": "Errors are counted as failures, or silently dropped, and the score mixes infrastructure with behavior."
+            }
+          ]
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "Nightly eval summary, prompt v41 against v42",
           "code": "relay-agent nightly eval   2026-11-24\ntasks=120  trials=3 per task  runs=360 per version\n\n                          v41        v42\ngraded pass               251        262\ngraded fail                97         71\ninfra error                12         27   (timeouts, 429s, reset failures)\npass rate, graded runs   72.1%      78.7%\npass rate, all runs      69.7%      72.8%\ntasks passing 3 of 3       74         79\ntasks passing 0 of 3       20         14\nmedian turns                6          9\nmedian input tokens       41k        77k",
@@ -179,112 +474,238 @@
             "Infra errors more than doubled, and v42 runs are longer. If the errors are harness timeouts on long runs, v42 caused them.",
             "Dropping those runs flatters v42; counting them as failures may punish runs that would have passed. Rerun them with a longer timeout before deciding.",
             "Input tokens nearly doubled. A better score at twice the cost is a tradeoff to state, not a free win."
-          ]},
-        {"t": "p", "text": "An **infrastructure error** is a run that failed for reasons outside the system under test: rate limits, provider overload, a harness timeout, a sandbox that failed to reset. Counting these as failures measures your infrastructure. Dropping them silently can hide a regression when the change itself causes them. Report pass, fail, and error separately, rerun errored runs, and check whether errors cluster on one version."},
-        {"t": "compare",
+          ]
+        },
+        {
+          "t": "p",
+          "text": "An **infrastructure error** is a run that failed for reasons outside the system under test: rate limits, provider overload, a harness timeout, a sandbox that failed to reset. Counting these as failures measures your infrastructure. Dropping them silently can hide a regression when the change itself causes them. Report pass, fail, and error separately, rerun errored runs, and check whether errors cluster on one version."
+        },
+        {
+          "t": "compare",
           "caption": "Offline eval and online A/B test",
-          "columns": ["", "Offline eval", "Online A/B test"],
-          "rows": [
-            ["Population", "Fixed, recorded tasks", "Live traffic, split between versions"],
-            ["Ground truth", "Graded against labels", "Proxies: reopened tickets, escalations, refund reversals"],
-            ["Speed", "Hours", "Days or weeks to gather enough traffic"],
-            ["Risk to users", "None", "Some users get the worse version"],
-            ["Catches", "Known failure modes", "What the eval set never contained"]
+          "columns": [
+            "",
+            "Offline eval",
+            "Online A/B test"
           ],
-          "verdict": "Offline evals gate releases; online tests confirm under real traffic. When the eval passes and users complain, the set no longer represents the traffic."},
-        {"t": "h", "text": "When the eval itself is the problem"},
-        {"t": "p", "text": "**Goodhart's law** says that when a measure becomes a target, it stops being a good measure. Tuning prompts against the same set slowly fits that set: the score climbs while the held-out score stays flat. Agents also find grader gaps; a reply that lists every policy passes a check for 'mentions the right policy'."},
-        {"t": "p", "text": "**Contamination** means eval cases have leaked into what the system sees: into prompt examples, retrieved documents, fine-tuning data, or a public benchmark the model was trained on. Contaminated cases measure memory. Signs: near-verbatim reference answers, and gains on old cases with none on new ones. Keep eval cases out of prompts and training data, record where each case came from, and add fresh cases."},
-        {"t": "callout", "kind": "debug", "title": "When a score moves", "text": "In order: count infra errors per version; list the flipped cases and read a sample; check the grader on a few new passes; compare against the held-out set; confirm the eval set, harness, and sandbox did not change. Only then credit or blame the model."},
-        {"t": "callout", "kind": "pitfall", "title": "The eval passes while users complain", "text": "The usual causes are a stale set that no longer matches the traffic, a grader that reads the message instead of the state, or an eval tuned until it passes. Sample production conversations with bad outcomes each week and turn them into cases."},
-        {"t": "check",
+          "rows": [
+            [
+              "Population",
+              "Fixed, recorded tasks",
+              "Live traffic, split between versions"
+            ],
+            [
+              "Ground truth",
+              "Graded against labels",
+              "Proxies: reopened tickets, escalations, refund reversals"
+            ],
+            [
+              "Speed",
+              "Hours",
+              "Days or weeks to gather enough traffic"
+            ],
+            [
+              "Risk to users",
+              "None",
+              "Some users get the worse version"
+            ],
+            [
+              "Catches",
+              "Known failure modes",
+              "What the eval set never contained"
+            ]
+          ],
+          "verdict": "Offline evals gate releases; online tests confirm under real traffic. When the eval passes and users complain, the set no longer represents the traffic."
+        },
+        {
+          "t": "h",
+          "text": "When the eval itself is the problem"
+        },
+        {
+          "t": "p",
+          "text": "**Goodhart's law** says that when a measure becomes a target, it stops being a good measure. Tuning prompts against the same set slowly fits that set: the score climbs while the held-out score stays flat. Agents also find grader gaps; a reply that lists every policy passes a check for 'mentions the right policy'."
+        },
+        {
+          "t": "p",
+          "text": "**Contamination** means eval cases have leaked into what the system sees: into prompt examples, retrieved documents, fine-tuning data, or a public benchmark the model was trained on. Contaminated cases measure memory. Signs: near-verbatim reference answers, and gains on old cases with none on new ones. Keep eval cases out of prompts and training data, record where each case came from, and add fresh cases."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "When a score moves",
+          "text": "In order: count infra errors per version; list the flipped cases and read a sample; check the grader on a few new passes; compare against the held-out set; confirm the eval set, harness, and sandbox did not change. Only then credit or blame the model."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "The eval passes while users complain",
+          "text": "The usual causes are a stale set that no longer matches the traffic, a grader that reads the message instead of the state, or an eval tuned until it passes. Sample production conversations with bad outcomes each week and turn them into cases."
+        },
+        {
+          "t": "check",
           "q": "In the T-51877 case, the agent claimed a refund it never issued. Which grader catches this every time?",
-          "options": ["An LLM judge scoring helpfulness from the final reply", "A check that a matching refund exists in the payment sandbox", "A keyword check for the refund amount in the reply", "A judge asked whether the reply sounds confident"],
+          "options": [
+            "An LLM judge scoring helpfulness from the final reply",
+            "A check that a matching refund exists in the payment sandbox",
+            "A keyword check for the refund amount in the reply",
+            "A judge asked whether the reply sounds confident"
+          ],
           "answer": 1,
-          "explain": "The claim and the state disagree, so only a grader that reads the state can see the problem. Text-based graders, whether keyword or judge, reward exactly the confident wording that hides it."}
+          "explain": "The claim and the state disagree, so only a grader that reads the state can see the problem. Text-based graders, whether keyword or judge, reward exactly the confident wording that hides it."
+        }
       ]
     }
   ],
   "fieldGuide": [
     {
       "symptom": "Score moved two or three points and nobody knows whether it is noise",
-      "causes": ["Small eval set", "Run-to-run variation", "Independent comparison of two rates"],
+      "causes": [
+        "Small eval set",
+        "Run-to-run variation",
+        "Independent comparison of two rates"
+      ],
       "look": "The number of cases, the interval on each rate, and the flipped-case counts between versions.",
       "confirm": "The change is smaller than about 1 / sqrt(n), or the flips split nearly evenly.",
       "fix": "Compare paired on the same cases, add trials, or grow the set. More cases cost labeling time."
     },
     {
       "symptom": "Eval passes while users complain",
-      "causes": ["Eval set no longer matches traffic", "Grader accepts wrong answers", "Prompt tuned to the eval set"],
+      "causes": [
+        "Eval set no longer matches traffic",
+        "Grader accepts wrong answers",
+        "Prompt tuned to the eval set"
+      ],
       "look": "Recent bad production conversations: does any case in the set resemble them?",
       "confirm": "Those conversations, added as cases, fail; or held-out scores lag the tuned set.",
       "fix": "Add sampled production failures every week, and keep a held-out set."
     },
     {
       "symptom": "A grader accepts answers that are clearly wrong",
-      "causes": ["Keyword or substring matching", "Judge cannot see tool calls or state", "Out-of-date reference answers"],
+      "causes": [
+        "Keyword or substring matching",
+        "Judge cannot see tool calls or state",
+        "Out-of-date reference answers"
+      ],
       "look": "A sample of passing cases, read by a person.",
       "confirm": "Known-wrong outputs, fed to the grader, pass.",
       "fix": "Check state in code where possible; give the judge the evidence it needs; add known-wrong cases that must fail."
     },
     {
       "symptom": "Failures appear as harness timeouts, 429s, or sandbox errors",
-      "causes": ["Infrastructure errors counted as model failures", "Longer runs from the new version hitting the timeout"],
+      "causes": [
+        "Infrastructure errors counted as model failures",
+        "Longer runs from the new version hitting the timeout"
+      ],
       "look": "Results split into pass, fail, and error, per version, with error types.",
       "confirm": "Errors cluster in time, by type, or on one version.",
       "fix": "Report errors separately, retry them, and rerun timeouts with a longer limit before comparing."
     },
     {
       "symptom": "Scores jumped on old cases and not on new ones",
-      "causes": ["Eval set leaked into prompt examples, retrieval, or training data"],
+      "causes": [
+        "Eval set leaked into prompt examples, retrieval, or training data"
+      ],
       "look": "Prompt examples, the retrieval index, and fine-tuning data for text from eval cases.",
       "confirm": "Near-verbatim matches between system inputs and eval cases or reference answers.",
       "fix": "Remove the leak, track case provenance, and add fresh cases."
     },
     {
       "symptom": "LLM judge pass rate well above what reviewers find",
-      "causes": ["Lenient judge", "Judge favors long or confident replies", "Rubric too vague"],
+      "causes": [
+        "Lenient judge",
+        "Judge favors long or confident replies",
+        "Rubric too vague"
+      ],
       "look": "A confusion table of judge against human labels on 50 to 100 outputs.",
       "confirm": "Many judge passes on human failures, in a consistent pattern.",
       "fix": "Tighten the rubric, show the judge the evidence, and recalibrate after every judge change."
     },
     {
       "symptom": "Dev-set score keeps climbing; held-out score is flat",
-      "causes": ["Overfitting prompts to the dev set (Goodhart's law)", "Picking the best of many variants on a small set"],
+      "causes": [
+        "Overfitting prompts to the dev set (Goodhart's law)",
+        "Picking the best of many variants on a small set"
+      ],
       "look": "Dev and held-out scores across the last several prompt versions.",
       "confirm": "Held-out gains are near zero while dev gains accumulate.",
       "fix": "Freeze a held-out set and make release decisions on it only."
     },
     {
       "symptom": "Agent passes trials without doing anything, or fails on already-done work",
-      "causes": ["Sandbox state not reset between trials"],
+      "causes": [
+        "Sandbox state not reset between trials"
+      ],
       "look": "The environment state at the start of each trial, and reset logs.",
       "confirm": "A trial starts with refunds or changes made by an earlier trial.",
       "fix": "Reset from a snapshot, verify preconditions per trial, and treat reset failure as an infra error."
     },
     {
       "symptom": "Same version scores 71 percent one night and 77 the next",
-      "causes": ["Run-to-run variance of a non-deterministic system on too few cases"],
+      "causes": [
+        "Run-to-run variance of a non-deterministic system on too few cases"
+      ],
       "look": "Per-case results across the two nights.",
       "confirm": "Many cases flip in both directions with no change to code or prompt.",
       "fix": "Run several trials per case and report the average with an interval."
     }
   ],
   "glossary": [
-    {"term": "Eval", "def": "A set of tasks run against a system with a grader that scores each output, producing a rate rather than a single pass or fail."},
-    {"term": "Grader", "def": "The code, model, or person that decides whether an output passes. Code graders, LLM judges, and human review are the three kinds."},
-    {"term": "Capability eval", "def": "An eval of hard tasks the system may not handle yet. Expected to start low and rise."},
-    {"term": "Regression eval", "def": "An eval of tasks the system already handles. Expected near 100 percent; a drop means something broke."},
-    {"term": "Held-out set", "def": "Cases kept aside and never used while tuning, so their score shows whether gains generalize."},
-    {"term": "LLM judge", "def": "A model asked to grade outputs against a rubric. Needs calibration against human labels before its scores are trusted."},
-    {"term": "Standard error", "def": "The typical size of the error in an estimate. For a pass rate p on n independent cases, the square root of p(1 − p) / n."},
-    {"term": "Confidence interval", "def": "A range around an estimate that would contain the true value in most repeated samples. Roughly plus or minus two standard errors for 95 percent."},
-    {"term": "Paired comparison", "def": "Comparing two versions case by case on the same tasks, so that only flipped cases count and shared case difficulty cancels out."},
-    {"term": "Trial", "def": "One run of one task. Multiple trials per task measure how consistently a non-deterministic system succeeds."},
-    {"term": "Outcome grading", "def": "Grading an agent by the state of the world after the run, such as a refund record, regardless of the path taken."},
-    {"term": "Trajectory grading", "def": "Grading an agent by its path: which tools it called, in what order, with what arguments, and how many turns it took."},
-    {"term": "Contamination", "def": "Eval cases leaking into what the system sees, such as prompts, retrieved documents, or training data, so the score measures memory."},
-    {"term": "Goodhart's law", "def": "When a measure becomes a target, it stops being a good measure. Tuning against one eval set fits that set."}
+    {
+      "term": "Eval",
+      "def": "A set of tasks run against a system with a grader that scores each output, producing a rate rather than a single pass or fail."
+    },
+    {
+      "term": "Grader",
+      "def": "The code, model, or person that decides whether an output passes. Code graders, LLM judges, and human review are the three kinds."
+    },
+    {
+      "term": "Capability eval",
+      "def": "An eval of hard tasks the system may not handle yet. Expected to start low and rise."
+    },
+    {
+      "term": "Regression eval",
+      "def": "An eval of tasks the system already handles. Expected near 100 percent; a drop means something broke."
+    },
+    {
+      "term": "Held-out set",
+      "def": "Cases kept aside and never used while tuning, so their score shows whether gains generalize."
+    },
+    {
+      "term": "LLM judge",
+      "def": "A model asked to grade outputs against a rubric. Needs calibration against human labels before its scores are trusted."
+    },
+    {
+      "term": "Standard error",
+      "def": "The typical size of the error in an estimate. For a pass rate p on n independent cases, the square root of p(1 − p) / n."
+    },
+    {
+      "term": "Confidence interval",
+      "def": "A range around an estimate that would contain the true value in most repeated samples. Roughly plus or minus two standard errors for 95 percent."
+    },
+    {
+      "term": "Paired comparison",
+      "def": "Comparing two versions case by case on the same tasks, so that only flipped cases count and shared case difficulty cancels out."
+    },
+    {
+      "term": "Trial",
+      "def": "One run of one task. Multiple trials per task measure how consistently a non-deterministic system succeeds."
+    },
+    {
+      "term": "Outcome grading",
+      "def": "Grading an agent by the state of the world after the run, such as a refund record, regardless of the path taken."
+    },
+    {
+      "term": "Trajectory grading",
+      "def": "Grading an agent by its path: which tools it called, in what order, with what arguments, and how many turns it took."
+    },
+    {
+      "term": "Contamination",
+      "def": "Eval cases leaking into what the system sees, such as prompts, retrieved documents, or training data, so the score measures memory."
+    },
+    {
+      "term": "Goodhart's law",
+      "def": "When a measure becomes a target, it stops being a good measure. Tuning against one eval set fits that set."
+    }
   ],
   "apply": {
     "title": "Put error bars on your own eval",
@@ -302,7 +723,10 @@
       "id": "d27-q01",
       "type": "mcq",
       "level": 2,
-      "tags": ["eval-statistics", "confidence-interval"],
+      "tags": [
+        "eval-statistics",
+        "confidence-interval"
+      ],
       "diagnostic": true,
       "q": "A system passes 70 percent of 50 independent eval cases. Roughly how wide is the 95 percent confidence interval on that pass rate?",
       "options": [
@@ -313,15 +737,27 @@
       ],
       "answer": 2,
       "explain": "The standard error is the square root of 0.7 × 0.3 / 50, about 0.065, and 1.96 times that is about 0.13. Two points is the tempting answer because it is the size of one case at n = 50, which is the step size, not the uncertainty.",
-      "why": ["Two points is one case at n = 50, the step size rather than the uncertainty.", "Five points would need roughly 320 cases at this rate.", "", "Thirty points is far too wide; even at 50 percent the margin is about 14 points."]
+      "why": [
+        "Two points is one case at n = 50, the step size rather than the uncertainty.",
+        "Five points would need roughly 320 cases at this rate.",
+        "",
+        "Thirty points is far too wide; even at 50 percent the margin is about 14 points."
+      ]
     },
     {
       "id": "d27-q02",
       "type": "mcq",
       "level": 3,
-      "tags": ["paired-comparison", "eval-statistics"],
+      "tags": [
+        "paired-comparison",
+        "eval-statistics"
+      ],
       "context": "Prompts A and B were each run once on the same 100 Relay cases.",
-      "artifact": {"lang": "text", "title": "Paired results", "code": "             B pass   B fail\nA pass          60        4\nA fail          14       22\n\nA = 64%   B = 74%"},
+      "artifact": {
+        "lang": "text",
+        "title": "Paired results",
+        "code": "             B pass   B fail\nA pass          60        4\nA fail          14       22\n\nA = 64%   B = 74%"
+      },
       "q": "What is the best reading of this result?",
       "options": [
         "Inconclusive, because each rate has an interval of about 9 points",
@@ -331,14 +767,26 @@
       ],
       "answer": 1,
       "explain": "Only the 18 flipped cases carry information, and a 14 to 4 split is about 2.4 standard errors from an even split, unlikely by chance. Comparing the two separate intervals ignores the pairing and throws that strength away. Still read the 4 cases B broke.",
-      "why": ["Separate intervals treat the runs as independent samples and ignore that both used the same cases.", "", "The point estimate carries uncertainty, and live traffic differs from the eval set.", "A paired comparison can detect a difference this size at 100 cases."]
+      "why": [
+        "Separate intervals treat the runs as independent samples and ignore that both used the same cases.",
+        "",
+        "The point estimate carries uncertainty, and live traffic differs from the eval set.",
+        "A paired comparison can detect a difference this size at 100 cases."
+      ]
     },
     {
       "id": "d27-q03",
       "type": "mcq",
       "level": 3,
-      "tags": ["infra-errors", "agent-evals"],
-      "artifact": {"lang": "text", "title": "Eval summary, 100 tasks x 3 trials", "code": "                         v7        v8\ngraded pass             201       210\ngraded fail              90        60\ninfra error               9        30   (28 of v8's are harness timeouts at 300s)\npass rate, graded runs  69.1%     77.8%\npass rate, all runs     67.0%     70.0%\nmedian turns              7        12"},
+      "tags": [
+        "infra-errors",
+        "agent-evals"
+      ],
+      "artifact": {
+        "lang": "text",
+        "title": "Eval summary, 100 tasks x 3 trials",
+        "code": "                         v7        v8\ngraded pass             201       210\ngraded fail              90        60\ninfra error               9        30   (28 of v8's are harness timeouts at 300s)\npass rate, graded runs  69.1%     77.8%\npass rate, all runs     67.0%     70.0%\nmedian turns              7        12"
+      },
       "q": "What should you do before concluding that v8 is better?",
       "options": [
         "Ship v8, since the graded pass rate rose by almost 9 points",
@@ -348,30 +796,45 @@
       ],
       "answer": 1,
       "explain": "v8 runs are much longer and most of its errors are timeouts, so the errors probably come from v8 itself. Dropping them flatters v8; counting them as failures assumes runs that never finished would have failed. Rerunning them settles which.",
-      "why": ["The 9-point gain excludes 30 runs whose errors may be caused by v8.", "", "Some timed-out runs might have passed with more time; this guesses instead of measuring.", "These errors correlate with the version, so they are not neutral infrastructure noise."]
+      "why": [
+        "The 9-point gain excludes 30 runs whose errors may be caused by v8.",
+        "",
+        "Some timed-out runs might have passed with more time; this guesses instead of measuring.",
+        "These errors correlate with the version, so they are not neutral infrastructure noise."
+      ]
     },
     {
       "id": "d27-q04",
       "type": "mcq",
       "level": 3,
-      "tags": ["grader-bugs"],
+      "tags": [
+        "grader-bugs"
+      ],
       "context": "Relay's refund cases are graded by checking that the final reply contains the expected refund amount, such as '$62.00'. After a prompt change the refund pass rate rose from 70 to 88 percent, and the same week support saw more complaints about refunds that never arrived.",
       "q": "What is the most likely explanation?",
       "options": [
         "The new prompt made the agent better at refunds, and complaints are unrelated",
-        "The grader checks the reply text, so replies mentioning the amount pass without a refund",
         "The eval set is too small to detect the change",
-        "The payment service is down, so refunds fail after the agent issues them"
+        "The payment service is down, so refunds fail after the agent issues them",
+        "The grader checks the reply text, so replies mentioning the amount pass without a refund"
       ],
-      "answer": 1,
+      "answer": 3,
       "explain": "A reply such as 'I can't refund $62.00 today' or a false 'I've refunded $62.00' both contain the amount. The rising score and rising complaints together point at a grader that rewards wording. A payment outage would lower the eval score too if the grader checked the payment record.",
-      "why": ["Complaints about missing refunds rising alongside the score is the signature of a grader gap.", "", "An 18-point gain is not the issue; the grader is measuring the wrong thing.", "An outage would show errors in the refund tool's results, which the trajectories would reveal."]
+      "why": [
+        "Complaints about missing refunds rising alongside the score is the signature of a grader gap.",
+        "An 18-point gain is not the issue; the grader is measuring the wrong thing.",
+        "An outage would show errors in the refund tool's results, which the trajectories would reveal.",
+        ""
+      ]
     },
     {
       "id": "d27-q05",
       "type": "mcq",
       "level": 2,
-      "tags": ["llm-judge", "calibration"],
+      "tags": [
+        "llm-judge",
+        "calibration"
+      ],
       "q": "You want to use an LLM judge to grade Relay's tone and helpfulness. What should you do before trusting its scores?",
       "options": [
         "Have people label a sample, run the judge on it, and study the disagreements",
@@ -381,13 +844,20 @@
       ],
       "answer": 0,
       "explain": "Only a comparison with human labels shows how often and in which direction the judge is wrong. A larger judge can still be lenient in a consistent way. Plausible reasoning and self-consistency show the judge is stable, not that it is right.",
-      "why": ["", "Larger judges still have consistent biases, such as favoring long answers.", "Convincing explanations can accompany wrong grades.", "A judge can agree with itself and still disagree with people."]
+      "why": [
+        "",
+        "Larger judges still have consistent biases, such as favoring long answers.",
+        "Convincing explanations can accompany wrong grades.",
+        "A judge can agree with itself and still disagree with people."
+      ]
     },
     {
       "id": "d27-q06",
       "type": "mcq",
       "level": 3,
-      "tags": ["contamination"],
+      "tags": [
+        "contamination"
+      ],
       "context": "Last month a teammate improved Relay's prompt by adding twelve worked examples. The nightly eval rose 15 points on cases older than three months and did not change on cases added this month.",
       "q": "What do you suspect first?",
       "options": [
@@ -398,13 +868,21 @@
       ],
       "answer": 2,
       "explain": "A large gain only on older cases, starting with new prompt examples, is the signature of contamination. Compare the examples with eval cases for near-verbatim overlap. Harder new cases is possible, but it would not explain why the gain is concentrated so sharply.",
-      "why": ["Possible, but a judge-free check for overlap is cheaper and the pattern fits leakage better.", "Noise would not split so cleanly by case age.", "", "A style preference would raise new and old cases alike."]
+      "why": [
+        "Possible, but a judge-free check for overlap is cheaper and the pattern fits leakage better.",
+        "Noise would not split so cleanly by case age.",
+        "",
+        "A style preference would raise new and old cases alike."
+      ]
     },
     {
       "id": "d27-q07",
       "type": "mcq",
       "level": 2,
-      "tags": ["trajectory-grading", "agent-evals"],
+      "tags": [
+        "trajectory-grading",
+        "agent-evals"
+      ],
       "q": "Relay must never issue a refund without first calling `lookup_order`. Which grading approach checks this rule?",
       "options": [
         "Outcome grading of the refund record after the run",
@@ -414,13 +892,20 @@
       ],
       "answer": 1,
       "explain": "The rule is about the path, not the end state: a refund issued without a lookup can still be correct. Only a check of the tool-call sequence sees the violation. Outcome grading stays the main measure of success; this rule sits beside it.",
-      "why": ["The refund record can be correct even when the lookup was skipped.", "", "The final reply does not show which tools were called.", "Wording says nothing about the order of tool calls."]
+      "why": [
+        "The refund record can be correct even when the lookup was skipped.",
+        "",
+        "The final reply does not show which tools were called.",
+        "Wording says nothing about the order of tool calls."
+      ]
     },
     {
       "id": "d27-q08",
       "type": "multi",
       "level": 2,
-      "tags": ["infra-errors"],
+      "tags": [
+        "infra-errors"
+      ],
       "q": "Which of these should be reported as infrastructure errors rather than graded failures? Select all that apply.",
       "options": [
         "A run ended by repeated 429 responses from the model provider",
@@ -430,14 +915,21 @@
         "The agent quoted an outdated return policy",
         "The agent stopped before looking up the order"
       ],
-      "answers": [0, 1, 2],
+      "answers": [
+        0,
+        1,
+        2
+      ],
       "explain": "Rate limits, a broken environment, and an unreachable tool server say nothing about the agent's behavior; the agent never got a fair attempt. The last three are the agent doing the task badly, which is exactly what the eval exists to count."
     },
     {
       "id": "d27-q09",
       "type": "order",
       "level": 2,
-      "tags": ["llm-judge", "calibration"],
+      "tags": [
+        "llm-judge",
+        "calibration"
+      ],
       "q": "Put the steps of calibrating an LLM judge in order.",
       "items": [
         "Write the rubric the judge will apply",
@@ -452,14 +944,31 @@
       "id": "d27-q10",
       "type": "match",
       "level": 3,
-      "tags": ["eval-debugging"],
+      "tags": [
+        "eval-debugging"
+      ],
       "q": "Match each observation to its most likely cause.",
       "pairs": [
-        ["Dev score climbs, held-out score flat", "Prompts tuned to the dev set"],
-        ["Eval passes, users complain", "Eval set no longer matches real traffic"],
-        ["Same version: 71 percent one night, 77 the next", "Run-to-run noise on too few cases"],
-        ["Trial passes without the agent doing anything", "Sandbox state left over from an earlier trial"],
-        ["Judge passes replies people fail", "Uncalibrated, lenient judge"]
+        [
+          "Dev score climbs, held-out score flat",
+          "Prompts tuned to the dev set"
+        ],
+        [
+          "Eval passes, users complain",
+          "Eval set no longer matches real traffic"
+        ],
+        [
+          "Same version: 71 percent one night, 77 the next",
+          "Run-to-run noise on too few cases"
+        ],
+        [
+          "Trial passes without the agent doing anything",
+          "Sandbox state left over from an earlier trial"
+        ],
+        [
+          "Judge passes replies people fail",
+          "Uncalibrated, lenient judge"
+        ]
       ],
       "explain": "Each symptom points to a different part of the eval: the set, the statistics, the environment, or the grader. Asking which part of the measurement could produce the pattern comes before asking what the model did."
     },
@@ -467,7 +976,10 @@
       "id": "d27-q11",
       "type": "open",
       "level": 3,
-      "tags": ["eval-statistics", "paired-comparison"],
+      "tags": [
+        "eval-statistics",
+        "paired-comparison"
+      ],
       "context": "A teammate posts: 'New prompt improves pass rate from 70 percent to 74 percent on our 50-case eval. Shipping today.'",
       "q": "What would you reply, and what would you check or run before agreeing?",
       "rubric": [
@@ -483,12 +995,25 @@
       "id": "d27-q12",
       "type": "mcq",
       "level": 2,
-      "tags": ["trials", "agent-evals"],
+      "tags": [
+        "trials",
+        "agent-evals"
+      ],
       "q": "An agent passes a task with probability 0.8 on each independent trial. What is the probability that it passes all three of three trials?",
-      "options": ["0.80", "0.99", "0.51", "0.64"],
+      "options": [
+        "0.80",
+        "0.99",
+        "0.51",
+        "0.64"
+      ],
       "answer": 2,
       "explain": "All three must pass: 0.8 × 0.8 × 0.8 = 0.512. The tempting 0.99 is the chance that at least one of three passes, which is the right number for a retry-until-success setting and the wrong one for an agent that must succeed every time.",
-      "why": ["That is the chance of one trial passing.", "That is the chance at least one of three passes: 1 − 0.2³.", "", "That is two trials, not three."]
+      "why": [
+        "That is the chance of one trial passing.",
+        "That is the chance at least one of three passes: 1 − 0.2³.",
+        "",
+        "That is two trials, not three."
+      ]
     }
   ],
   "drills": [
@@ -496,27 +1021,31 @@
       "id": "d27-x1",
       "title": "The prompt that gained eight points",
       "brief": "A teammate wants to ship prompt v13 today. On Relay's 150-case eval, graded by an LLM judge that reads the final reply, v13 passes 72 percent against 64 percent for v12. Both versions ran on the same cases. The teammate describes v13 as 'more decisive'.",
-      "artifact": {"lang": "text", "title": "Paired results, judge-graded", "code": "               v13 pass   v13 fail\nv12 pass           86         10\nv12 fail           22         32\n\nv12 = 96/150 = 64%    v13 = 108/150 = 72%"},
+      "artifact": {
+        "lang": "text",
+        "title": "Paired results, judge-graded",
+        "code": "               v13 pass   v13 fail\nv12 pass           86         10\nv12 fail           22         32\n\nv12 = 96/150 = 64%    v13 = 108/150 = 72%"
+      },
       "steps": [
         {
           "q": "The split of 22 fixed to 10 broken looks real. What do you do first?",
           "options": [
             "Ship v13, since the paired result is convincing",
-            "Read a sample of the 22 cases v13 newly passes",
             "Add 150 more cases to narrow the interval",
+            "Read a sample of the 22 cases v13 newly passes",
             "Run each case three times to measure variance"
           ],
-          "answer": 1,
+          "answer": 2,
           "explain": "The statistics only say the grader's verdicts changed. Whether the grader is right about those cases is a separate question, and reading the new passes answers it cheaply. More cases or trials would measure the same possibly wrong verdicts more precisely.",
           "reveal": "In 14 of the 22, v13 tells the customer a refund has been issued. The trajectories contain no `issue_refund` call."
         },
         {
           "q": "What is wrong with the grading?",
           "options": [
-            "The judge model is too small for the task",
-            "The judge sees only the reply, so it cannot tell a claimed refund from a real one",
-            "The rubric is too strict on tone",
-            "The eval set has too few refund cases"
+            "The judge model is too small to grade refund conversations",
+            "The judge sees only the reply, not whether a refund happened",
+            "The rubric is too strict about tone and penalizes v12",
+            "The eval set has too few refund cases to grade fairly"
           ],
           "answer": 1,
           "explain": "A judge can only grade the evidence it sees. 'More decisive' wording that claims actions which never happened reads as more helpful. A larger judge with the same input would make the same mistake.",
@@ -525,24 +1054,24 @@
         {
           "q": "With the outcome check added, the rerun shows v12 at 90/150 and v13 at 86/150, with 9 cases fixed and 13 broken by v13. What do you decide?",
           "options": [
-            "Ship v13, since 4 cases is within the noise",
             "Do not ship v13: there is no evidence it helps, and it makes false refund claims",
+            "Ship v13, since 4 cases is within the noise",
             "Ship v12 with v13's wording, since judges liked it",
             "Average the judge and outcome scores and ship the higher one"
           ],
-          "answer": 1,
+          "answer": 0,
           "explain": "A 13 to 9 split is well within chance, so v13 shows no measurable gain, and you have direct evidence of a harmful new behavior. 'Within the noise' is a reason not to claim an improvement, not a reason to ship a known defect.",
           "reveal": "v13 is shelved. The judge's earlier scores for v12 were also inflated by a few false claims the outcome check now catches."
         },
         {
           "q": "How do you stop this class of problem from coming back?",
           "options": [
-            "Switch to a larger judge model",
-            "Check every claimed action against recorded state, and calibrate the judge on human labels that include false claims",
-            "Remove the LLM judge and use only exact-match grading",
-            "Require two judges to agree before a case passes"
+            "Switch to a larger, stronger judge model for refund cases",
+            "Remove the judge and grade with exact match against references",
+            "Require two different judges to agree before a case passes",
+            "Check claimed actions against state, and calibrate the judge on false claims"
           ],
-          "answer": 1,
+          "answer": 3,
           "explain": "Actions belong to outcome checks in code; the judge keeps the parts code cannot grade, such as tone, and is calibrated on examples of exactly this failure. Exact match brings back the paraphrase problem, and two judges that see the same reply share the same blind spot.",
           "reveal": "The judge calibration set now includes 20 replies that claim actions not in the trajectory. The judge with trajectory access fails 19 of them."
         }
@@ -553,42 +1082,49 @@
       "id": "d27-x2",
       "title": "Nine points down and nothing changed",
       "brief": "Relay's nightly eval of 200 agent tasks dropped from 78 percent to 69 percent. No prompt, tool, or code change was merged yesterday. A teammate is drafting a message to the model provider asking whether they silently updated the model.",
-      "artifact": {"lang": "log", "title": "eval-runner summary", "code": "2026-11-24 pass=156 fail=44 error=0 total=200 pass_rate=78.0%\n2026-11-25 pass=138 fail=62 error=0 total=200 pass_rate=69.0%\nmodel=relay-agent-model@pinned-2026-10-01 (unchanged)"},
+      "artifact": {
+        "lang": "log",
+        "title": "eval-runner summary",
+        "code": "2026-11-24 pass=156 fail=44 error=0 total=200 pass_rate=78.0%\n2026-11-25 pass=138 fail=62 error=0 total=200 pass_rate=69.0%\nmodel=relay-agent-model@pinned-2026-10-01 (unchanged)"
+      },
       "steps": [
         {
           "q": "What do you do first?",
           "options": [
-            "Send the message to the provider",
-            "Diff the two nights case by case and look at what the flipped cases share",
-            "Rerun the entire eval and take the better score",
-            "Raise the number of trials to five per task"
+            "Diff the two nights case by case and see what flipped cases share",
+            "Send the message to the provider and wait for an answer",
+            "Rerun the entire eval and keep whichever score is better",
+            "Raise the number of trials to five per task and rerun"
           ],
-          "answer": 1,
+          "answer": 0,
           "explain": "The model version is pinned, so the provider theory starts weak. Listing the flipped cases is free and usually points at a cause. Rerunning for a better number hides the problem instead of explaining it.",
           "reveal": "21 cases went from pass to fail and 3 from fail to pass. All 21 are refund tasks."
         },
         {
           "q": "You open one flipped refund trajectory. What are you looking for?",
           "options": [
-            "Whether the model's wording got worse",
-            "Whether the environment's starting state matches what the case expects",
-            "Whether the grader prompt was edited",
-            "Whether the run hit the turn limit"
+            "Whether the model's wording got worse than last night",
+            "Whether the starting state matches what the case expects",
+            "Whether someone edited the grader prompt overnight",
+            "Whether the run hit the turn limit before finishing"
           ],
           "answer": 1,
           "explain": "When only one kind of task flips and nothing in the system changed, the environment is the next suspect. Refund tasks depend on order and payment state that earlier trials can change.",
           "reveal": "`lookup_order` returns status `refunded`. The agent correctly replies that the order was refunded on November 24, and the grader marks it failed because no new refund was issued.",
-          "artifact": {"lang": "trace", "code": "turn 1 model  tool_call lookup_order {\"order_id\": \"90412\"}\nturn 1 tool   {\"status\": \"refunded\", \"refunded_at\": \"2026-11-24T02:14Z\"}\nturn 2 model  text \"This order was already refunded on Nov 24...\"\ngrade  FAIL expected refund record created during run"}
+          "artifact": {
+            "lang": "trace",
+            "code": "turn 1 model  tool_call lookup_order {\"order_id\": \"90412\"}\nturn 1 tool   {\"status\": \"refunded\", \"refunded_at\": \"2026-11-24T02:14Z\"}\nturn 2 model  text \"This order was already refunded on Nov 24...\"\ngrade  FAIL expected refund record created during run"
+          }
         },
         {
           "q": "The sandbox reset log shows `ERROR snapshot not found, continuing`. What is the right fix?",
           "options": [
             "Restore the snapshot and rerun, and change nothing else",
-            "Restore the snapshot, make a failed reset abort the trial as an infra error, and check preconditions per trial",
             "Change the grader to accept 'already refunded' as a pass",
-            "Exclude refund tasks from the nightly eval"
+            "Restore it, abort trials on reset failure, and check preconditions",
+            "Exclude refund tasks from the nightly eval until it is fixed"
           ],
-          "answer": 1,
+          "answer": 2,
           "explain": "Restoring fixes tonight, but the runner 'continuing' after a failed reset is why a broken environment looked like a model regression. Loosening the grader would make the case pass for the wrong reason and stop testing refunds at all.",
           "reveal": "After the fix, the rerun scores 77.5 percent, within noise of the previous night, with zero infra errors."
         }

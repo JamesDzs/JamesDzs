@@ -508,7 +508,7 @@
           "answer": 0,
           "explain": "The app builds the URI from the incoming request. TLS ends at the load balancer, so the app sees http unless it trusts the forwarded scheme header. Building the redirect URI from configuration avoids the problem entirely.",
           "reveal": "With the URI taken from configuration, Google sign-in completes. Now Relay's callback rejects every login right after the redirect.",
-          "artifact": {"lang": "log", "code": "11:02:14 path=/auth/callback status=401 err=id_token_rejected check=audience\n11:02:14 path=/auth/callback status=401 err=id_token_rejected check=audience"}
+          "artifact": {"lang": "log", "code": "11:02:14 path=/auth/callback status=401 err=id_token_rejected check=audience\n11:02:41 path=/auth/callback status=401 err=id_token_rejected check=audience"}
         },
         {
           "q": "What do you compare to resolve the audience mismatch?",
