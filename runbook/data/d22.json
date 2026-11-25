@@ -471,7 +471,7 @@
         ["Loss turns to nan at step 3,200", "Learning rate too high or bad values in a batch"],
         ["Loss flat at its starting value", "Parameters are not being updated"],
         ["Train falls, validation rises", "Overfitting the training data"],
-        ["Both losses flat and high", "Underfitting: model too small or labels too noisy"]
+        ["Both losses fall a little, then plateau high", "Underfitting: model too small or labels too noisy"]
       ],
       "explain": "Each shape points to a different layer of the problem: the optimizer settings, the training setup, generalization, or model capacity. Reading the shape before changing anything saves whole reruns."
     },
@@ -525,7 +525,7 @@
           ],
           "answer": 1,
           "explain": "The offline score and the production behavior disagree, so the cheapest split of the search space is to feed identical inputs through both paths. Retraining or resizing assumes the model is bad, which the 91 percent score does not support yet.",
-          "reveal": "Offline, v8 predicts 'refund' for 46 of the 47 refund tickets. Through the worker, 45 of those same tickets come back as 'shipping', with high confidence. Shipping tickets come back as 'refund'."
+          "reveal": "Offline, v8 predicts 'refund' for 46 of the 47 refund tickets. Through the worker, all 46 of those same tickets come back as 'shipping', with high confidence. Shipping tickets come back as 'refund'."
         },
         {
           "q": "The two classes are swapped consistently, with high confidence. What does that pattern point to?",

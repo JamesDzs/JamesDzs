@@ -137,7 +137,7 @@
         {"t": "code",
           "lang": "log",
           "title": "What constraint violations look like in PostgreSQL",
-          "code": "ERROR:  duplicate key value violates unique constraint \"users_email_key\"\nDETAIL:  Key (email)=(ana@example.com) already exists.\n\nERROR:  insert or update on table \"refunds\" violates foreign key constraint\n        \"refunds_order_id_fkey\"\nDETAIL:  Key (order_id)=(91822) is not present in table \"orders\".\n\nERROR:  new row for relation \"refunds\" violates check constraint\n        \"refunds_amount_cents_check\"",
+          "code": "ERROR:  duplicate key value violates unique constraint \"users_email_key\"\nDETAIL:  Key (email)=(ana@example.com) already exists.\n\nERROR:  insert or update on table \"refunds\" violates foreign key constraint \"refunds_order_id_fkey\"\nDETAIL:  Key (order_id)=(91822) is not present in table \"orders\".\n\nERROR:  new row for relation \"refunds\" violates check constraint \"refunds_amount_cents_check\"",
           "notes": [
             "The constraint name tells you which rule fired; Postgres names them after the table and column unless you choose a name.",
             "DETAIL shows the offending value. A foreign key error with an ID nobody recognizes often means the caller invented or mistyped it.",
@@ -494,7 +494,7 @@
       "level": 3,
       "tags": ["constraints", "agent-tools"],
       "context": "After a prompt change, Relay's `issue_refund` tool started failing on some tickets. Customers get 'something went wrong' instead of a refund.",
-      "artifact": {"lang": "log", "code": "ERROR:  insert or update on table \"refunds\" violates foreign key constraint\n        \"refunds_order_id_fkey\"\nDETAIL:  Key (order_id)=(91822) is not present in table \"orders\"."},
+      "artifact": {"lang": "log", "code": "ERROR:  insert or update on table \"refunds\" violates foreign key constraint \"refunds_order_id_fkey\"\nDETAIL:  Key (order_id)=(91822) is not present in table \"orders\"."},
       "q": "What is the most likely cause?",
       "options": [
         "The orders table is locked by a running migration",

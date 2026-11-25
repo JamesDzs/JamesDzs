@@ -532,7 +532,7 @@
           "reveal": "The tool result in the trace says `status: paid`. The model repeated it faithfully."
         },
         {
-          "q": "Why was the entry not removed when the refund happened?",
+          "q": "What do you check to find out why the entry survived the refund?",
           "options": [
             "Check the refund path's cache delete against the key lookup_order reads",
             "Check whether Redis is evicting keys under memory pressure",
@@ -547,10 +547,10 @@
         {
           "q": "What is the right fix?",
           "options": [
-            "Drop the order TTL to ten seconds",
-            "Stop caching lookup_order entirely",
-            "Flush Redis after every refund",
-            "Build the key in one shared function used by both read and delete"
+            "Drop the order key TTL from ten minutes to ten seconds",
+            "Stop caching lookup_order results in Redis entirely",
+            "Flush the whole Redis instance after every refund",
+            "Build the key in one function used by read and delete"
           ],
           "answer": 3,
           "explain": "The bug is two pieces of code building the same key separately. One function for both makes them unable to drift again. A ten-second TTL is a reasonable extra safety net but leaves every refund stale for that long, and flushing Redis causes a stampede.",
@@ -591,10 +591,10 @@
         {
           "q": "Redis did not restart and its memory grew. What explains the hit ratio dropping to near zero?",
           "options": [
-            "The deploy ran FLUSHALL on Redis",
-            "The network between the API and Redis broke",
-            "All the TTLs happened to expire at 15:30",
-            "The new code looks up keys under new names, so old entries are never read"
+            "The deploy script ran FLUSHALL against the Redis instance",
+            "The network path between the API pods and Redis broke",
+            "All the TTLs happened to expire at exactly 15:30",
+            "New code reads keys under new names, so old ones go unread"
           ],
           "answer": 3,
           "explain": "A flush would have dropped memory, and a network failure would show errors, not misses. Memory growing while hits vanish means new keys are being written beside old ones, which happens when key names change on each deploy.",

@@ -909,7 +909,7 @@
       "q": "Which of these should be reported as infrastructure errors rather than graded failures? Select all that apply.",
       "options": [
         "A run ended by repeated 429 responses from the model provider",
-        "A trial that started because the sandbox database failed to reset",
+        "A trial that started after the sandbox database failed to reset",
         "A run that could not reach the tool server at all",
         "The agent refunded the wrong amount",
         "The agent quoted an outdated return policy",
@@ -934,7 +934,7 @@
       "items": [
         "Write the rubric the judge will apply",
         "Have a person label a sample of outputs with the rubric",
-        "Run the judge on the same sample",
+        "Run the judge on the human-labeled sample",
         "Build the agreement table and read the disagreements",
         "Revise the rubric or judge prompt and measure again on a fresh sample"
       ],
