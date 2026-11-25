@@ -1,0 +1,1182 @@
+{
+  "id": "d02",
+  "day": 2,
+  "phase": "p1",
+  "title": "HTTP, read fluently",
+  "tagline": "Methods, status codes, and headers as a diagnostic language you can read line by line.",
+  "minutes": 55,
+  "why": "Almost every failure you debug in a web or LLM system arrives as an HTTP exchange: a status code, a few headers, and a body. Each of those carries evidence about who answered and why. Read fluently, a raw exchange tells you whether to look at the client, the proxy, the app, or the provider before you open a single log.",
+  "objectives": [
+    "Read a raw HTTP request and response line by line and say what each part controls",
+    "Decide whether a request is safe to retry from its method and whether it carries an idempotency key",
+    "Say who emitted a 502, a 503, or a 504, and what each one proves about the app behind it",
+    "Explain why a request fails with a CORS error in the browser while the same call works in curl",
+    "Choose between cookies and an Authorization header, and between PUT and PATCH, and state the cost of each"
+  ],
+  "lessons": [
+    {
+      "id": "d02-l1",
+      "title": "Anatomy of a request and a response",
+      "minutes": 12,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "An HTTP message is plain structured text: a **start line**, then **headers** (one `Name: value` per line), then a blank line, then an optional **body**. A request's start line holds the method, the path, and the version. A response's start line holds the version and a **status code**. Learning to read this shape is the single most useful skill of the day."
+        },
+        {
+          "t": "code",
+          "lang": "http",
+          "title": "The widget posts a customer message to Relay",
+          "code": "POST /api/tickets/8812/messages?notify=false HTTP/1.1\nHost: relay.example.com\nContent-Type: application/json\nAccept: application/json\nAuthorization: Bearer eyJhbGciOi...\nX-Request-ID: 3f9c2a7e\nContent-Length: 57\n\n{\"text\": \"Where is my order 88123?\", \"channel\": \"widget\"}\n\nHTTP/1.1 201 Created\nContent-Type: application/json\nLocation: /api/tickets/8812/messages/551\nX-Request-ID: 3f9c2a7e\nContent-Length: 60\n\n{\"id\": 551, \"ticket_id\": 8812, \"status\": \"queued_for_agent\"}",
+          "notes": [
+            "The start line says what to do (`POST`), to what (`/api/tickets/8812/messages`), with an option in the query string (`notify=false`).",
+            "`Content-Type` describes the body that was sent. `Accept` says what format the client wants back.",
+            "`201 Created` plus `Location` means a new resource exists and says where.",
+            "The same `X-Request-ID` on both sides lets you find this exact request in nginx, app, and worker logs."
+          ]
+        },
+        {
+          "t": "h",
+          "text": "Path, query, headers, body"
+        },
+        {
+          "t": "compare",
+          "caption": "Where each piece of information belongs",
+          "columns": [
+            "",
+            "Carries",
+            "Relay example",
+            "Watch out for"
+          ],
+          "rows": [
+            [
+              "Path",
+              "Which resource",
+              "`/api/tickets/8812`",
+              "IDs in the path end up in every access log"
+            ],
+            [
+              "Query string",
+              "Options, filters, paging",
+              "`?status=open&limit=20`",
+              "Logged and cached by proxies; never put secrets here"
+            ],
+            [
+              "Headers",
+              "Metadata about the message",
+              "`Authorization`, `Content-Type`",
+              "Some proxies drop or rename unusual headers"
+            ],
+            [
+              "Body",
+              "The payload itself",
+              "The message text as JSON",
+              "Only meaningful with a correct `Content-Type`"
+            ]
+          ],
+          "verdict": "Identify the resource in the path, tune it in the query, describe the message in headers, and put the data in the body."
+        },
+        {
+          "t": "p",
+          "text": "The body is just bytes. The server only knows how to parse it from `Content-Type`: `application/json`, `application/x-www-form-urlencoded` for classic HTML forms, or `multipart/form-data` for file uploads. `Content-Encoding: gzip` means the bytes were compressed and must be unpacked first. `Content-Length` says how many bytes to read; a streamed body uses `Transfer-Encoding: chunked` instead and arrives in pieces."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "The right JSON with the wrong label",
+          "text": "A client that sends perfect JSON labeled as a form, or with no `Content-Type` at all, gets refused. Some frameworks answer `415 Unsupported Media Type`; FastAPI usually answers `422`, because it cannot find the fields it expects in a body it did not parse as JSON. Read the request's `Content-Type` before you read the body."
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "LLM calls are ordinary HTTP",
+          "text": "Every SDK call to an LLM provider is an HTTP POST with a JSON body and an API key in a header. When a call fails in a confusing way, turn on the SDK's debug logging or point it at a local proxy and read the raw exchange. The status code and the error body usually say exactly what was wrong."
+        },
+        {
+          "t": "check",
+          "q": "A teammate puts a customer's API token in the query string of a GET request because it is easier to test. What is the main risk?",
+          "options": [
+            "The request becomes slower because URLs are parsed twice",
+            "The token lands in proxy and server access logs and browser history",
+            "GET requests cannot carry query strings at all",
+            "The server will reject the request with a 405 status"
+          ],
+          "answer": 1,
+          "explain": "Query strings are part of the URL, and URLs are logged by nginx, load balancers, and analytics tools, and stored in browser history. Credentials belong in a header, which is not logged by default."
+        },
+        {
+          "t": "reveal",
+          "prompt": "A response arrives with `Content-Encoding: gzip` and your script prints garbage characters. Predict what went wrong before reading on.",
+          "answer": "The script read the raw compressed bytes as if they were text. Most HTTP clients decompress automatically, but a low-level read, or a proxy that strips the header while leaving the body compressed, produces exactly this. Compare the headers with the first bytes of the body to see which happened."
+        }
+      ]
+    },
+    {
+      "id": "d02-l2",
+      "title": "Methods, safety, and idempotency",
+      "minutes": 13,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "The method states the intent of a request. Two properties of each method decide how clients, proxies, and your own retry logic may treat it. A **safe** method only reads and changes nothing on the server. An **idempotent** method has the same effect whether it runs once or several times."
+        },
+        {
+          "t": "compare",
+          "caption": "HTTP methods by what they promise",
+          "columns": [
+            "Method",
+            "Safe",
+            "Idempotent",
+            "Relay example"
+          ],
+          "rows": [
+            [
+              "GET",
+              "Yes",
+              "Yes",
+              "Read ticket 8812"
+            ],
+            [
+              "HEAD",
+              "Yes",
+              "Yes",
+              "Check a file exists without downloading it"
+            ],
+            [
+              "OPTIONS",
+              "Yes",
+              "Yes",
+              "Browser asks which methods and headers are allowed"
+            ],
+            [
+              "PUT",
+              "No",
+              "Yes",
+              "Replace the whole ticket record"
+            ],
+            [
+              "DELETE",
+              "No",
+              "Yes",
+              "Delete a draft reply"
+            ],
+            [
+              "PATCH",
+              "No",
+              "Not guaranteed",
+              "Change only the ticket's status"
+            ],
+            [
+              "POST",
+              "No",
+              "No",
+              "Create a message, or issue a refund"
+            ]
+          ],
+          "verdict": "Safe implies idempotent. Retry safe and idempotent methods freely; never retry a POST blindly."
+        },
+        {
+          "t": "p",
+          "text": "Idempotent describes the effect on the server, not the response. Deleting draft 77 twice leaves the same state, even though the second call may return `404`. Posting the same message twice creates two messages. That difference is what decides whether a timeout can be retried automatically."
+        },
+        {
+          "t": "h",
+          "text": "PUT or PATCH"
+        },
+        {
+          "t": "tradeoff",
+          "title": "Updating a ticket",
+          "options": [
+            {
+              "name": "PUT: send the full record",
+              "gain": [
+                "Idempotent, so safe to retry",
+                "The result is exactly what you sent"
+              ],
+              "cost": [
+                "Client must send every field",
+                "A field left out may be reset or cleared",
+                "Two editors overwrite each other's changes"
+              ],
+              "choose": "Choose this when the client owns the whole resource and retries matter more than payload size."
+            },
+            {
+              "name": "PATCH: send only the changes",
+              "gain": [
+                "Small payloads",
+                "Concurrent edits to different fields do not collide"
+              ],
+              "cost": [
+                "Not idempotent in general, such as 'add 1 to count'",
+                "The patch format must be agreed and documented"
+              ],
+              "choose": "Choose this when clients change a few fields of a large record, and make each patch a plain set of values where possible."
+            }
+          ]
+        },
+        {
+          "t": "flow",
+          "title": "How a retried POST creates a duplicate",
+          "steps": [
+            {
+              "actor": "Agent tool",
+              "label": "POSTs a refund for order 88123",
+              "detail": "The tool's HTTP client has a 10-second timeout and retries on timeout.",
+              "fail": "Nothing visible yet."
+            },
+            {
+              "actor": "API",
+              "label": "Calls the payment provider",
+              "detail": "The provider is slow today and takes 13 seconds.",
+              "fail": "The handler is still working when the client stops waiting."
+            },
+            {
+              "actor": "Agent tool",
+              "label": "Times out and retries",
+              "detail": "The client sees no response and assumes the request failed. It sends the same POST again.",
+              "fail": "The client cannot tell 'never arrived' from 'arrived and still running'."
+            },
+            {
+              "actor": "API",
+              "label": "Completes both requests",
+              "detail": "The first request finishes and refunds. The retry also refunds.",
+              "fail": "Two refunds, two log lines with different request IDs, one tool call in the trace."
+            }
+          ]
+        },
+        {
+          "t": "p",
+          "text": "The standard fix is an **idempotency key**: a unique ID the client generates once per logical operation and sends as a header on every attempt. The server stores the key with the result and answers a repeat by returning the stored result instead of doing the work again. Day 4 covers how to build one."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Suspect retries when duplicates appear in pairs",
+          "text": "Duplicate rows created a few seconds apart, with identical bodies and different request IDs, are the fingerprint of a client retry. Check the client's timeout and retry settings, and look for a first attempt whose server-side duration exceeded that timeout."
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "Retries are cheap for reads and dangerous for tools",
+          "text": "SDKs for LLM APIs commonly retry failed calls for you. A retried model call is harmless to state but costs tokens again. A retried `issue_refund` tool call moves money. Make every side-effecting tool idempotent before you let any layer retry it."
+        },
+        {
+          "t": "check",
+          "q": "Which request is safe to retry automatically after a timeout, with no other protection?",
+          "options": [
+            "POST /api/refunds",
+            "PUT /api/tickets/8812 with the full record",
+            "PATCH /api/counters/7 that adds 1",
+            "POST /api/messages"
+          ],
+          "answer": 1,
+          "explain": "A full PUT sets the same final state no matter how many times it runs. Both POSTs create new things each time, and a PATCH that increments is not idempotent."
+        },
+        {
+          "t": "reveal",
+          "prompt": "A GET endpoint in Relay marks a ticket as read when it is fetched. Predict what goes wrong once a caching proxy or a browser prefetch is in front of it.",
+          "answer": "Tools assume GET is safe, so they prefetch, retry, and cache it freely. Tickets get marked read by prefetches nobody looked at, or stay unread because a cache answered without reaching the server. State changes belong behind a non-safe method."
+        }
+      ]
+    },
+    {
+      "id": "d02-l3",
+      "title": "Status codes tell you where the fault is",
+      "minutes": 15,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "The status code is a three-digit verdict, and the first digit names the family. **2xx** means success, **3xx** means look elsewhere, **4xx** means the server thinks the request is wrong, and **5xx** means something on the server side failed. The second question, always, is which hop wrote it."
+        },
+        {
+          "t": "compare",
+          "caption": "Client errors: the request reached a server that refused it",
+          "columns": [
+            "Code",
+            "Means",
+            "Typical Relay cause"
+          ],
+          "rows": [
+            [
+              "400 Bad Request",
+              "Malformed request the server cannot parse",
+              "Broken JSON in the body"
+            ],
+            [
+              "401 Unauthorized",
+              "Missing or invalid credentials; who are you?",
+              "Expired token, or no `Authorization` header"
+            ],
+            [
+              "403 Forbidden",
+              "Known caller, not allowed to do this",
+              "Customer reading another customer's ticket"
+            ],
+            [
+              "404 Not Found",
+              "No such resource, or hidden from this caller",
+              "Wrong ticket ID, or wrong path prefix"
+            ],
+            [
+              "409 Conflict",
+              "Clashes with the current state",
+              "Refunding an order that is already refunded"
+            ],
+            [
+              "422 Unprocessable Content",
+              "Parsed, but fails validation",
+              "Missing field, or the wrong `Content-Type`"
+            ],
+            [
+              "429 Too Many Requests",
+              "Over a rate limit",
+              "A script polling too fast"
+            ]
+          ],
+          "verdict": "A 4xx is the server working correctly. Fix the request, the credentials, or the caller's rate before touching the server."
+        },
+        {
+          "t": "h",
+          "text": "Server errors and who emitted them"
+        },
+        {
+          "t": "compare",
+          "caption": "The four 5xx codes you will see most",
+          "columns": [
+            "Code",
+            "Usually emitted by",
+            "What it proves"
+          ],
+          "rows": [
+            [
+              "500 Internal Server Error",
+              "The app itself",
+              "Your code ran and raised an unhandled error; there is a traceback"
+            ],
+            [
+              "502 Bad Gateway",
+              "A proxy: nginx or the load balancer",
+              "The proxy could not connect to the app, or got a broken or cut-off response"
+            ],
+            [
+              "503 Service Unavailable",
+              "A load balancer or proxy; sometimes the app on purpose",
+              "No healthy backend, or the service is shedding load or in maintenance"
+            ],
+            [
+              "504 Gateway Timeout",
+              "A proxy: nginx or the load balancer",
+              "The proxy waited for the app longer than its timeout"
+            ]
+          ],
+          "verdict": "A 500 sends you to the app log. A 502 or 504 sends you to the proxy's error log first, because the app may have no record of the request."
+        },
+        {
+          "t": "code",
+          "lang": "http",
+          "title": "Two 5xx responses, two different authors",
+          "code": "HTTP/1.1 502 Bad Gateway\nServer: nginx\nContent-Type: text/html\n\n<html>\n<head><title>502 Bad Gateway</title></head>\n<body>\n<center><h1>502 Bad Gateway</h1></center>\n<hr><center>nginx</center>\n</body>\n</html>\n\nHTTP/1.1 500 Internal Server Error\nServer: nginx\nContent-Type: application/json\nX-Request-ID: 9b1e44d0\n\n{\"error\": \"internal_error\", \"request_id\": \"9b1e44d0\"}",
+          "notes": [
+            "Both say `Server: nginx`, because nginx forwards the app's headers and adds its own. The header alone does not settle authorship.",
+            "The 502 body is nginx's built-in HTML page. Relay never returns HTML, so nginx wrote it.",
+            "The 500 has Relay's JSON error shape and a request ID, so the app wrote it. Search the app log for `9b1e44d0`."
+          ]
+        },
+        {
+          "t": "p",
+          "text": "Read 502 and 504 as statements about the link between a proxy and the app. nginx writes 502 when uvicorn refuses the connection, when no upstream is available, or when a worker dies mid-response. It writes 504 when the app accepted the request but did not answer within the read timeout. 503 is a refusal to try: some cloud load balancers send it when no healthy target is registered, and an app may send it deliberately with `Retry-After` while overloaded."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Who wrote this status?",
+          "text": "Check three things. The body format: an HTML error page in a JSON API means a proxy wrote it. The request ID: if the app log has no entry for it, the app never answered. The proxy's error log at that second: it names the upstream and the reason, such as `connect() failed` or `upstream timed out`."
+        },
+        {
+          "t": "h",
+          "text": "Redirects"
+        },
+        {
+          "t": "list",
+          "items": [
+            "`301` and `308` mean the resource moved for good; clients may cache the redirect.",
+            "`302` and `307` mean temporarily elsewhere; ask the original URL next time.",
+            "`307` and `308` require the client to repeat the same method and body. With `301` and `302`, clients often turn a POST into a GET and drop the body.",
+            "A loop of redirects usually means two layers disagree about the scheme or host, such as an app behind a TLS-terminating load balancer."
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Returning 200 with an error inside",
+          "text": "Some APIs answer `200 OK` with a body like `{\"ok\": false}`. Proxies, dashboards, retry logic, and eval harnesses all count it as a success. If Relay's tools do this, an error rate chart will look flat during a real outage."
+        },
+        {
+          "t": "check",
+          "q": "Relay returns `504 Gateway Timeout` on a request, and the app log for that request ID shows the handler finished successfully 8 seconds after the 504 was sent. What happened?",
+          "options": [
+            "The app crashed and restarted",
+            "The proxy's timeout was shorter than the handler's run time",
+            "The client sent a malformed request",
+            "The load balancer had no healthy targets"
+          ],
+          "answer": 1,
+          "explain": "A 504 is a proxy giving up on a slow upstream. The app kept working and finished, but nobody was waiting for its answer. A crash would give a 502 or 500, and no healthy targets would fail at once."
+        },
+        {
+          "t": "reveal",
+          "prompt": "After a deploy, Relay's error dashboard shows 502s for about 20 seconds and then nothing. Predict the cause before reading the answer.",
+          "answer": "During the rollout, nginx sent requests to app processes that were stopping or not yet listening, so it could not connect or the connection dropped mid-request. Brief 502s at deploy time point at missing graceful shutdown or readiness checks, not at a bug in the new code."
+        }
+      ]
+    },
+    {
+      "id": "d02-l4",
+      "title": "Headers, cookies, CORS, and HTTP versions",
+      "minutes": 14,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "Headers are where most behavior is negotiated: who the caller is, what format to use, how long to cache, and which origins may read a response. A missing or wrong header causes failures that look mysterious until you read the raw exchange."
+        },
+        {
+          "t": "compare",
+          "caption": "Headers that change behavior",
+          "columns": [
+            "Header",
+            "What it controls",
+            "Failure when wrong"
+          ],
+          "rows": [
+            [
+              "Content-Type",
+              "How the server parses the body",
+              "415 or 422 on a body that looks correct"
+            ],
+            [
+              "Authorization",
+              "Who the caller is",
+              "401 if missing, expired, or for the wrong environment"
+            ],
+            [
+              "Accept",
+              "Which formats the client can take",
+              "406, or HTML where JSON was expected"
+            ],
+            [
+              "Cache-Control",
+              "Whether and how long responses may be cached",
+              "Users see stale data, or private data is cached"
+            ],
+            [
+              "User-Agent",
+              "Which client is calling",
+              "Some APIs block or throttle default library agents"
+            ],
+            [
+              "X-Request-ID",
+              "Correlation across hops",
+              "Missing, and you cannot join proxy and app logs"
+            ]
+          ],
+          "verdict": "When a request behaves differently from two clients, diff their headers first."
+        },
+        {
+          "t": "h",
+          "text": "Cookies or the Authorization header"
+        },
+        {
+          "t": "tradeoff",
+          "title": "How a client proves who it is on each request",
+          "options": [
+            {
+              "name": "Cookie",
+              "gain": [
+                "The browser attaches it automatically",
+                "`HttpOnly` hides it from page scripts",
+                "Simple sessions for a web app"
+              ],
+              "cost": [
+                "Sent automatically, so cross-site request forgery must be handled",
+                "Bound to one domain and to browsers",
+                "Flags misconfigured silently"
+              ],
+              "choose": "Choose this when the client is a browser using your own web app on your own domain."
+            },
+            {
+              "name": "Authorization header",
+              "gain": [
+                "Explicit, so no forged cross-site requests",
+                "Works for scripts, mobile apps, and services"
+              ],
+              "cost": [
+                "Client code must store and attach the token",
+                "A token kept where scripts can read it is exposed to cross-site scripting"
+              ],
+              "choose": "Choose this when the caller is a script, a service, a mobile app, or an LLM tool."
+            }
+          ]
+        },
+        {
+          "t": "p",
+          "text": "Cookie flags decide when a cookie is sent. `Secure` limits it to HTTPS. `HttpOnly` hides it from JavaScript. `SameSite` controls whether it travels on requests started by other sites: `Strict`, `Lax`, or `None`, and `None` requires `Secure`. `Domain`, `Path`, and `Max-Age` set where and how long. A login that works locally but not in production is often a `Secure` cookie on plain HTTP or a `Domain` mismatch."
+        },
+        {
+          "t": "h",
+          "text": "CORS is a browser rule"
+        },
+        {
+          "t": "p",
+          "text": "Browsers stop a page from one **origin** (scheme, host, and port) reading responses from another unless the server opts in. **CORS** (Cross-Origin Resource Sharing) is that opt-in, expressed in response headers. For requests with a JSON body or an `Authorization` header, the browser first sends an `OPTIONS` **preflight** asking permission. curl and Python scripts never do any of this, which is why they keep working."
+        },
+        {
+          "t": "code",
+          "lang": "http",
+          "title": "A failed preflight from the new help site",
+          "code": "OPTIONS /api/messages HTTP/1.1\nHost: api.relay.example\nOrigin: https://help.shop.example\nAccess-Control-Request-Method: POST\nAccess-Control-Request-Headers: authorization, content-type\n\nHTTP/1.1 400 Bad Request\ncontent-type: text/plain; charset=utf-8\n\nDisallowed CORS origin",
+          "notes": [
+            "The browser announces where the page came from (`Origin`) and what the real request will use.",
+            "The server's CORS settings do not list `https://help.shop.example`, so it refuses and sends no `Access-Control-Allow-Origin`.",
+            "The real POST is never sent. The console shows a CORS error, and the app's message handler never runs."
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "The wildcard that does not work",
+          "text": "`Access-Control-Allow-Origin: *` is refused by browsers when the request carries credentials such as cookies. List the exact allowed origins instead. Also note that for requests that skip preflight, the server still runs the handler; CORS only hides the response from the page."
+        },
+        {
+          "t": "h",
+          "text": "HTTP versions"
+        },
+        {
+          "t": "compare",
+          "caption": "Three versions of the same semantics",
+          "columns": [
+            "",
+            "HTTP/1.1",
+            "HTTP/2",
+            "HTTP/3"
+          ],
+          "rows": [
+            [
+              "Transport",
+              "TCP, text messages",
+              "TCP, binary frames",
+              "QUIC over UDP"
+            ],
+            [
+              "Requests per connection",
+              "One at a time",
+              "Many streams interleaved",
+              "Many independent streams"
+            ],
+            [
+              "Lost packet effect",
+              "Stalls that connection",
+              "Stalls every stream on the connection",
+              "Stalls only the affected stream"
+            ],
+            [
+              "Typical failure",
+              "Too many parallel connections",
+              "One slow stream or bad link hurts all",
+              "UDP blocked, falls back to HTTP/2"
+            ]
+          ],
+          "verdict": "Methods, status codes, and headers mean the same in all three. Version matters for latency on bad networks and for proxies that must support it."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Sporadic 502s at low traffic",
+          "text": "If a proxy keeps idle connections to the app open longer than the app does, the proxy sometimes reuses a connection the app just closed and gets a reset. The result is rare 502s that cluster after quiet periods. Make the app's keep-alive timeout longer than the proxy's idle timeout."
+        },
+        {
+          "t": "check",
+          "q": "The Relay widget on a partner's site shows a CORS error, but the same request from curl returns 201. What does that tell you?",
+          "options": [
+            "The API is down for browser traffic but up for scripts",
+            "The response lacks CORS permission for that origin, which only browsers enforce",
+            "The browser's TLS version is too old for the API's certificate",
+            "curl is using a different, valid API key than the widget"
+          ],
+          "answer": 1,
+          "explain": "curl ignores CORS entirely, so it proves the endpoint works. The browser blocked the response because the server did not allow the partner's origin."
+        }
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "502 Bad Gateway, HTML page from nginx, nothing in the app log",
+      "causes": [
+        "The app process is down or restarting",
+        "Wrong upstream address or port",
+        "A worker died mid-request, killed for memory or by a worker timeout"
+      ],
+      "look": "nginx's error log at that second: the reason text after `[error]`.",
+      "confirm": "`connect() failed (111: Connection refused)` or `upstream prematurely closed connection`.",
+      "fix": "Restore the process or the address; if workers are dying, find why in the process manager or kernel log."
+    },
+    {
+      "symptom": "504 Gateway Timeout after a fixed number of seconds",
+      "causes": [
+        "The handler is slower than the proxy's read timeout",
+        "A slow dependency such as the LLM or a long query"
+      ],
+      "look": "App log for that request ID, and nginx's error log for `upstream timed out`.",
+      "confirm": "The handler finished, or was still running, after the proxy gave up.",
+      "fix": "Speed up or stream the slow step and give it its own shorter timeout. Raising the proxy timeout only delays the failure."
+    },
+    {
+      "symptom": "503 Service Unavailable on every request right after a deploy",
+      "causes": [
+        "No healthy targets registered at the load balancer",
+        "Health checks failing on the new version",
+        "The app returning 503 deliberately while overloaded"
+      ],
+      "look": "Target health in the load balancer, then the health check endpoint itself.",
+      "confirm": "Zero healthy targets, or the health endpoint failing when called directly.",
+      "fix": "Fix the health check or the startup failure, or roll back. Then check why the deploy did not wait for healthy targets."
+    },
+    {
+      "symptom": "Has been blocked by CORS policy in the browser console; curl works",
+      "causes": [
+        "The page's origin is not in the server's allowed list",
+        "A wildcard origin used with credentials",
+        "The preflight `OPTIONS` request fails or is not routed"
+      ],
+      "look": "The preflight request in devtools' Network tab: its status and the `Access-Control-Allow-*` headers.",
+      "confirm": "No `Access-Control-Allow-Origin` matching the page's exact origin.",
+      "fix": "Add the exact origin to the server's CORS configuration. Do not disable CORS checks in the browser."
+    },
+    {
+      "symptom": "415 Unsupported Media Type or 422 on a body that looks correct",
+      "causes": [
+        "Missing or wrong `Content-Type`",
+        "JSON sent as a form, or a form sent as JSON"
+      ],
+      "look": "The raw request headers, not the code that built them.",
+      "confirm": "The request's `Content-Type` does not match the body's format.",
+      "fix": "Send the correct `Content-Type`, or use the client library's JSON option, which sets it."
+    },
+    {
+      "symptom": "Duplicate records created a few seconds apart with identical content",
+      "causes": [
+        "A client retried a POST after a timeout while the first attempt was still running"
+      ],
+      "look": "Request IDs and timestamps for both records, and the client's timeout and retry settings.",
+      "confirm": "Two requests with the same body; the first took longer than the client's timeout.",
+      "fix": "Add an idempotency key the server honors. A longer client timeout narrows the window but does not close it."
+    },
+    {
+      "symptom": "401 Unauthorized from a call that worked yesterday",
+      "causes": [
+        "Expired token",
+        "Key for the wrong environment",
+        "A proxy stripped the `Authorization` header"
+      ],
+      "look": "Whether the header reaches the app, and the token's expiry or the key's environment.",
+      "confirm": "The app logs the request with no credentials, or with an expired or unknown one.",
+      "fix": "Refresh or rotate the credential, or configure the proxy to pass the header."
+    },
+    {
+      "symptom": "Login works locally but the session is lost in production",
+      "causes": [
+        "Cookie `Domain` does not match the production host",
+        "`SameSite` blocks the cookie on a cross-site request",
+        "`Secure` cookie on a plain HTTP hop"
+      ],
+      "look": "The `Set-Cookie` header on the login response and the `Cookie` header on the next request.",
+      "confirm": "The cookie is set but never sent back.",
+      "fix": "Correct the cookie's flags for the real domain and scheme."
+    },
+    {
+      "symptom": "Rare 502s that cluster after quiet periods, no app errors",
+      "causes": [
+        "The app closes idle keep-alive connections before the proxy does"
+      ],
+      "look": "Proxy error log for connection reset or premature close, timed just after idle gaps.",
+      "confirm": "The app's keep-alive timeout is shorter than the proxy's idle timeout.",
+      "fix": "Make the app's keep-alive timeout longer than the proxy's."
+    }
+  ],
+  "glossary": [
+    {
+      "term": "Start line",
+      "def": "The first line of an HTTP message: method, path, and version for a request; version and status code for a response."
+    },
+    {
+      "term": "Header",
+      "def": "A `Name: value` line of metadata about an HTTP message, such as its content type or credentials."
+    },
+    {
+      "term": "Content-Type",
+      "def": "The header that says what format the body is in, so the receiver knows how to parse it."
+    },
+    {
+      "term": "Safe method",
+      "def": "A method that only reads and changes nothing on the server: GET, HEAD, OPTIONS."
+    },
+    {
+      "term": "Idempotent",
+      "def": "Having the same effect on the server whether a request runs once or many times. PUT and DELETE are; POST is not."
+    },
+    {
+      "term": "Idempotency key",
+      "def": "A unique ID a client sends with every attempt of one operation, so the server can recognize repeats and do the work once."
+    },
+    {
+      "term": "Status code",
+      "def": "The three-digit result in a response's start line. The first digit gives the family: success, redirect, client error, or server error."
+    },
+    {
+      "term": "Upstream",
+      "def": "From a proxy's point of view, the server it forwards requests to, such as uvicorn behind nginx."
+    },
+    {
+      "term": "Cookie",
+      "def": "A small value the server asks the browser to store and send back automatically on later requests to the same site."
+    },
+    {
+      "term": "Origin",
+      "def": "The combination of scheme, host, and port that a web page was loaded from."
+    },
+    {
+      "term": "CORS",
+      "def": "Cross-Origin Resource Sharing. Response headers by which a server lets pages from other origins read its responses. Enforced by browsers only."
+    },
+    {
+      "term": "Preflight",
+      "def": "An OPTIONS request a browser sends before certain cross-origin requests, to ask the server whether the real request is allowed."
+    },
+    {
+      "term": "Multiplexing",
+      "def": "Carrying many requests and responses at once over a single connection, as HTTP/2 and HTTP/3 do."
+    },
+    {
+      "term": "QUIC",
+      "def": "A transport protocol over UDP with built-in encryption, used by HTTP/3."
+    }
+  ],
+  "apply": {
+    "title": "Read the raw exchanges of your own LLM calls",
+    "minutes": 15,
+    "steps": [
+      "Turn on HTTP debug logging in your LLM SDK or HTTP client and make one call. Find the method, path, status code, and every request and response header.",
+      "Identify the header that carries your API key, the `Content-Type` you send, and any request ID the provider returns.",
+      "Send one deliberately bad request, such as an invalid model name or a missing required field, and read the status code and error body.",
+      "Check whether your client retries automatically, on which status codes, and how many times. Write down whether any of your tools that change state could be retried."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d02-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "status-codes",
+        "proxies"
+      ],
+      "diagnostic": true,
+      "q": "A reverse proxy in front of an application returns `504 Gateway Timeout`. What does this tell you?",
+      "options": [
+        "The application raised an unhandled exception",
+        "The client took too long to send its request",
+        "The proxy gave up waiting for the application to answer",
+        "The proxy has no application servers configured"
+      ],
+      "answer": 2,
+      "explain": "A 504 is written by a proxy whose upstream did not respond within its timeout. The application may still be working on the request. An exception produces a 500 from the app, a slow client produces a 408, and a missing or unreachable upstream produces a 502 or 503.",
+      "why": [
+        "An unhandled exception is reported by the app as a 500.",
+        "A client that is too slow to send its request gets a 408 Request Timeout.",
+        "",
+        "An upstream that cannot be reached at all gives a 502, or a 503 at some load balancers."
+      ]
+    },
+    {
+      "id": "d02-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "status-codes",
+        "proxies",
+        "diagnosis"
+      ],
+      "context": "Relay's widget shows intermittent 502s. The app log has no errors at those times.",
+      "artifact": {
+        "lang": "log",
+        "title": "nginx error.log, then the kernel log, same second",
+        "code": "2026/11/24 10:14:07 [error] 2817#2817: *9104 upstream prematurely closed connection\n  while reading response header from upstream, client: 10.0.1.5,\n  request: \"POST /api/messages HTTP/1.1\", upstream: \"http://127.0.0.1:8000/api/messages\"\n2026/11/24 10:14:07 kernel: Out of memory: Killed process 31377 (uvicorn)"
+      },
+      "q": "What is the most likely cause of these 502s?",
+      "options": [
+        "A uvicorn worker was killed mid-request, so nginx received no response",
+        "The handler was slower than nginx's read timeout",
+        "nginx has the wrong upstream port configured",
+        "The client closed the connection before the response"
+      ],
+      "answer": 0,
+      "explain": "nginx says the upstream closed the connection before sending a response, and in the same second the kernel killed a uvicorn process for using too much memory. The app log is silent because the process died before it could log. A read timeout would give a 504, and a wrong port would give `connect() failed`.",
+      "why": [
+        "",
+        "A slow handler past the read timeout produces a 504 with `upstream timed out`.",
+        "A wrong port fails at connect time with `connect() failed (111: Connection refused)`.",
+        "A client hanging up is logged as 499 in the access log, not as an upstream error."
+      ]
+    },
+    {
+      "id": "d02-q03",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "put-patch",
+        "methods"
+      ],
+      "context": "Relay's ticket API follows HTTP semantics strictly. A script sends `PUT /api/tickets/8812` with the body `{\"status\": \"closed\"}` to close a ticket.",
+      "q": "What is the risk?",
+      "options": [
+        "The request is rejected because PUT cannot change a status",
+        "Other fields of the ticket, such as assignee and priority, are reset or cleared",
+        "The ticket is closed twice if the request is retried",
+        "A new ticket is created instead of updating 8812"
+      ],
+      "answer": 1,
+      "explain": "PUT replaces the resource with the representation sent, so fields left out may be cleared or set to defaults. PATCH is the method for changing one field. Retrying a PUT is harmless, because it is idempotent.",
+      "why": [
+        "PUT can set any field; the problem is the fields left out.",
+        "",
+        "PUT is idempotent, so a retry leaves the same state.",
+        "PUT to an existing resource's URL replaces that resource."
+      ]
+    },
+    {
+      "id": "d02-q04",
+      "type": "multi",
+      "level": 1,
+      "tags": [
+        "methods",
+        "idempotency"
+      ],
+      "q": "Which of these methods are idempotent as HTTP defines them? Select all that apply.",
+      "options": [
+        "GET",
+        "PUT",
+        "DELETE",
+        "POST",
+        "PATCH"
+      ],
+      "answers": [
+        0,
+        1,
+        2
+      ],
+      "explain": "GET, PUT, and DELETE leave the same server state however many times they run. POST is not idempotent, and PATCH is not guaranteed to be, because a patch such as 'increment by one' changes the result each time."
+    },
+    {
+      "id": "d02-q05",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "cors",
+        "browser"
+      ],
+      "context": "Relay's widget was embedded on a new partner site, https://help.partner.example. In the browser, every message fails and the console shows 'blocked by CORS policy'. A teammate runs the same POST with curl, using the same token, and gets 201 Created.",
+      "q": "What is the most likely cause?",
+      "options": [
+        "The API is rejecting the token when it comes from a browser",
+        "The partner site's TLS certificate is invalid",
+        "Relay's CORS settings do not allow the partner's origin",
+        "curl reaches a different, healthier API instance"
+      ],
+      "answer": 2,
+      "explain": "CORS is enforced only by browsers, so curl succeeding proves the endpoint and token work. The browser blocked the request because Relay did not grant the new origin permission. Token problems would appear as 401 in both clients.",
+      "why": [
+        "A token problem would produce a 401 for curl as well.",
+        "The page loaded, so its certificate was accepted; CORS errors are about the API's response headers.",
+        "",
+        "Instance differences would not produce a browser-only CORS message."
+      ]
+    },
+    {
+      "id": "d02-q06",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "content-type",
+        "status-codes"
+      ],
+      "artifact": {
+        "lang": "http",
+        "code": "POST /api/tickets/8812/messages HTTP/1.1\nHost: relay.example.com\nContent-Type: application/x-www-form-urlencoded\nContent-Length: 30\n\n{\"text\": \"Where is my order?\"}\n\nHTTP/1.1 422 Unprocessable Entity\ncontent-type: application/json\n\n{\"detail\": [{\"loc\": [\"body\"], ...}]}"
+      },
+      "q": "What should be fixed?",
+      "options": [
+        "The body is invalid JSON and must be reformatted",
+        "The request should use PUT instead of POST",
+        "The client must send `Content-Type: application/json`",
+        "The server needs a higher body size limit"
+      ],
+      "answer": 2,
+      "explain": "The body is valid JSON, but the header labels it as a form, so the server never parses it as JSON and cannot find the fields it expects. The method is correct for creating a message, and a size limit problem would return 413.",
+      "why": [
+        "The body is well-formed JSON; it is the label that is wrong.",
+        "POST is correct for creating a message; the method is not the issue.",
+        "",
+        "An oversized body is refused with 413 Content Too Large."
+      ]
+    },
+    {
+      "id": "d02-q07",
+      "type": "order",
+      "level": 2,
+      "tags": [
+        "cors",
+        "preflight"
+      ],
+      "q": "Put the steps of a cross-origin POST with a JSON body in the order they happen.",
+      "items": [
+        "The page's script calls the API from another origin",
+        "The browser sends an OPTIONS preflight with Origin and the intended method and headers",
+        "The server answers with Access-Control-Allow headers for that origin",
+        "The browser sends the real POST with the JSON body",
+        "The browser checks the response's allow headers and hands the response to the script"
+      ],
+      "explain": "The preflight comes first because a JSON body makes the request non-simple. If the preflight answer does not allow the origin, the real POST is never sent, which is why the app's handler shows no trace of the failed request."
+    },
+    {
+      "id": "d02-q08",
+      "type": "match",
+      "level": 2,
+      "tags": [
+        "status-codes"
+      ],
+      "q": "Match each status code to the Relay situation that should produce it.",
+      "pairs": [
+        [
+          "401",
+          "The request has no valid token"
+        ],
+        [
+          "403",
+          "A logged-in customer opens another customer's ticket"
+        ],
+        [
+          "409",
+          "Refunding an order that is already refunded"
+        ],
+        [
+          "422",
+          "The message body is missing its required text field"
+        ],
+        [
+          "429",
+          "A script polls the ticket list ten times a second"
+        ]
+      ],
+      "explain": "401 means the server does not know who you are, while 403 means it knows and refuses. 409 is about conflicting with current state, 422 about a body that parses but fails validation, and 429 about calling too often."
+    },
+    {
+      "id": "d02-q09",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "idempotency",
+        "retries"
+      ],
+      "context": "Relay's agent called the `create_ticket` tool once, but two identical tickets were created 10 seconds apart. The tool's HTTP client uses a 10-second timeout with automatic retries. The first request's server-side duration was 12.4 seconds.",
+      "q": "Which fix addresses the cause?",
+      "options": [
+        "Raise the client timeout to 30 seconds",
+        "Tell the model in its prompt to call the tool only once",
+        "Send an idempotency key on every attempt and have the server honor it",
+        "Turn off the database's unique constraints to avoid errors"
+      ],
+      "answer": 2,
+      "explain": "The client timed out while the first request was still running, then retried a non-idempotent POST. An idempotency key lets the server recognize the retry and return the first result. A longer timeout only narrows the window, and the model called the tool once.",
+      "why": [
+        "A longer timeout makes the race rarer, but any request slower than the new limit still duplicates.",
+        "The trace shows one tool call; the duplicate came from the HTTP client, below the model.",
+        "",
+        "Removing constraints would allow more duplicates, not fewer."
+      ]
+    },
+    {
+      "id": "d02-q10",
+      "type": "open",
+      "level": 3,
+      "tags": [
+        "status-codes",
+        "proxies",
+        "diagnosis"
+      ],
+      "context": "An alert fires: 5xx responses from Relay jumped to 4 percent. You have the load balancer logs, nginx logs, and app logs.",
+      "q": "Explain how you would determine which hop emitted the 5xx responses and what each answer would mean.",
+      "rubric": [
+        "Splits the 5xx responses by exact code: 500, 502, 503, 504",
+        "Uses body format, request IDs in the app log, or the logging hop to tell proxy-written from app-written responses",
+        "States that 500 points to app code, 502 to a failed connection or broken response, and 504 to a slow upstream",
+        "Names the proxy's error log as the place that gives the reason for 502 and 504",
+        "Treats 503 as no healthy backends or deliberate load shedding"
+      ],
+      "model": "First I would break the 5xx count down by code. 500s with JSON bodies and request IDs found in the app log are app exceptions, so I would read the tracebacks. 502s and 504s are written by nginx or the load balancer, so I would check which component logged them and read nginx's error log: connect failures or premature closes for 502, upstream timeouts for 504. 503s would send me to target health at the load balancer, or to the app's load shedding."
+    },
+    {
+      "id": "d02-q11",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "cookies",
+        "auth"
+      ],
+      "q": "Relay's web app stores the session ID in a cookie. Which flag stops a malicious script injected into the page from reading it?",
+      "options": [
+        "Secure",
+        "HttpOnly",
+        "SameSite=Lax",
+        "Max-Age"
+      ],
+      "answer": 1,
+      "explain": "HttpOnly hides the cookie from JavaScript while the browser still sends it with requests. Secure only restricts the cookie to HTTPS, SameSite controls cross-site sending, and Max-Age sets its lifetime.",
+      "why": [
+        "Secure keeps the cookie off plain HTTP but leaves it readable by scripts.",
+        "",
+        "SameSite limits when the cookie is sent with cross-site requests; scripts on the page can still read it.",
+        "Max-Age only sets how long the cookie lives."
+      ]
+    },
+    {
+      "id": "d02-q12",
+      "type": "mcq",
+      "level": 1,
+      "tags": [
+        "http-versions"
+      ],
+      "q": "What does HTTP/2 change compared with HTTP/1.1?",
+      "options": [
+        "It runs many requests at once over one TCP connection",
+        "It replaces status codes with error names",
+        "It runs over UDP instead of TCP",
+        "It removes headers to make messages smaller"
+      ],
+      "answer": 0,
+      "explain": "HTTP/2 multiplexes many streams over a single TCP connection with binary framing and compressed headers. Status codes and headers keep their meaning. Running over UDP, through QUIC, is what HTTP/3 does.",
+      "why": [
+        "",
+        "Status codes are unchanged across all HTTP versions.",
+        "That describes HTTP/3, which uses QUIC over UDP.",
+        "Headers remain; HTTP/2 compresses them."
+      ]
+    }
+  ],
+  "drills": [
+    {
+      "id": "d02-x1",
+      "title": "Six customers were refunded twice",
+      "brief": "Finance reports that six customers received two refunds yesterday between 10:30 and 11:15. All six went through Relay's agent and the `issue_refund` tool. The payment provider had a latency incident in that window. A teammate suspects the model is calling the tool twice and wants to add a prompt rule.",
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Add a rule to the system prompt forbidding repeated refunds",
+            "Disable the refund tool until the provider recovers fully",
+            "Open a ticket with the payment provider about duplicates",
+            "For one duplicated refund, line up the agent trace with the API's request log"
+          ],
+          "answer": 3,
+          "explain": "The suspected cause is a guess. Comparing the number of tool calls in the trace with the number of HTTP requests that reached the API tells you which layer duplicated the action. Changing the prompt or disabling the tool before that may fix nothing.",
+          "reveal": "The agent trace shows one `issue_refund` tool call. The API log shows two POST requests with the same order and amount.",
+          "artifact": {
+            "lang": "log",
+            "code": "10:42:01.120 POST /api/refunds req=7f2a order=88123 amount=40.00\n10:42:11.121 tool-client: timeout after 10.0s, retrying (attempt 2/3)\n10:42:11.140 POST /api/refunds req=9c41 order=88123 amount=40.00\n10:42:14.533 req=7f2a provider=ok refund_id=rf_501 status=200 dur=13.4s\n10:42:16.020 req=9c41 provider=ok refund_id=rf_502 status=200 dur=4.9s"
+          }
+        },
+        {
+          "q": "What does this log show?",
+          "options": [
+            "The model issued two tool calls for the same order",
+            "The tool's client timed out and resent a POST while the first was still running",
+            "The payment provider processed one request twice on its side",
+            "Two different customers asked for the same refund"
+          ],
+          "answer": 1,
+          "explain": "The client gave up at 10 seconds, but the server kept going and finished at 13.4 seconds. The retry was a second, independent POST, and both succeeded. Two request IDs and two refund IDs rule out a duplicate inside the provider.",
+          "reveal": "The tool client is configured to retry any request on timeout, including POSTs."
+        },
+        {
+          "q": "Why did the first request still complete after the client timed out?",
+          "options": [
+            "A client timeout does not cancel the work the server already started",
+            "The load balancer resent the request on the client's behalf",
+            "The provider queued the request and replayed it later",
+            "The API ignored the client's cancel message"
+          ],
+          "answer": 0,
+          "explain": "A timeout only means the client stopped waiting. The server does not learn that until it tries to write the response, so it finishes the work, including the refund. This is why a timeout leaves the outcome unknown rather than failed."
+        },
+        {
+          "q": "What is the durable fix?",
+          "options": [
+            "Raise the tool client's timeout to 60 seconds so slow refunds can finish",
+            "Send an idempotency key per tool call, stored by the API and passed to the provider",
+            "Stop retrying every request, reads included, so nothing is ever sent twice",
+            "Add a prompt rule telling the model never to repeat a refund for an order"
+          ],
+          "answer": 1,
+          "explain": "An idempotency key tied to the single tool call makes every retry return the first result, so retries stay safe. A longer timeout fails again on the next slow day, removing all retries loses resilience for reads, and the prompt was never the problem."
+        }
+      ],
+      "debrief": "Root cause: the tool's HTTP client retried a non-idempotent POST after a 10-second timeout, while the original request was still running against a slow payment provider. Both requests succeeded, so each affected customer was refunded twice. The model was a plausible but wrong suspect, cleared by comparing tool calls with HTTP requests. Fix it with an idempotency key per tool call, and only retry methods or requests that are safe to repeat."
+    },
+    {
+      "id": "d02-x2",
+      "title": "The widget works on one site and fails on another",
+      "brief": "On Monday the team embedded Relay's chat widget on the store's new help site, https://help.shop.example. The API lives at https://api.relay.example. Customers on the new site see 'Couldn't connect' on every message. The same widget on the old site works. A teammate's curl to the API returns 201.",
+      "steps": [
+        {
+          "q": "What do you look at first?",
+          "options": [
+            "Restart the API pods in case they are unhealthy",
+            "Open devtools on the new site and read the console and the failed request",
+            "Check the DNS record for api.relay.example",
+            "Rotate the widget's API key in case it leaked"
+          ],
+          "answer": 1,
+          "explain": "curl works and the old site works, so the API is up. Something differs only for this page in a browser, and devtools shows exactly what the browser sent and why it gave up. DNS and the key are shared with the working site.",
+          "reveal": "The console shows that the request was blocked by CORS policy. The Network tab shows a failed OPTIONS request and no POST at all.",
+          "artifact": {
+            "lang": "http",
+            "code": "OPTIONS /api/messages HTTP/1.1\nHost: api.relay.example\nOrigin: https://help.shop.example\nAccess-Control-Request-Method: POST\nAccess-Control-Request-Headers: authorization, content-type\n\nHTTP/1.1 400 Bad Request\ncontent-type: text/plain; charset=utf-8\n\nDisallowed CORS origin"
+          }
+        },
+        {
+          "q": "Why does curl succeed when the browser fails?",
+          "options": [
+            "CORS is a browser rule; curl sends no preflight and checks no allow headers",
+            "curl resolves the hostname through a different DNS server",
+            "curl's requests skip the load balancer and go straight to the app",
+            "The API caches curl responses from earlier tests"
+          ],
+          "answer": 0,
+          "explain": "Only browsers enforce CORS, to protect users from pages reading other sites' data. curl sends the POST directly and accepts whatever comes back. The difference lies in the client's rules, not in the network path.",
+          "reveal": "Relay's CORS configuration lists only the old site's origin."
+        },
+        {
+          "q": "What is the right fix?",
+          "options": [
+            "Set Access-Control-Allow-Origin to * for all requests",
+            "Ask customers to install an extension that disables CORS",
+            "Route the widget's calls through curl on a server",
+            "Add https://help.shop.example to the API's list of allowed origins"
+          ],
+          "answer": 3,
+          "explain": "Allowing the exact new origin is the minimal change. A wildcard is refused by browsers when credentials are sent, and widens access to every site. Extensions and server-side workarounds avoid the problem instead of configuring it."
+        }
+      ],
+      "debrief": "Root cause: the new help site's origin was not in Relay's CORS allow list, so the browser's preflight was refused and the real POST was never sent. The API, DNS, and token were healthy, which curl and the old site proved. Catch it earlier by making the origin list part of the launch checklist and testing from a browser, not curl. The general lesson: when browser and curl disagree, suspect a browser-only rule such as CORS or cookies."
+    }
+  ]
+}

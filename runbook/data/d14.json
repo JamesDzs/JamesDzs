@@ -1,0 +1,1214 @@
+{
+  "id": "d14",
+  "day": 14,
+  "phase": "p4",
+  "title": "Testing strategy",
+  "tagline": "What each kind of test can and cannot tell you, and why some tests lie.",
+  "minutes": 60,
+  "why": "You already judge systems by their tests and evals, so the question that matters is what a green result actually proves. A passing test only covers what it exercised, a mock only behaves the way you believed the real thing behaves, and a retried flake can hide a bug that is also hitting customers. This day is about reading test results with the same suspicion you bring to a metric.",
+  "objectives": [
+    "Say what a passing unit, integration, end-to-end, or contract test proves, and name what it cannot prove",
+    "Spot an over-mocked test and name the real dependency it should run against",
+    "Diagnose a flaky test by separating time, order, shared state, environment, and concurrency causes",
+    "Argue against blanket retries using a concrete case where the flake was a real bug",
+    "Tell a meaningful assertion from coverage that cannot fail, and turn a bug into a regression test"
+  ],
+  "lessons": [
+    {
+      "id": "d14-l1",
+      "title": "What each level of test buys you",
+      "minutes": 14,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "A test is an experiment that runs part of the system and checks one claim about it. Each level of test runs a different amount of the real system. The more it runs, the more a pass proves, and the slower, costlier, and more fragile the test becomes."
+        },
+        {
+          "t": "compare",
+          "caption": "Three levels of test, on Relay",
+          "columns": [
+            "",
+            "Unit",
+            "Integration",
+            "End-to-end"
+          ],
+          "rows": [
+            [
+              "Runs",
+              "One function or class, dependencies replaced",
+              "Your code against a real Postgres, Redis, or HTTP layer",
+              "The deployed system through its public interface"
+            ],
+            [
+              "Relay example",
+              "Refund eligibility rules for a given order",
+              "`issue_refund` writing to a real Postgres",
+              "A customer asks for a refund in the web app and sees it confirmed"
+            ],
+            [
+              "Speed",
+              "Milliseconds",
+              "Seconds",
+              "Tens of seconds to minutes"
+            ],
+            [
+              "A pass proves",
+              "The logic is right, given its inputs",
+              "Your code and that dependency agree",
+              "The main path works when everything is wired up"
+            ],
+            [
+              "It cannot prove",
+              "That queries, config, or wiring work",
+              "That other services or the browser work",
+              "Which part broke when it fails, or that rare paths work"
+            ],
+            [
+              "Flakiness",
+              "Rare",
+              "Some, from timing and shared data",
+              "Most, from many moving parts"
+            ]
+          ],
+          "verdict": "Use unit tests for logic with many cases, integration tests for every seam with a database or external API, and a few end-to-end tests for the paths that make money or lose it."
+        },
+        {
+          "t": "p",
+          "text": "A **contract test** checks the agreement between two services without running both together. The consumer records what it sends and expects, and the provider's build verifies it still honors those expectations. For Relay, a contract between the web app and the API catches a renamed field before deploy, which neither side's unit tests would see."
+        },
+        {
+          "t": "p",
+          "text": "Two more names describe purpose rather than level. A **smoke test** is a quick check that the system starts and its most basic path works, usually run right after a deploy. A **regression test** pins a behavior that once broke, so the same bug cannot come back unnoticed."
+        },
+        {
+          "t": "code",
+          "lang": "text",
+          "title": "Relay's test suite, one CI run",
+          "code": "level         tests   duration   failures, last 30 days\nunit          1,240     38 s       12   (all real bugs)\nintegration     214    4 m 06 s    31   (19 real, 12 flaky)\ncontract         36     22 s        4   (all real field changes)\nend-to-end       18   11 m 40 s    27   (6 real, 21 flaky)",
+          "notes": [
+            "End-to-end tests are about 1 percent of the tests and about two thirds of the time.",
+            "Most end-to-end failures were flaky. Each one cost someone an investigation or trained the team to ignore red builds.",
+            "Contract tests are small and cheap, and every failure they produced was a real breaking change."
+          ]
+        },
+        {
+          "t": "tradeoff",
+          "title": "The pyramid or the trophy",
+          "options": [
+            {
+              "name": "Test pyramid",
+              "gain": [
+                "Fast suite, mostly unit tests",
+                "Failures point at one function",
+                "Cheap to run on every commit"
+              ],
+              "cost": [
+                "Many seams are only tested with mocks",
+                "Green suites that miss wiring and query bugs"
+              ],
+              "choose": "Choose this when most of the risk is in logic, such as pricing rules or parsers."
+            },
+            {
+              "name": "Testing trophy",
+              "gain": [
+                "Most tests run against real dependencies",
+                "Catches query, config, and serialization bugs",
+                "Tests survive refactors"
+              ],
+              "cost": [
+                "Slower suite",
+                "Needs containers or test databases in CI",
+                "Failures take longer to localize"
+              ],
+              "choose": "Choose this when most of the risk is in how parts connect, which is true for a typical web backend like Relay."
+            }
+          ]
+        },
+        {
+          "t": "check",
+          "q": "A unit test for `issue_refund` passes with the payment client and the order repository both replaced by mocks. What has it proved?",
+          "options": [
+            "Refunds work in production",
+            "Its own logic is right, if the mocks match reality",
+            "The payment provider accepts Relay's refund requests"
+          ],
+          "answer": 1,
+          "explain": "A unit test proves logic under assumptions. Whether the real payment API and the real database behave like the mocks is a separate claim that only an integration or contract test can check."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Tests green, production broken",
+          "text": "List every component the failing production path touches. For each one, ask whether any test ran the real thing or a stand-in. The bug almost always lives at a seam that only ever met a mock."
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "Two kinds of code in an agent",
+          "text": "Relay's tool functions, prompt builders, and response parsers are ordinary deterministic code, and every level above applies to them. The model's decision about which tool to call is not deterministic, so it needs a different kind of check, which Day 27 covers."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Relay has 18 end-to-end tests, and 21 of their 27 failures last month were flaky. Before deleting any, what would you want to know about each one?",
+          "answer": "Whether a cheaper test already covers the same risk. If an integration test checks the same seam, the end-to-end test adds little and costs a lot. Keep the few end-to-end tests that guard paths nothing else covers, such as login and refund, and fix their flakiness first."
+        }
+      ]
+    },
+    {
+      "id": "d14-l2",
+      "title": "Mocks, fakes, and the over-mocking trap",
+      "minutes": 14,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "A **test double** is anything that stands in for a real dependency during a test. Doubles make tests fast and deterministic. They also carry a hidden risk: a double behaves the way you believe the real dependency behaves, and if that belief is wrong, the test and the code are wrong together."
+        },
+        {
+          "t": "compare",
+          "caption": "Four kinds of test double",
+          "columns": [
+            "",
+            "What it does",
+            "Relay example",
+            "Main risk"
+          ],
+          "rows": [
+            [
+              "Stub",
+              "Returns canned answers to calls",
+              "`lookup_order` always returns one fixed order",
+              "Never returns the error or edge case production does"
+            ],
+            [
+              "Mock",
+              "Checks that expected calls were made",
+              "Asserts `payments.refund` was called once with given arguments",
+              "Pins how the code works instead of what it achieves"
+            ],
+            [
+              "Fake",
+              "A working, simplified implementation",
+              "An in-memory dictionary in place of Redis",
+              "Drifts from the real thing, such as missing expiry"
+            ],
+            [
+              "Spy",
+              "Wraps the real thing and records calls",
+              "Real email sender wrapped to count sends",
+              "Still depends on the real dependency being available"
+            ]
+          ],
+          "verdict": "Prefer stubs and fakes for things you do not want to call, and keep mock-style call assertions for effects you cannot observe any other way, such as an email being sent."
+        },
+        {
+          "t": "h",
+          "text": "A test that agrees with the bug"
+        },
+        {
+          "t": "code",
+          "lang": "python",
+          "title": "A refund test that passed for months",
+          "code": "def test_issue_refund():\n    payments = Mock()\n    orders = Mock()\n    orders.get.return_value = Order(id=\"o_123\", total=Decimal(\"19.99\"))\n\n    issue_refund(\"o_123\", payments=payments, orders=orders)\n\n    payments.refund.assert_called_once_with(\n        order_id=\"o_123\", amount=Decimal(\"19.99\")\n    )\n    orders.mark_refunded.assert_called_once_with(\"o_123\")",
+          "notes": [
+            "Both dependencies are mocks, so nothing real is exercised except a few lines of glue.",
+            "The assertion encodes a belief: the payment API takes the amount in dollars. The real API takes integer cents.",
+            "The code and the test share the same wrong belief, so the test is green and every refund fails in production with a 422.",
+            "The test checks which calls were made. It never checks the outcome, that the customer got their money back."
+          ]
+        },
+        {
+          "t": "p",
+          "text": "**Testing behavior** means asserting on outcomes a user or caller could observe: the refund exists, the order is marked refunded, the response says so. **Testing implementation** means asserting on internal calls and their arguments. Implementation tests break on harmless refactors and still pass when the outcome is wrong, which is the worst of both."
+        },
+        {
+          "t": "list",
+          "items": [
+            "Most of the test is setting up mocks, and the assertions are about mock calls.",
+            "The test breaks when you rename an internal method, though nothing visible changed.",
+            "Mocks return data shapes nobody checked against the real service.",
+            "Third-party clients, such as the payment SDK, are mocked directly inside business logic tests.",
+            "Every test passes, and the bugs reported from production are all at the edges with real services."
+          ]
+        },
+        {
+          "t": "tradeoff",
+          "title": "Mock or real dependency",
+          "options": [
+            {
+              "name": "Mock or stub",
+              "gain": [
+                "Fast and deterministic",
+                "Easy to simulate errors and timeouts",
+                "No setup"
+              ],
+              "cost": [
+                "Proves nothing about the real dependency",
+                "Encodes your assumptions as truth",
+                "Couples tests to implementation"
+              ],
+              "choose": "Choose this for services you cannot run in a test, and for forcing rare errors such as a timeout from the LLM API."
+            },
+            {
+              "name": "Fake",
+              "gain": [
+                "Fast, with realistic behavior for common cases",
+                "Reusable across many tests"
+              ],
+              "cost": [
+                "Must be kept in step with the real thing",
+                "Missing features hide bugs, such as TTLs or constraints"
+              ],
+              "choose": "Choose this when a dependency is used by many tests and its behavior is simple enough to copy faithfully."
+            },
+            {
+              "name": "Real dependency in a container",
+              "gain": [
+                "Real SQL, real constraints, real serialization",
+                "Catches the seam bugs mocks hide"
+              ],
+              "cost": [
+                "Slower start, more CI setup",
+                "Needs care to isolate data between tests"
+              ],
+              "choose": "Choose this for Postgres, Redis, and pgvector, which you can start in a container for each test run."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Mocking what you do not own",
+          "text": "When you mock a third-party client directly, your test describes your guess about its API. Wrap the client in a small adapter of your own, mock the adapter in business logic tests, and test the adapter itself against the provider's sandbox or a recorded contract."
+        },
+        {
+          "t": "check",
+          "q": "Relay's session tests use an in-memory dictionary in place of Redis. In production, sessions never expire. Which double was involved, and what went wrong?",
+          "options": [
+            "A mock, which asserted the wrong call",
+            "A fake, which did not implement key expiry",
+            "A spy, which recorded calls but did not forward them"
+          ],
+          "answer": 1,
+          "explain": "An in-memory dictionary is a fake: a working but simplified implementation. It had no notion of TTL, so no test could ever observe expiry, and code that never set a TTL looked correct."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Finding the seam that only met a mock",
+          "text": "Search the test suite for every place the failing dependency is replaced. If no test anywhere runs it for real, that is where to add one integration test, and it should reproduce the production failure before you fix the code."
+        },
+        {
+          "t": "reveal",
+          "prompt": "You replace the mocked refund test with an integration test against the payment provider's sandbox. What does the new test catch that the old one could not, and what does it cost?",
+          "answer": "It catches any mismatch between Relay's request and what the provider accepts, such as dollars versus cents or a renamed field. It costs network time, a sandbox account, and some flakiness from a remote service, so keep it to a few tests at that seam."
+        }
+      ]
+    },
+    {
+      "id": "d14-l3",
+      "title": "Flaky tests",
+      "minutes": 15,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "A **flaky test** passes and fails on the same code. Something it depends on varies between runs: the clock, the order tests run in, shared data, the network, thread timing, or random values. Sometimes the variation is in the test. Sometimes it is in the code under test, and the flake is a real bug with a low reproduction rate."
+        },
+        {
+          "t": "compare",
+          "caption": "Where flakiness comes from",
+          "columns": [
+            "",
+            "How it shows up",
+            "Relay example"
+          ],
+          "rows": [
+            [
+              "Time",
+              "Fails near midnight, month end, or in another time zone",
+              "Refund window computed in local time on laptops, UTC in CI"
+            ],
+            [
+              "Order and shared state",
+              "Passes alone, fails after a particular other test",
+              "One test leaves a ticket in the database that another counts"
+            ],
+            [
+              "Network",
+              "Timeouts or connection errors to a real remote service",
+              "A test that calls the live LLM API"
+            ],
+            [
+              "Concurrency",
+              "Fails more on busy or many-core machines",
+              "Two parallel refund requests race past the idempotency check"
+            ],
+            [
+              "Randomness",
+              "Fails with some inputs and not others",
+              "Unseeded random test data hits an empty list now and then"
+            ],
+            [
+              "Fixed waits",
+              "Fails on slow runners",
+              "Sleeping one second and hoping the worker has finished"
+            ]
+          ],
+          "verdict": "Classify before you fix. Each cause has a different remedy, and the concurrency row is the one most likely to be a real production bug."
+        },
+        {
+          "t": "code",
+          "lang": "log",
+          "title": "CI log: a red test that turned the build green",
+          "code": "14:02:11 job=test-integration runner=ci-runner-17 commit=4f2a9c1 workers=4\n14:02:11 test order: random, seed=8812734\n14:05:40 RUN   test_refunds::test_concurrent_retry_refunds_once\n14:05:40   factory: created order o_7c1e amount_cents=4599\n14:05:40   sent 2 concurrent POST /refunds, Idempotency-Key k_51d0\n14:05:41   responses: 201, 201\n14:05:41 FAIL  test_refunds::test_concurrent_retry_refunds_once\n14:05:41   AssertionError: refunds for o_7c1e: expected 1, got 2\n14:05:41 RETRY 1/2 test_refunds::test_concurrent_retry_refunds_once\n14:05:41   factory: created order o_93b2 amount_cents=4599\n14:05:41   sent 2 concurrent POST /refunds, Idempotency-Key k_a7e4\n14:05:42   responses: 201, 200 (replayed)\n14:05:42 PASS  test_refunds::test_concurrent_retry_refunds_once (after 1 retry)\n14:06:58 summary passed=214 failed=0 retried=1\n14:06:58 job status: SUCCESS",
+          "notes": [
+            "The factory made a fresh order, so leftover data from another test cannot explain two refunds for `o_7c1e`.",
+            "`201, 201` means both concurrent requests created a refund. The server did not stop the duplicate.",
+            "The retry passed because the two requests happened not to overlap that time. Nothing was fixed.",
+            "`failed=0` and `SUCCESS` are what the dashboard shows. The only trace of the bug is one line saying `retried=1`."
+          ]
+        },
+        {
+          "t": "flow",
+          "title": "Why the refund test fails only sometimes",
+          "steps": [
+            {
+              "actor": "Test",
+              "label": "Sends requests A and B at the same moment",
+              "detail": "Both carry the same idempotency key, the way a double click or a client retry would."
+            },
+            {
+              "actor": "API, request A",
+              "label": "Looks for a refund with this key",
+              "detail": "Finds none, so it decides to create one."
+            },
+            {
+              "actor": "API, request B",
+              "label": "Looks for a refund with this key",
+              "detail": "Request A has not inserted yet, so B also finds none.",
+              "fail": "This gap is the race. If B checks after A has inserted, B replays the first refund and the test passes."
+            },
+            {
+              "actor": "API, request A",
+              "label": "Inserts the refund and returns 201",
+              "detail": "The first refund is correct."
+            },
+            {
+              "actor": "API, request B",
+              "label": "Inserts a second refund and returns 201",
+              "detail": "B acts on a check that is already out of date.",
+              "fail": "The test sees 'expected 1, got 2'. In production a customer is refunded twice."
+            },
+            {
+              "actor": "Postgres",
+              "label": "Accepts both rows",
+              "detail": "No unique constraint covers the idempotency key, so nothing refuses the second insert.",
+              "fail": "Only a database constraint closes the gap across every API instance."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Blanket retries hide real bugs",
+          "text": "The race that failed this test 3 percent of the time in CI also fires in production whenever a customer double-clicks or a client retries. A retry policy turned the only signal into a green build. Retries are fine for a known infrastructure blip; applied to every test, they hide exactly the bugs that tests exist to find."
+        },
+        {
+          "t": "h",
+          "text": "Diagnosing a flake"
+        },
+        {
+          "t": "list",
+          "style": "number",
+          "items": [
+            "Read the failure message as evidence. `expected 1, got 2` is a duplicate, not a timeout, and that already points at concurrency.",
+            "Pull the history: failure rate, which runners, which commits, and which tests ran before it in failing runs.",
+            "Run it alone in a loop a few hundred times. Failing alone points at time, randomness, or concurrency.",
+            "Run the suite with the same random order seed as a failing run. Failing only in order points at shared state.",
+            "If it fails only in CI, list what differs: time zone, CPU count, parallel workers, slower disks, network access.",
+            "Raise the failure rate on purpose: more parallel requests, shorter timeouts, injected delays. A flake you can trigger every time is easy to fix."
+          ]
+        },
+        {
+          "t": "tradeoff",
+          "title": "Retry, quarantine, or fix",
+          "options": [
+            {
+              "name": "Retry automatically",
+              "gain": [
+                "Green builds right away",
+                "No one has to investigate"
+              ],
+              "cost": [
+                "Hides real races and ordering bugs",
+                "Flake rate grows unseen",
+                "Slower builds over time"
+              ],
+              "choose": "Choose this only for a narrow, named infrastructure failure, with retries counted and reported."
+            },
+            {
+              "name": "Quarantine",
+              "gain": [
+                "Unblocks the team",
+                "Keeps the test visible as a known problem"
+              ],
+              "cost": [
+                "Coverage is gone until it returns",
+                "Quarantine becomes a graveyard without an owner and a deadline"
+              ],
+              "choose": "Choose this when the cause is unknown and the fix will take days, and give it an owner and a date."
+            },
+            {
+              "name": "Fix now",
+              "gain": [
+                "Restores the signal",
+                "Often finds a real bug"
+              ],
+              "cost": [
+                "Investigation time today"
+              ],
+              "choose": "Choose this whenever the flake touches money, auth, or concurrency, because those flakes are most often real."
+            }
+          ]
+        },
+        {
+          "t": "check",
+          "q": "In the CI log above, what does the passing retry prove?",
+          "options": [
+            "The code is correct and the first failure was noise",
+            "The two requests did not overlap on the second attempt",
+            "The test database was cleaned between attempts"
+          ],
+          "answer": 1,
+          "explain": "A race shows up only when timing lines up. The second attempt passed because the requests did not overlap, so it says nothing about correctness. The first failure is the informative run."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Passes alone, fails in the suite",
+          "text": "Get the order seed of a failing run and bisect the tests that ran before it until one earlier test is enough to trigger the failure. That test leaves something behind: rows, a cache entry, a changed setting, or a patched global."
+        },
+        {
+          "t": "callout",
+          "kind": "rule",
+          "title": "A flake is a bug report",
+          "text": "Treat every flaky test as a bug report with a low reproduction rate. Either the test depends on something it should not, or the code does. Both are worth knowing, and only the investigation tells you which."
+        },
+        {
+          "t": "reveal",
+          "prompt": "A test fails only in CI, only between 4 p.m. and midnight Pacific Standard Time. Before reading the code, what do you suspect?",
+          "answer": "A date computed in two time zones. CI runs in UTC, where the date has already rolled over during those hours, while the laptop and the test's expected value use local time. Look for code that mixes 'today' in local time with timestamps in UTC."
+        }
+      ]
+    },
+    {
+      "id": "d14-l4",
+      "title": "Test data, coverage, and what to test first",
+      "minutes": 12,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "Good tests need good data and a way to tell whether they can actually fail. A suite can run every line of code and still check almost nothing, and a suite whose tests share data will fail for reasons unrelated to the code."
+        },
+        {
+          "t": "p",
+          "text": "A **fixture** is data or setup prepared for a test. A **factory** builds a fresh object with sensible defaults, so each test states only the fields it cares about. Isolation comes from giving every test its own data, such as a new order with a unique ID, or from rolling back each test's database transaction when it ends."
+        },
+        {
+          "t": "compare",
+          "caption": "Three ways to measure a test suite",
+          "columns": [
+            "",
+            "Line coverage",
+            "Branch coverage",
+            "Mutation score"
+          ],
+          "rows": [
+            [
+              "Measures",
+              "Which lines ran during tests",
+              "Which sides of each condition ran",
+              "Whether tests fail when the code is deliberately changed"
+            ],
+            [
+              "Catches",
+              "Code no test reaches at all",
+              "An `if` whose else-path is never taken",
+              "Tests that run code without checking its result"
+            ],
+            [
+              "Misses",
+              "Lines that ran with no assertion",
+              "Same problem, one level finer",
+              "Little; it is the closest check of whether tests can fail"
+            ],
+            [
+              "Cost",
+              "Cheap",
+              "Cheap",
+              "Slow, since the suite reruns for every change"
+            ]
+          ],
+          "verdict": "Use coverage as a floor that finds untested code. Use mutation testing on critical modules to find tests that cannot fail."
+        },
+        {
+          "t": "code",
+          "lang": "python",
+          "title": "A test with 100 percent coverage that cannot fail",
+          "code": "def test_refund_eligibility():\n    order = make_order(placed_days_ago=29)\n    result = check_refund_eligibility(order)\n    assert result is not None\n\n# coverage: refunds/policy.py  100%\n# mutation: `days_ago <= 30` -> `days_ago < 30`  SURVIVED\n# mutation: `return True` -> `return False`        SURVIVED",
+          "notes": [
+            "Every line of the policy ran, so coverage reports 100 percent.",
+            "The assertion accepts any non-None result, including the wrong answer.",
+            "Both mutants survived. The test passes whatever the policy decides.",
+            "A meaningful test would check day 30 returns true and day 31 returns false."
+          ]
+        },
+        {
+          "t": "tradeoff",
+          "title": "Coverage target vs meaningful assertions",
+          "options": [
+            {
+              "name": "Chase a coverage percentage",
+              "gain": [
+                "Easy to measure and enforce in CI",
+                "Finds code that is never run"
+              ],
+              "cost": [
+                "Rewards tests with weak assertions",
+                "Says nothing about edge cases",
+                "Encourages testing trivial code"
+              ],
+              "choose": "Choose this as a floor for new code, not as the measure of quality."
+            },
+            {
+              "name": "Assert on risky behavior",
+              "gain": [
+                "Tests fail when behavior is wrong",
+                "Effort goes where bugs cost most"
+              ],
+              "cost": [
+                "Harder to measure",
+                "Needs judgment about what is risky"
+              ],
+              "choose": "Choose this for money, auth, data migrations, and parsing of external input, and check it with mutation testing."
+            }
+          ]
+        },
+        {
+          "t": "p",
+          "text": "Two techniques in brief. **Property-based testing** generates many inputs and checks a rule that must always hold, such as 'refunding an order twice never refunds more than its total', then shrinks any failure to a minimal case. **Snapshot testing** saves an output and fails when it changes. It catches every change, and reviewers soon approve updates without reading them."
+        },
+        {
+          "t": "list",
+          "items": [
+            "Paths that move money: `issue_refund` and anything near payments.",
+            "Authorization checks: can one customer read another's ticket.",
+            "Data migrations and backfills, which run once and cannot be retried cleanly.",
+            "Parsing of untrusted input, including the tool-call arguments the model returns.",
+            "Every bug that reached production, as a regression test that fails before the fix."
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "A test that cannot fail",
+          "text": "Before trusting a new test, break the code it covers on purpose and watch it go red. A test that stays green when the code is wrong is worse than no test, because it adds confidence it has not earned."
+        },
+        {
+          "t": "h",
+          "text": "Looking ahead: tests for non-deterministic systems"
+        },
+        {
+          "t": "p",
+          "text": "Everything today assumes the same input gives the same output. Relay's model does not. An assertion on its exact reply is a flaky test by construction, and a retry just samples again. Day 27 handles that with evals, which replace one pass or fail with a pass rate over a dataset. The deterministic code around the model still gets ordinary tests."
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "Keep live model calls out of the unit suite",
+          "text": "A test that calls the real LLM API is slow, costs money, hits rate limits, and varies by sampling. Stub the model in unit and integration tests, test the parser and tool code deterministically, and measure model behavior in the eval harness."
+        },
+        {
+          "t": "reveal",
+          "prompt": "A customer was refunded twice. You fix the race. What test do you add, and how do you know it is a real regression test?",
+          "answer": "An integration test that sends two concurrent refund requests with the same idempotency key against a real Postgres and asserts exactly one refund exists. Run it against the old code first. If it fails there and passes after the fix, it guards the bug."
+        },
+        {
+          "t": "check",
+          "q": "Which check best reveals that a test suite contains tests that cannot fail?",
+          "options": [
+            "Raising the line coverage target to 95 percent",
+            "Mutation testing on the module",
+            "Running the suite twice in a row"
+          ],
+          "answer": 1,
+          "explain": "Mutation testing changes the code and expects a test to fail. Surviving mutants are behavior no test checks. Coverage only shows lines ran, and rerunning the suite measures flakiness, not strength."
+        }
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Tests green, production broken",
+      "causes": [
+        "The failing seam was only ever tested against a mock or fake",
+        "Test data much smaller or cleaner than production",
+        "Config or wiring that tests never load"
+      ],
+      "look": "The components on the failing production path, and which tests replaced each one with a double.",
+      "confirm": "No test runs the real dependency at the seam where the production error occurs.",
+      "fix": "Add one integration or contract test at that seam that reproduces the failure, then fix the code. It costs some suite speed."
+    },
+    {
+      "symptom": "Test passes alone and fails in the suite",
+      "causes": [
+        "Shared state left by an earlier test: rows, cache, globals, patched settings",
+        "Test order dependency"
+      ],
+      "look": "The random order seed of a failing run and the list of tests that ran before it.",
+      "confirm": "Running just the earlier test followed by this one reproduces the failure every time.",
+      "fix": "Give each test its own data and roll back or clean up after it. Removing the shared state beats ordering tests."
+    },
+    {
+      "symptom": "Test fails only in CI",
+      "causes": [
+        "Time zone or locale differs",
+        "More parallel workers or fewer CPUs change timing",
+        "No network access, or different service versions"
+      ],
+      "look": "Environment differences between CI and local: TZ, CPU count, worker count, service images, and the time of day of failures.",
+      "confirm": "Setting the same variable locally, such as TZ=UTC or the same worker count, reproduces it.",
+      "fix": "Make the test independent of the difference, or pin the environment so local matches CI."
+    },
+    {
+      "symptom": "A test that cannot fail",
+      "causes": [
+        "Assertion too weak, such as `is not None`",
+        "Asserting on a mock's return value instead of the code's output",
+        "Exceptions swallowed inside the test"
+      ],
+      "look": "Break the code under test on purpose, or run mutation testing on that module.",
+      "confirm": "The test stays green with the code deliberately wrong.",
+      "fix": "Assert on the specific outcome and the boundary cases. Then confirm it goes red on broken code."
+    },
+    {
+      "symptom": "Flaky test that passes on retry, with a duplicate or wrong count in the message",
+      "causes": [
+        "A real race condition in the code, such as check-then-insert without a unique constraint"
+      ],
+      "look": "The failure message, and whether the test sends concurrent requests. Then production data for the same symptom.",
+      "confirm": "Running the test in a loop with more concurrency raises the failure rate, and production shows duplicates.",
+      "fix": "Fix the race with a database constraint or lock. Never let a retry hide it."
+    },
+    {
+      "symptom": "Test breaks after a refactor that changed no behavior",
+      "causes": [
+        "The test asserts on internal calls instead of outcomes",
+        "Over-mocking couples the test to implementation"
+      ],
+      "look": "Whether the failing assertion is about a mock call or an observable result.",
+      "confirm": "The feature still works end to end, and only call-shape assertions failed.",
+      "fix": "Rewrite the test to assert on outcomes and use real or fake dependencies where possible."
+    },
+    {
+      "symptom": "Build stays green while the retried count keeps rising",
+      "causes": [
+        "Blanket retries hiding several flaky tests",
+        "A shared dependency in CI becoming unstable"
+      ],
+      "look": "Retries per test over the last few weeks, from CI history.",
+      "confirm": "A few tests account for most retries, and their first-attempt failures share a message.",
+      "fix": "Report first-attempt failures, quarantine with an owner and a deadline, and fix by cause."
+    },
+    {
+      "symptom": "Test fails around midnight, at month end, or on a specific date",
+      "causes": [
+        "Code or test uses the current time directly",
+        "Mixing local time and UTC"
+      ],
+      "look": "Failure timestamps and every place the code reads the clock.",
+      "confirm": "Freezing the clock at the failing time reproduces it.",
+      "fix": "Pass the time in or freeze it in tests, and store and compare times in UTC."
+    }
+  ],
+  "glossary": [
+    {
+      "term": "Unit test",
+      "def": "A test of one function or class with its dependencies replaced. Fast and precise, and silent about wiring and real services."
+    },
+    {
+      "term": "Integration test",
+      "def": "A test that runs your code against a real dependency, such as Postgres or an HTTP layer, to check the seam between them."
+    },
+    {
+      "term": "End-to-end test",
+      "def": "A test that drives the deployed system through its public interface, as a user would."
+    },
+    {
+      "term": "Contract test",
+      "def": "A test that checks two services still agree on request and response shapes, without running both together."
+    },
+    {
+      "term": "Test double",
+      "def": "Any stand-in for a real dependency during a test: a stub, mock, fake, or spy."
+    },
+    {
+      "term": "Mock",
+      "def": "A test double that checks which calls were made to it and with what arguments."
+    },
+    {
+      "term": "Fake",
+      "def": "A working, simplified implementation of a dependency, such as an in-memory store in place of Redis."
+    },
+    {
+      "term": "Flaky test",
+      "def": "A test that both passes and fails on the same code, because something it depends on varies between runs."
+    },
+    {
+      "term": "Quarantine",
+      "def": "Moving a flaky test out of the blocking suite while it is investigated, ideally with an owner and a deadline."
+    },
+    {
+      "term": "Regression test",
+      "def": "A test that pins a behavior that once broke, so the same bug cannot return unnoticed."
+    },
+    {
+      "term": "Smoke test",
+      "def": "A quick check that a system starts and its most basic path works, often run right after a deploy."
+    },
+    {
+      "term": "Mutation testing",
+      "def": "Deliberately changing the code in small ways and checking that some test fails. Surviving changes reveal tests that cannot fail."
+    },
+    {
+      "term": "Property-based testing",
+      "def": "Generating many inputs automatically and checking a rule that must hold for all of them."
+    },
+    {
+      "term": "Factory",
+      "def": "A helper that builds a fresh test object with sensible defaults, so each test sets only what it cares about."
+    }
+  ],
+  "apply": {
+    "title": "Audit what your own tests actually prove",
+    "minutes": 20,
+    "steps": [
+      "Pick the most important function in your project, such as a tool your agent calls or your eval grader. Find its tests and list every dependency they replace with a mock or stub.",
+      "Break that function on purpose, for example by flipping a comparison, and run its tests. Note whether any test goes red.",
+      "Run your test suite three times with random ordering if your runner supports it. Record any test whose result changes.",
+      "Find one test that calls a live LLM API. Decide whether it belongs in your tests or in your eval harness, and write down why."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d14-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "test-levels",
+        "mocks"
+      ],
+      "diagnostic": true,
+      "q": "A unit test for a function that saves an order passes, with the database layer replaced by a mock. What does the pass prove?",
+      "options": [
+        "The SQL the function produces is valid for the real database",
+        "The order will be saved correctly in production",
+        "The function's logic is right, if the real database behaves like the mock",
+        "The database schema matches the fields the function writes"
+      ],
+      "answer": 2,
+      "explain": "A unit test with a mocked database proves logic under the assumption that the mock matches reality. SQL validity, schema agreement, and real persistence are only tested when the real database runs, in an integration test.",
+      "why": [
+        "The mock never parses SQL, so invalid SQL would pass.",
+        "Production adds the real database, config, and wiring, none of which ran.",
+        "",
+        "The mock accepts any fields, so a schema mismatch would go unnoticed."
+      ]
+    },
+    {
+      "id": "d14-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "flaky-tests",
+        "retries",
+        "race-condition"
+      ],
+      "artifact": {
+        "lang": "log",
+        "title": "CI, test-integration",
+        "code": "RUN   test_concurrent_retry_refunds_once\n  factory: created order o_7c1e\n  sent 2 concurrent POST /refunds, same Idempotency-Key\n  responses: 201, 201\nFAIL  AssertionError: refunds for o_7c1e: expected 1, got 2\nRETRY 1/2 ... PASS\njob status: SUCCESS"
+      },
+      "q": "What is the most likely explanation for the first failure?",
+      "options": [
+        "A race in the refund code lets two concurrent requests both create a refund",
+        "The CI runner was slow and the test hit its timeout",
+        "Rows left by an earlier test were counted for this order",
+        "The retry proves the first run was a harmless infrastructure blip"
+      ],
+      "answer": 0,
+      "explain": "Both requests returned 201 and the count is 2 for a freshly created order, so the server created a duplicate. That is a check-then-act race on the idempotency key. Treating the passing retry as proof of correctness is the tempting mistake.",
+      "why": [
+        "",
+        "A timeout would produce a timeout error, not a count of 2 with two 201 responses.",
+        "The factory created a new order, so no earlier test could have written refunds for it.",
+        "A race only fails when timing lines up. A later pass says nothing about correctness."
+      ]
+    },
+    {
+      "id": "d14-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "flaky-tests",
+        "shared-state"
+      ],
+      "context": "`test_open_ticket_count` passes every time when run alone. In the full suite with random ordering it fails about one run in five, always with 'expected 3, got 4'.",
+      "q": "What should you check next?",
+      "options": [
+        "Whether the CI runner has enough CPU for the suite",
+        "Whether the ticket counting query is missing an index",
+        "Whether the test needs a longer timeout on slow runners",
+        "Which tests ran before it, and what data they leave behind"
+      ],
+      "answer": 3,
+      "explain": "Passing alone and failing only in some orders points at shared state. One extra ticket is exactly what a leftover row from another test produces. Comparing the tests that ran first in failing runs finds the culprit quickly.",
+      "why": [
+        "CPU affects timing, but the error is a count off by one, which is data, not speed.",
+        "An index changes speed, not the number of rows counted.",
+        "The failure is a wrong count, not a timeout.",
+        ""
+      ]
+    },
+    {
+      "id": "d14-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "flaky-tests",
+        "time"
+      ],
+      "context": "A refund-window test fails only in CI, and only for runs that start between 4 p.m. and midnight Pacific Standard Time. It passes on every developer laptop, which are all set to Pacific time.",
+      "q": "What is the most likely cause?",
+      "options": [
+        "CI runners are slower in the evening because of shared load",
+        "The code or test mixes local dates with UTC dates",
+        "The test depends on data that a nightly job deletes",
+        "Developers' laptops have a different Python version"
+      ],
+      "answer": 1,
+      "explain": "Between 4 p.m. and midnight Pacific Standard Time, the UTC date is already tomorrow. CI usually runs in UTC, so a 'today' computed in one zone and compared in another is off by one day exactly in that window.",
+      "why": [
+        "Slowness causes timeouts, not failures tied to a clock window that matches a time zone offset.",
+        "",
+        "A nightly job would not line up with the hours when UTC and Pacific dates differ.",
+        "A version difference would fail at all hours, not only in one daily window."
+      ]
+    },
+    {
+      "id": "d14-q05",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "mocks",
+        "contract-tests"
+      ],
+      "context": "Relay's refund test mocks the payment client and asserts it was called with `amount=Decimal(\"19.99\")`. In production every refund fails with 422 because the provider expects integer cents.",
+      "q": "Which test would have caught this before release?",
+      "options": [
+        "A second unit test with a different refund amount",
+        "A test that checks `issue_refund` calls the client exactly once",
+        "A contract or sandbox integration test against the payment provider",
+        "Raising line coverage of the refund module to 100 percent"
+      ],
+      "answer": 2,
+      "explain": "The bug is a wrong belief about the provider's API, and the mock shares that belief. Only a test that talks to the real API, or to a contract derived from it, can expose the mismatch. More mocked tests or coverage repeat the same assumption.",
+      "why": [
+        "Another mocked test would assert dollars again and still pass.",
+        "Call-count assertions say nothing about the units the provider accepts.",
+        "",
+        "Coverage measures lines run against the mock, which already ran all of them."
+      ]
+    },
+    {
+      "id": "d14-q06",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "test-levels",
+        "integration-tests"
+      ],
+      "q": "You change the SQL behind `search_help_center`, which queries pgvector with a locale filter. Which test gives the most confidence for its cost?",
+      "options": [
+        "An integration test against real Postgres with pgvector, seeded with sample articles",
+        "A unit test with the database replaced by a stub returning fixed chunks",
+        "An end-to-end test that asks the full agent a help-center question",
+        "A snapshot test of the SQL string the function builds"
+      ],
+      "answer": 0,
+      "explain": "The risk is in the SQL and the data, so the test must run the real query against real rows. A stub never executes SQL, a snapshot only shows the string changed, and an end-to-end test adds the model's variability on top of the part you care about.",
+      "why": [
+        "",
+        "A stub returns the same chunks whatever the SQL says.",
+        "This would exercise the query, but through the model and the whole stack, so it is slow, flaky, and hard to read on failure.",
+        "A snapshot detects that the SQL changed, not whether it returns the right rows."
+      ]
+    },
+    {
+      "id": "d14-q07",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "coverage",
+        "mutation-testing"
+      ],
+      "context": "The refund policy module reports 100 percent line coverage. The team plans to change the refund window next week and trusts the suite to catch mistakes.",
+      "artifact": {
+        "lang": "text",
+        "title": "Mutation report, refunds/policy.py",
+        "code": "mutant                                   result\ndays_ago <= 30   ->  days_ago < 30         SURVIVED\ndays_ago <= 30   ->  days_ago <= 31        SURVIVED\nreturn True      ->  return False          KILLED"
+      },
+      "q": "What does the report tell you about the tests?",
+      "options": [
+        "The tests are fine, because one mutant was killed",
+        "Coverage is wrong and some lines never ran",
+        "The policy code is unreachable from the API",
+        "No test checks the boundary of the 30-day window"
+      ],
+      "answer": 3,
+      "explain": "Moving the boundary in either direction went unnoticed, so no test pins day 30 and day 31. Every line ran, which is why coverage was 100 percent, but running a line is not checking it. Any mistake in next week's change to the window would ship unnoticed.",
+      "why": [
+        "One killed mutant shows a test notices a flipped result. The two survivors show the boundary is untested.",
+        "100 percent coverage means every line did run. The problem is what the tests assert.",
+        "Mutation testing ran the policy through the tests, so the code is reachable.",
+        ""
+      ]
+    },
+    {
+      "id": "d14-q08",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "flaky-tests",
+        "retries"
+      ],
+      "q": "The team proposes rerunning every failed test up to three times in CI to stop red builds. What is the strongest objection?",
+      "options": [
+        "Reruns make the suite take somewhat longer to finish",
+        "Reruns turn real intermittent bugs, such as races, into green builds",
+        "Reruns are not supported by most test runners",
+        "Reruns change the random order of the tests"
+      ],
+      "answer": 1,
+      "explain": "An intermittent failure can be a race or ordering bug that also happens in production. A blanket rerun policy hides that signal. The time cost is real but small next to losing the only evidence of a bug.",
+      "why": [
+        "True, but minor. The serious cost is hidden bugs.",
+        "",
+        "Rerun support is common, so this is not the problem.",
+        "Order changes are not the main issue and can be controlled with a seed."
+      ]
+    },
+    {
+      "id": "d14-q09",
+      "type": "multi",
+      "level": 2,
+      "tags": [
+        "flaky-tests"
+      ],
+      "q": "Which of these commonly make a test flaky? Select all that apply.",
+      "options": [
+        "Reading the current time directly inside the code under test",
+        "Leaving rows in a shared database for later tests",
+        "Calling a real remote API over the network",
+        "Generating test data from an unseeded random source",
+        "Asserting on the output of a pure function with fixed inputs",
+        "Building each test's data with a factory and unique IDs"
+      ],
+      "answers": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "explain": "Time, shared state, network, and randomness all vary between runs. A pure function with fixed inputs always returns the same result, and per-test factory data removes shared state instead of causing it."
+    },
+    {
+      "id": "d14-q10",
+      "type": "order",
+      "level": 2,
+      "tags": [
+        "flaky-tests",
+        "diagnosis"
+      ],
+      "q": "Put these steps for diagnosing a flaky test in a sensible order.",
+      "items": [
+        "Read the failure message and classify it: timeout, wrong count, wrong value, or error",
+        "Pull the history: failure rate, runners, and tests that ran before it",
+        "Run it alone in a loop, then in the suite with a failing run's order seed",
+        "Raise the failure rate on purpose with more concurrency or injected delays",
+        "Fix the cause and confirm the loop no longer fails"
+      ],
+      "explain": "Cheap evidence comes first: the message and history often name the cause class. Isolating alone versus in order separates shared state from timing, and forcing the failure rate up makes the fix verifiable."
+    },
+    {
+      "id": "d14-q11",
+      "type": "match",
+      "level": 1,
+      "tags": [
+        "mocks",
+        "test-doubles"
+      ],
+      "q": "Match each test double to what it does.",
+      "pairs": [
+        [
+          "Stub",
+          "Returns canned answers to calls"
+        ],
+        [
+          "Mock",
+          "Checks which calls were made and with what arguments"
+        ],
+        [
+          "Fake",
+          "A working, simplified implementation such as an in-memory store"
+        ],
+        [
+          "Spy",
+          "Wraps the real dependency and records the calls"
+        ]
+      ],
+      "explain": "The four differ in how much real behavior they keep. Stubs and mocks keep none, a fake reimplements some, and a spy keeps all of it while recording calls."
+    },
+    {
+      "id": "d14-q12",
+      "type": "open",
+      "level": 3,
+      "tags": [
+        "test-levels",
+        "mocks",
+        "regression-tests"
+      ],
+      "context": "A release passed all 1,500 tests. Within an hour, Relay's ticket triage worker failed every job with 'column tickets.priority_level does not exist'. The release renamed the column in the model code, and the tests use an in-memory fake of the ticket repository.",
+      "q": "Explain why the suite missed this and what you would change.",
+      "rubric": [
+        "Identifies that the fake never ran real SQL, so a column mismatch was invisible",
+        "Notes that the seam between code and the real schema had no integration test",
+        "Proposes an integration test against real Postgres with migrations applied",
+        "Proposes reproducing the failure in that test before fixing, so it becomes a regression test",
+        "Mentions keeping fakes for speed elsewhere, or checking the migration ran, as a tradeoff"
+      ],
+      "model": "The fake stores tickets in memory and never runs SQL, so it accepted the new column name while the real table still had the old one. No test exercised the seam between the code and the real schema. I would add an integration test that starts Postgres in a container, applies migrations, and runs the triage job's queries. It should fail on this release before the fix, which makes it a regression test. Fakes can stay for fast logic tests elsewhere."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d14-x1",
+      "title": "The refund test that only fails sometimes",
+      "brief": "A teammate wants to add automatic reruns to Relay's CI because `test_concurrent_retry_refunds_once` fails a few times a week and blocks merges. The team calls it 'the flaky CI test'. Separately, finance mentioned two customers who were refunded twice last month.",
+      "artifact": {
+        "lang": "text",
+        "title": "CI history, last 30 days",
+        "code": "test                                   runs   first-attempt failures\ntest_concurrent_retry_refunds_once      412   13   (3.2%)\nall other integration tests            412    0 to 2 each\nfailure messages: 13 of 13 'expected 1, got 2'"
+      },
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Approve reruns, since the failure rate is only 3 percent",
+            "Read the failure messages and what the test does before deciding anything",
+            "Move the test to a faster CI runner",
+            "Delete the test, since it blocks merges and has never caught anything"
+          ],
+          "answer": 1,
+          "explain": "All 13 failures say 'expected 1, got 2', which is a duplicate refund, not a timeout or a connection error. That message points at the code, not the CI machine. Rerunning, moving, or deleting the test all act before you know whether it is telling the truth.",
+          "reveal": "The test sends two concurrent refund requests with the same idempotency key, the way a customer's double click or a client retry would. In failing runs both requests return 201."
+        },
+        {
+          "q": "The failure looks like a real race. What evidence connects it to production?",
+          "options": [
+            "Run the test 500 times locally and count failures",
+            "Query production for refunds that share an idempotency key",
+            "Check the CI runner's CPU usage during failing runs"
+          ],
+          "answer": 1,
+          "explain": "If the race is real, production data will show duplicate refunds with the same key. A local loop would confirm the test reproduces, which is useful, but only production data tells you whether customers are affected. Runner CPU only explains timing.",
+          "reveal": "Four pairs of refunds in the last 30 days share an idempotency key, including the two finance reported.",
+          "artifact": {
+            "lang": "sql",
+            "code": "SELECT idempotency_key, count(*) FROM refunds\nWHERE created_at > now() - interval '30 days'\nGROUP BY idempotency_key HAVING count(*) > 1;\n-- 4 rows"
+          }
+        },
+        {
+          "q": "The handler checks for an existing refund with that key, then inserts. Which fix closes the race?",
+          "options": [
+            "A Python lock around the check and insert in the API process",
+            "A unique constraint on the idempotency key, with the conflict returning the existing refund",
+            "Retrying the insert when two refunds are detected",
+            "A short sleep before the check so the first request can finish"
+          ],
+          "answer": 1,
+          "explain": "Relay runs several API instances, so an in-process lock does not stop two instances from inserting at once. A unique constraint makes the database refuse the second insert, which holds across every instance. Sleeping narrows the window without closing it.",
+          "reveal": "With the constraint added, the test passes 2,000 times in a loop at higher concurrency, and the second request now returns 200 with the original refund."
+        },
+        {
+          "q": "What do you do about the proposal to add reruns to CI?",
+          "options": [
+            "Add reruns for all tests now that this one is fixed",
+            "Report first-attempt failures, and allow reruns only for named infrastructure errors",
+            "Ban reruns and fail the build on any infrastructure hiccup"
+          ],
+          "answer": 1,
+          "explain": "This incident shows a blanket rerun would have hidden a real money bug. Keeping first-attempt failures visible preserves the signal, and a narrow allowance for known infrastructure errors avoids blocking on noise. A total ban punishes the team for problems outside the code.",
+          "reveal": "The team adds a CI report of first-attempt failures per test, reviewed weekly."
+        }
+      ],
+      "debrief": "Root cause: a check-then-insert race on the idempotency key let concurrent requests create two refunds. The test caught it from day one, but the team labeled it flaky. The fix is a unique constraint that the database enforces across all instances. The general lesson: a flake with a wrong-count message is a bug report, and blanket retries would have turned the only evidence into a green build while customers were refunded twice."
+    },
+    {
+      "id": "d14-x2",
+      "title": "Green suite, empty answers",
+      "brief": "The morning after a release, Relay's support team reports that the agent answers many help questions with 'I could not find information about that'. The release contained two changes: a new system prompt wording, and a locale filter added to the `search_help_center` SQL query. All tests passed.",
+      "artifact": {
+        "lang": "log",
+        "title": "agent logs, after the release",
+        "code": "10:14:02 ticket=t_8812 tool=search_help_center locale=en chunks=0\n10:14:05 ticket=t_8812 reply_kind=no_info\n10:14:31 ticket=t_8815 tool=search_help_center locale=en chunks=0\n10:14:33 ticket=t_8815 reply_kind=no_info"
+      },
+      "steps": [
+        {
+          "q": "Which change do you investigate first?",
+          "options": [
+            "The system prompt, because model behavior changed",
+            "The retrieval query, because the logs show zero chunks returned",
+            "Neither; roll back both and investigate later"
+          ],
+          "answer": 1,
+          "explain": "`chunks=0` means the model was given nothing to answer from, so its reply is reasonable for its input. The prompt change is the obvious suspect because the symptom is in the model's words, but the evidence clears it. Rolling back is a fair mitigation, yet you still need the cause.",
+          "reveal": "Before the release, the same questions returned 4 to 6 chunks. Every call since returns 0."
+        },
+        {
+          "q": "Why did the tests not catch an empty retrieval?",
+          "options": [
+            "The retrieval tests used a stub that returns fixed chunks and never runs SQL",
+            "The tests ran with a different embedding model",
+            "Coverage of the retrieval module was below the team's target",
+            "The end-to-end tests were quarantined"
+          ],
+          "answer": 0,
+          "explain": "A stub returns the same chunks whatever the SQL says, so a query that matches nothing still looks fine. Coverage would not help, because the stub path ran every line. The seam between the code and the real data was never tested.",
+          "reveal": "Articles are stored with locales like `en-US` and `en-GB`. The new filter compares against `en` with equality, which matches no row."
+        },
+        {
+          "q": "What do you add so this class of bug is caught next time?",
+          "options": [
+            "A unit test asserting the SQL string contains the locale filter",
+            "An integration test against Postgres with pgvector, seeded with articles in real locale formats",
+            "A rule that system prompt changes ship in separate releases"
+          ],
+          "answer": 1,
+          "explain": "Only running the real query against realistic rows can show that it returns nothing. A test on the SQL string checks the text, not the result. Separating releases is good practice, but it would not have caught this bug.",
+          "reveal": "The new test fails on the released query and passes once the filter matches on the language prefix."
+        }
+      ],
+      "debrief": "Root cause: a locale filter used an exact match against values stored in a different format, so retrieval returned nothing, and the model honestly said it had no information. Tests passed because retrieval was stubbed, so the SQL never met real data. The prompt change was a coincidence that looked guilty. The lesson: when a seam is only ever tested against a stub, add one integration test with production-shaped data, and check what the model was given before blaming the model."
+    }
+  ]
+}

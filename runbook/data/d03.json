@@ -1,0 +1,1195 @@
+{
+  "id": "d03",
+  "day": 3,
+  "phase": "p1",
+  "title": "Inside the server: concurrency and runtimes",
+  "tagline": "How one machine serves thousands of requests at once, and what each language trades to do it.",
+  "minutes": 58,
+  "why": "Many of the strangest production failures come from inside one server process: every request slows down because one call blocked an event loop, or requests time out while the CPU sits idle. These faults are invisible at the HTTP level and obvious once you know how the process schedules its work. Knowing each runtime's model also lets you judge language debates on evidence instead of reputation.",
+  "objectives": [
+    "Describe how a server process accepts and schedules requests under process, thread, and event-loop worker models",
+    "Spot a blocking call inside async code from its symptom: every request on a worker slows at once, health checks included",
+    "Classify work as CPU-bound or I/O-bound and pick the concurrency tool that helps it",
+    "Diagnose connection pool exhaustion and memory growth from their log lines and metrics",
+    "Compare Python, Node, Go, Java, and PHP by concurrency model, speed, ecosystem, deployment, and failure modes"
+  ],
+  "lessons": [
+    {
+      "id": "d03-l1",
+      "title": "What a server process does all day",
+      "minutes": 14,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "A server process does one loop, forever. It asks the operating system for a **listening socket** on a port, waits for connections, accepts one, reads a request, runs the handler, writes the response, and goes back for the next. Everything else on this day is about how a process manages to have many of those loops in progress at once."
+        },
+        {
+          "t": "p",
+          "text": "Connections that arrive before the process is ready to accept them wait in a kernel queue called the **listen backlog**. If the process stops accepting, because it is stuck or overloaded, the backlog fills. New clients then hang during connect or are refused, even though the process is still running."
+        },
+        {
+          "t": "layers",
+          "title": "Relay's API on one machine, outside in",
+          "layers": [
+            {
+              "name": "Kernel socket and backlog",
+              "role": "Holds port 8000 and queues new connections until a worker accepts them.",
+              "breaks": "A full backlog makes clients hang on connect while the process looks alive."
+            },
+            {
+              "name": "Process manager",
+              "role": "A parent process that starts the workers, restarts any that die, and kills any that stop responding.",
+              "breaks": "Workers killed and restarted in a loop show up as bursts of 502s at the proxy."
+            },
+            {
+              "name": "Worker processes",
+              "role": "Several copies of the Python app, each with its own memory, each accepting connections from the shared socket.",
+              "breaks": "Memory is multiplied by the worker count; one leaking worker can be killed by the kernel."
+            },
+            {
+              "name": "Event loop inside each worker",
+              "role": "Switches between many in-progress requests whenever one is waiting on I/O.",
+              "breaks": "One call that never yields freezes every request on that worker."
+            },
+            {
+              "name": "FastAPI handlers",
+              "role": "Relay's code: validate, read Postgres and Redis, call the LLM, respond.",
+              "breaks": "Exceptions become 500s; slow calls hold their slot for the duration."
+            }
+          ]
+        },
+        {
+          "t": "h",
+          "text": "Three ways to handle many requests"
+        },
+        {
+          "t": "compare",
+          "caption": "Worker models",
+          "columns": [
+            "",
+            "Process per worker",
+            "Thread pool",
+            "Event loop"
+          ],
+          "rows": [
+            [
+              "In flight per worker",
+              "One request",
+              "One per thread",
+              "Many, switching at each wait"
+            ],
+            [
+              "Memory per unit",
+              "High: a full copy of the app",
+              "Medium: a stack per thread",
+              "Low: a small object per request"
+            ],
+            [
+              "Uses many cores",
+              "Yes, one process per core",
+              "Depends on the runtime",
+              "No, one loop per process"
+            ],
+            [
+              "Stops when",
+              "All processes are waiting",
+              "All threads are waiting",
+              "One step runs without yielding"
+            ],
+            [
+              "Examples",
+              "Classic Python and PHP setups",
+              "Classic Java servers",
+              "Node, async Python"
+            ]
+          ],
+          "verdict": "Real deployments combine them. Relay runs several worker processes for cores and isolation, each with an event loop for I/O concurrency."
+        },
+        {
+          "t": "code",
+          "lang": "shell",
+          "title": "Relay's API processes on one host",
+          "code": "$ ps -eo pid,ppid,pcpu,rss,args | grep [g]unicorn\n  PID  PPID %CPU    RSS COMMAND\n 2201     1  0.1  48210 gunicorn relay.api:app -k uvicorn.workers.UvicornWorker -w 4\n 2210  2201 14.2 318504 gunicorn relay.api:app -k uvicorn.workers.UvicornWorker -w 4\n 2211  2201 13.8 322960 gunicorn relay.api:app -k uvicorn.workers.UvicornWorker -w 4\n 2212  2201 15.1 309772 gunicorn relay.api:app -k uvicorn.workers.UvicornWorker -w 4\n 2213  2201 12.9 331408 gunicorn relay.api:app -k uvicorn.workers.UvicornWorker -w 4",
+          "notes": [
+            "One parent (PID 2201) and four workers whose PPID is 2201. The parent mostly supervises and uses almost no CPU.",
+            "Each worker holds about 300 MB of resident memory (`RSS`, in kilobytes here). Four workers cost about four times that.",
+            "The worker class is uvicorn's, so each worker runs an event loop rather than handling one request at a time."
+          ]
+        },
+        {
+          "t": "h",
+          "text": "WSGI and ASGI: sync and async frameworks"
+        },
+        {
+          "t": "p",
+          "text": "In Python, **WSGI** is the older interface between server and app: the server calls a function and waits for it to return, so a worker or thread handles one request at a time. **ASGI** is the async successor: handlers are coroutines, one worker interleaves many requests, and long-lived connections such as WebSockets and streamed LLM output fit naturally. Flask and classic Django are WSGI; FastAPI is ASGI."
+        },
+        {
+          "t": "tradeoff",
+          "title": "Sync or async framework for an LLM-heavy API",
+          "options": [
+            {
+              "name": "Sync (WSGI style)",
+              "gain": [
+                "Simple mental model, ordinary libraries",
+                "A slow or blocking call only stalls its own request"
+              ],
+              "cost": [
+                "One request per worker or thread",
+                "Concurrency bounded by worker count times threads",
+                "Waiting on the LLM ties up a whole worker"
+              ],
+              "choose": "Choose this when requests are short, mostly CPU or database work, and the team values simplicity."
+            },
+            {
+              "name": "Async (ASGI style)",
+              "gain": [
+                "Thousands of waiting requests per process",
+                "Natural fit for streaming and WebSockets"
+              ],
+              "cost": [
+                "Every I/O library must be async",
+                "One blocking call stalls every request on the worker",
+                "Harder stack traces"
+              ],
+              "choose": "Choose this when requests spend most of their time waiting on networks, as LLM calls do."
+            }
+          ]
+        },
+        {
+          "t": "p",
+          "text": "So 'a worker is busy' means different things. A sync worker is busy for the entire request, including the seconds spent waiting for the model. An async worker is busy only while it executes Python code; waiting costs it almost nothing, unless something blocks."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Counting workers as capacity",
+          "text": "With sync workers, capacity is the number of slots, not CPU. Eight workers whose requests each wait 6 seconds on an LLM serve at most about 80 requests a minute, while the CPU sits nearly idle. Adding CPU does nothing; adding concurrency does."
+        },
+        {
+          "t": "check",
+          "q": "Relay's API gets a burst of chat requests, each waiting about 5 seconds on the LLM. With async uvicorn workers, what limits how many can be in flight per worker?",
+          "options": [
+            "The number of CPU cores on the host machine",
+            "Mostly memory and downstream limits, since waits are cheap",
+            "Exactly one request per worker at any moment",
+            "The size of nginx's response buffer for each request"
+          ],
+          "answer": 1,
+          "explain": "An event loop parks waiting requests cheaply, so one worker can hold many in flight. The practical limits become memory, connection pools, and the LLM provider's rate limits. One request per worker describes sync workers."
+        },
+        {
+          "t": "reveal",
+          "prompt": "nginx shows bursts of 502s every few minutes, and the process manager logs a WORKER TIMEOUT line for a worker at the same moments. Predict what the workers were doing.",
+          "answer": "They stopped responding to the manager's heartbeat for longer than its timeout, usually because a request blocked the worker: a long synchronous call or heavy CPU work. The manager killed them mid-request, so nginx got a closed connection and returned 502. The real fix is the blocking work, not a longer timeout."
+        }
+      ]
+    },
+    {
+      "id": "d03-l2",
+      "title": "Threads, event loops, and coroutines",
+      "minutes": 14,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "**Concurrency** means many tasks are in progress at the same time. **Parallelism** means several of them execute at the same instant on different CPU cores. A single event loop gives you concurrency without parallelism: hundreds of LLM calls can be waiting at once on one core, because waiting needs no CPU."
+        },
+        {
+          "t": "analogy",
+          "text": "An event loop is one waiter serving many tables. They take an order, hand it to the kitchen, and serve other tables while it cooks, so one waiter covers a whole room. Threads are one waiter per table, mostly standing still. The analogy breaks in one place: a real waiter can be interrupted, but an event loop only switches when the current task chooses to pause."
+        },
+        {
+          "t": "p",
+          "text": "**Blocking I/O** means the calling thread stops until the data arrives. **Non-blocking I/O** means the call returns at once and the program is told later when data is ready. An event loop depends entirely on the second kind: it can only juggle tasks if every wait hands control back to it."
+        },
+        {
+          "t": "p",
+          "text": "In Python, `async def` defines a **coroutine**, a function that can pause. Each `await` is a point where it may pause and let the loop run something else. This is **cooperative scheduling**: nothing forces a coroutine to give up control. Code between two awaits runs without interruption, whether it takes a microsecond or ten seconds."
+        },
+        {
+          "t": "code",
+          "lang": "python",
+          "title": "One handler, three calls, one problem",
+          "code": "@app.post(\"/api/messages\")\nasync def post_message(msg: Message):\n    ticket = await db.fetch_ticket(msg.ticket_id)        # pauses; loop serves others\n    order = requests.get(f\"{STORE_API}/orders/{ticket.order_id}\")  # blocks the loop\n    reply = await llm.generate(ticket, order.json())     # pauses; loop serves others\n    return reply",
+          "notes": [
+            "The database and LLM calls are awaited, so other requests run while they wait.",
+            "`requests.get` is a synchronous library. While it waits for the store's API, the whole worker waits with it.",
+            "If the store's API takes 2 seconds, every request on this worker, including health checks, is delayed by 2 seconds."
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "How a blocked event loop shows up",
+          "text": "Every endpoint on the affected workers slows at the same moment, including trivial ones such as `/health`. Latency rises in steps that match the blocking call's duration, while CPU stays low if the block is a network wait. asyncio's debug mode logs any step that holds the loop for more than 100 milliseconds by default, naming the task."
+        },
+        {
+          "t": "p",
+          "text": "FastAPI gives you an escape hatch. A handler written with plain `def` runs in a thread pool, so a blocking call there only ties up one thread. A handler written with `async def` runs directly on the loop and must never block. The trap is the mix: async handler, sync library."
+        },
+        {
+          "t": "h",
+          "text": "The GIL"
+        },
+        {
+          "t": "p",
+          "text": "CPython, the standard Python interpreter, has a **Global Interpreter Lock** (GIL): within one process, only one thread executes Python code at a time. Threads still help for I/O, because a thread waiting on the network releases the lock. They do not speed up CPU-heavy Python code. Recent releases offer an optional build without the GIL, but most deployments run the default build."
+        },
+        {
+          "t": "tradeoff",
+          "title": "Threads, async, or processes",
+          "options": [
+            {
+              "name": "Threads",
+              "gain": [
+                "Work with ordinary blocking libraries",
+                "Good for moderate I/O concurrency"
+              ],
+              "cost": [
+                "Memory per thread limits the count",
+                "Shared data needs locks; races are possible",
+                "No CPU parallelism for Python code under the GIL"
+              ],
+              "choose": "Choose this when you need some I/O concurrency with libraries that only block."
+            },
+            {
+              "name": "Async (event loop)",
+              "gain": [
+                "Very high I/O concurrency per process",
+                "Cheap per waiting request"
+              ],
+              "cost": [
+                "Needs async libraries throughout",
+                "One blocking call stalls everything",
+                "No CPU parallelism"
+              ],
+              "choose": "Choose this when work is dominated by waiting on networks, such as LLM and database calls."
+            },
+            {
+              "name": "Processes",
+              "gain": [
+                "True CPU parallelism",
+                "A crash or leak is isolated to one process"
+              ],
+              "cost": [
+                "Full memory copy per process",
+                "Sharing data needs an external store or messages"
+              ],
+              "choose": "Choose this when work is CPU-bound or you need isolation, and combine it with async inside each process for I/O."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "Async is why one eval runner can keep 50 calls open",
+          "text": "An eval harness waiting on 50 concurrent LLM calls needs almost no CPU, so an async client on one process handles it easily. If the same harness also scores each answer with heavy local computation, that part belongs in separate processes, or the scoring will stall the calls in flight."
+        },
+        {
+          "t": "check",
+          "q": "A FastAPI `async def` endpoint calls a synchronous library that sleeps 3 seconds while waiting on a network. During those 3 seconds, what happens to other requests handled by the same worker?",
+          "options": [
+            "They run normally on other threads",
+            "They wait, because the event loop cannot switch tasks",
+            "They are rejected with 503",
+            "They move to another worker automatically"
+          ],
+          "answer": 1,
+          "explain": "The synchronous call never yields to the loop, so no other coroutine on that worker can run until it returns. Requests are not moved or rejected; they simply stall. A plain `def` endpoint would have run in the thread pool instead."
+        }
+      ]
+    },
+    {
+      "id": "d03-l3",
+      "title": "CPU-bound vs I/O-bound, pools, and backpressure",
+      "minutes": 15,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "Before choosing how to speed something up, classify it. **I/O-bound** work spends most of its time waiting on a network or disk. **CPU-bound** work spends most of its time computing. Most of Relay's API is I/O-bound; parsing a large PDF or computing embeddings locally is CPU-bound."
+        },
+        {
+          "t": "compare",
+          "caption": "What helps depends on what the work is waiting for",
+          "columns": [
+            "",
+            "I/O-bound",
+            "CPU-bound"
+          ],
+          "rows": [
+            [
+              "Time goes to",
+              "Waiting on Postgres, Redis, the LLM",
+              "Parsing, scoring, image or text processing"
+            ],
+            [
+              "CPU during load",
+              "Low, even when slow",
+              "High, near 100 percent per busy core"
+            ],
+            [
+              "Helps",
+              "More concurrency: async, threads, more slots",
+              "More cores, faster code, native libraries, separate processes"
+            ],
+            [
+              "Does not help",
+              "Faster CPU or a faster language",
+              "More async or more threads in Python"
+            ]
+          ],
+          "verdict": "Measure CPU during the slowdown. Low CPU with high latency means waiting; high CPU means computing."
+        },
+        {
+          "t": "h",
+          "text": "Connection pools"
+        },
+        {
+          "t": "p",
+          "text": "Opening a database connection is slow, so each worker keeps a **connection pool**: a fixed set of open connections that requests borrow and return. When every connection is borrowed, the next request waits in line. If it waits longer than the pool's timeout, it fails. That is **pool exhaustion**, and the database itself may look idle while it happens."
+        },
+        {
+          "t": "code",
+          "lang": "log",
+          "title": "Pool exhaustion in Relay's API log",
+          "code": "10:58:31 ERROR req=c7e1 POST /api/messages\nTraceback (most recent call last):\n  File \"relay/api/messages.py\", line 41, in post_message\n    ticket = await session.get(Ticket, msg.ticket_id)\n  ...\nsqlalchemy.exc.TimeoutError: QueuePool limit of size 5 overflow 10 reached,\n  connection timed out, timeout 30.00",
+          "notes": [
+            "Size 5 plus overflow 10 means at most 15 connections per process, and all 15 were in use for 30 seconds.",
+            "The request did not fail on a slow query. It failed waiting to get a connection at all.",
+            "Next question: what is holding the connections? Often a request keeps one open across a slow LLM call, or forgets to return it."
+          ]
+        },
+        {
+          "t": "p",
+          "text": "A rough sizing rule: connections in use equals requests per second times how long each holds a connection. At 100 requests per second holding one for 50 milliseconds, about 5 are busy. Hold the same connection across a 5-second LLM call and you need about 500, which no pool should have."
+        },
+        {
+          "t": "tradeoff",
+          "title": "Sizing the pool",
+          "options": [
+            {
+              "name": "Small pool",
+              "gain": [
+                "Protects the database from overload",
+                "Failures are fast and visible"
+              ],
+              "cost": [
+                "Requests queue or time out under bursts",
+                "One slow query can starve the rest"
+              ],
+              "choose": "Choose this when the database is shared and you would rather fail fast than overload it."
+            },
+            {
+              "name": "Large pool",
+              "gain": [
+                "Absorbs bursts",
+                "Fewer waits in the app"
+              ],
+              "cost": [
+                "Pools times workers times pods can exceed the database's connection limit",
+                "Hides connections held for too long",
+                "More database memory per connection"
+              ],
+              "choose": "Choose this when the database has clear headroom and connections are held only briefly."
+            }
+          ]
+        },
+        {
+          "t": "h",
+          "text": "Queues and backpressure"
+        },
+        {
+          "t": "p",
+          "text": "A server is full of queues: the listen backlog, the thread pool's queue, the line for pool connections. A queue absorbs short bursts. Under sustained overload it only turns overload into latency, then into timeouts. **Backpressure** means refusing or slowing new work when a queue is full, for example with a fast 503 or 429, so callers back off before everything is slow."
+        },
+        {
+          "t": "code",
+          "lang": "text",
+          "title": "Relay's triage worker fleet, two snapshots",
+          "code": "time   busy_slots  cpu   queue_depth  job_p50  llm_p50\n10:00  3 of 8      22%   4            2.1s     1.8s\n10:30  8 of 8      7%    1,240        6.9s     6.4s",
+          "notes": [
+            "Every slot is busy and the queue is growing, yet CPU fell to 7 percent.",
+            "Job time tracks LLM time almost exactly, so the slots are spent waiting on the model.",
+            "More CPU will not help. More concurrent calls per worker would, within the provider's rate limits."
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "All workers busy, CPU idle",
+          "text": "This pattern means the workers are waiting on something: an LLM, a slow query, a pool connection, or a lock. Look at what one busy worker is waiting for right now, with a stack dump tool such as py-spy or the app's own timing logs. The wait you find is the bottleneck."
+        },
+        {
+          "t": "h",
+          "text": "Memory growth and garbage collection"
+        },
+        {
+          "t": "p",
+          "text": "Python frees most objects as soon as nothing refers to them, with a periodic **garbage collector** for reference cycles. Memory that climbs without leveling off usually means something keeps references: a cache with no size limit, a list of past results, a global holding conversations. When a container passes its memory limit, the kernel kills the process with no traceback, and you see exit code 137 or `OOMKilled`."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Raising the memory limit as the fix",
+          "text": "A higher limit makes a leak take longer to kill the process, so crashes move from hourly to nightly and become harder to correlate. Plot memory per worker over time. A line that climbs steadily is a leak to fix; a line that levels off is a limit to set correctly."
+        },
+        {
+          "t": "check",
+          "q": "Relay's API logs `QueuePool limit ... reached` errors while Postgres CPU is at 10 percent and its slow query log is empty. What is the most likely cause?",
+          "options": [
+            "Requests hold connections while waiting on something else, such as the LLM",
+            "Postgres is overloaded and needs a bigger instance",
+            "The network between API and Postgres is dropping packets",
+            "Python's garbage collector is pausing the workers"
+          ],
+          "answer": 0,
+          "explain": "An idle database with fast queries cannot be the bottleneck. Connections are being held for a long time without doing database work, typically across an LLM call or because a code path never returns them."
+        }
+      ]
+    },
+    {
+      "id": "d03-l4",
+      "title": "Languages and runtimes: Python, Node, Go, Java, PHP",
+      "minutes": 13,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "Each language's runtime makes a bet about how to schedule work, how fast to run code, and how to ship. Those bets decide which failures you will see in production. Compare them as tradeoffs: no runtime is fastest, simplest, and best supported at once."
+        },
+        {
+          "t": "compare",
+          "caption": "Python, Node, and Go, roughly",
+          "columns": [
+            "",
+            "Python",
+            "JavaScript (Node)",
+            "Go"
+          ],
+          "rows": [
+            [
+              "Concurrency model",
+              "Processes for cores; threads or asyncio inside; GIL limits CPU threads",
+              "One event loop per process, plus a small internal thread pool",
+              "Goroutines: cheap tasks the runtime spreads across all cores"
+            ],
+            [
+              "Raw CPU speed",
+              "Slow for pure Python; fast inside native libraries",
+              "Fast for a dynamic language, thanks to a JIT compiler",
+              "Fast, compiled ahead of time"
+            ],
+            [
+              "Ecosystem strength",
+              "AI, ML, data, scripting",
+              "Web, front-end sharing, huge package registry",
+              "Infrastructure, networking, cloud tools"
+            ],
+            [
+              "Deployment shape",
+              "Interpreter plus dependencies, several worker processes",
+              "Runtime plus packages, one process per core",
+              "One static binary, small images"
+            ],
+            [
+              "Typical failure",
+              "Blocked event loop, CPU-bound GIL limits, memory times workers",
+              "CPU work blocking the loop, heap out of memory",
+              "Goroutine leaks, data races, panics in unmanaged goroutines"
+            ]
+          ],
+          "verdict": "Python wins on AI libraries, Node on sharing code with the browser, Go on lean concurrent services."
+        },
+        {
+          "t": "compare",
+          "caption": "Java and PHP, roughly",
+          "columns": [
+            "",
+            "Java (JVM)",
+            "PHP"
+          ],
+          "rows": [
+            [
+              "Concurrency model",
+              "Thread pools; recent versions add lightweight virtual threads",
+              "A pool of worker processes, one request each, nothing shared between requests"
+            ],
+            [
+              "Raw CPU speed",
+              "Fast after JIT warm-up; slower at startup",
+              "Adequate for typical web pages; slower for heavy computation"
+            ],
+            [
+              "Ecosystem strength",
+              "Mature enterprise frameworks and tooling",
+              "Content sites and web apps; WordPress and Laravel"
+            ],
+            [
+              "Deployment shape",
+              "JVM plus application, higher baseline memory",
+              "Web server plus a PHP-FPM worker pool"
+            ],
+            [
+              "Typical failure",
+              "GC pauses, OutOfMemoryError, thread pool exhaustion, slow cold start",
+              "`pm.max_children` reached, execution time limits on slow requests"
+            ]
+          ],
+          "verdict": "Java suits large, long-running services with heavy tooling needs. PHP's shared-nothing model makes leaks between requests rare and slow external calls expensive."
+        },
+        {
+          "t": "p",
+          "text": "Notice that each typical failure follows from the model. Node and async Python share the event loop's weakness: one long step freezes everything. Go and Java spread work across cores, so they gain speed and inherit the classic problems of shared memory: races, leaks of goroutines or threads, and garbage collection pauses. PHP's one-request-per-worker model is simple and runs out of workers when calls are slow."
+        },
+        {
+          "t": "code",
+          "lang": "trace",
+          "title": "Where Relay's slowest endpoint spends its time",
+          "code": "POST /api/messages                          total 3,345 ms\n├─ auth and validation (Python)                  4 ms\n├─ postgres: load ticket and history            18 ms\n├─ redis: rate limit check                       1 ms\n├─ llm: generate reply                       3,310 ms\n├─ postgres: insert message                      9 ms\n└─ serialize response (Python)                   3 ms",
+          "notes": [
+            "Python's own work is about 7 ms out of 3.3 seconds, a fraction of one percent.",
+            "Rewriting this endpoint in a faster language would save a few milliseconds at most.",
+            "The levers that matter are the LLM call: a smaller model, a shorter prompt, streaming, or caching."
+          ]
+        },
+        {
+          "t": "tradeoff",
+          "title": "Fixing a slow endpoint",
+          "options": [
+            {
+              "name": "Fix it in place",
+              "gain": [
+                "Targets the measured bottleneck",
+                "No new language, build, or on-call burden"
+              ],
+              "cost": [
+                "Requires profiling first",
+                "May need async libraries or caching work"
+              ],
+              "choose": "Choose this when the time is spent waiting on I/O, which is almost always."
+            },
+            {
+              "name": "Move the hot path to native code or a service",
+              "gain": [
+                "Real CPU speedup where it matters",
+                "The rest of the code stays as it is"
+              ],
+              "cost": [
+                "A new boundary to deploy and monitor",
+                "Serialization and network cost per call"
+              ],
+              "choose": "Choose this when profiling shows one CPU-bound step dominating and a native library cannot replace it."
+            },
+            {
+              "name": "Rewrite in another language",
+              "gain": [
+                "Faster CPU-bound code",
+                "A different concurrency model"
+              ],
+              "cost": [
+                "Months of work and new bugs",
+                "Loses the existing ecosystem",
+                "Changes nothing if the time is waiting on I/O"
+              ],
+              "choose": "Choose this when the whole service is CPU-bound and the team can own the new language for years."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Switching languages to fix a slow endpoint",
+          "text": "Teams often blame the language for latency that is really an LLM call, an N+1 query pattern, or a held connection. A rewrite carries the same design into the new language and keeps the same wait. Get a timing breakdown first; if the language's own share is small, the rewrite cannot help."
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "Why AI backends are mostly Python",
+          "text": "Model SDKs, evaluation tools, tokenizers, and vector libraries appear first and best supported in Python, and the heavy math runs in native code underneath. Relay's backend is I/O-bound around the LLM, so Python's slow CPU speed rarely matters there. Infrastructure around it, such as proxies and gateways, is often written in Go."
+        },
+        {
+          "t": "check",
+          "q": "Which situation best justifies moving part of a Python service to a faster runtime?",
+          "options": [
+            "p95 latency is 4 seconds, and traces show 3.8 seconds spent in the LLM call",
+            "Profiling shows 80 percent of request time in a pure-Python scoring loop",
+            "The team prefers the syntax and tooling of another language",
+            "The database sits at 90 percent CPU during peak hours every day"
+          ],
+          "answer": 1,
+          "explain": "Only a measured CPU-bound hot spot in the language's own code gets faster with a faster runtime, and only if no native library can take it over. LLM waits and a busy database are unaffected by the language that issues the calls."
+        },
+        {
+          "t": "reveal",
+          "prompt": "A Node service and a Python asyncio service both see every request slow down at once whenever one customer uploads a large file that gets parsed in the handler. Predict why the same symptom appears in both.",
+          "answer": "Both run one event loop per process, and parsing a large file is CPU work that never yields. While it runs, the loop cannot switch to any other request. The fix is the same in both: move the parsing to a worker thread, a separate process, or a background job."
+        }
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Every endpoint slows at once, /health included, while CPU stays low",
+      "causes": [
+        "A synchronous network call inside an `async def` handler",
+        "A blocking library such as a sync HTTP or database client used on the event loop"
+      ],
+      "look": "Recent changes to async handlers, and asyncio debug mode or a stack dump of a slow worker.",
+      "confirm": "A stack dump shows the loop thread inside a blocking call; /health latency matches that call's duration.",
+      "fix": "Use an async client for that call, or make the handler a plain `def` so it runs in the thread pool."
+    },
+    {
+      "symptom": "Every request on a worker stalls while one core sits at 100 percent",
+      "causes": [
+        "CPU-heavy work on the event loop, such as parsing a large file or scoring",
+        "A pathological regular expression or huge JSON payload"
+      ],
+      "look": "Per-process CPU, and a profile or stack dump of the hot worker.",
+      "confirm": "The hot stack is Python code, not a wait.",
+      "fix": "Move the CPU work to a process pool or a background job. Threads do not help under the GIL."
+    },
+    {
+      "symptom": "QueuePool limit of size 5 overflow 10 reached, connection timed out",
+      "causes": [
+        "Connections held across slow non-database work such as LLM calls",
+        "A code path that never returns its connection",
+        "Pool too small for the real request rate"
+      ],
+      "look": "Postgres's view of sessions: how many connections are idle in transaction, and for how long.",
+      "confirm": "Many connections idle in transaction for seconds while queries themselves are fast.",
+      "fix": "Release the connection before slow calls and keep transactions short. Raise the pool size only after that, and within the database's limit."
+    },
+    {
+      "symptom": "All workers busy, queue growing, CPU near idle",
+      "causes": [
+        "Workers waiting on a slow dependency such as the LLM",
+        "Sync workers with too few slots for the wait time"
+      ],
+      "look": "What one busy worker is waiting on, and dependency latency over the same period.",
+      "confirm": "Job or request time tracks the dependency's latency.",
+      "fix": "Add concurrency per worker with async or more slots, within rate limits, and put timeouts on the dependency."
+    },
+    {
+      "symptom": "Memory climbs steadily, then the process restarts with exit code 137 or OOMKilled",
+      "causes": [
+        "A cache or list without a size limit",
+        "Objects kept alive by a global reference",
+        "Too many workers for the memory limit"
+      ],
+      "look": "Memory per worker over hours, and what was added to long-lived structures recently.",
+      "confirm": "Memory grows with request count and never levels off; the kernel log shows the kill.",
+      "fix": "Bound the cache or remove the reference. As a stopgap, recycle workers after a number of requests."
+    },
+    {
+      "symptom": "502 bursts at the proxy, with WORKER TIMEOUT lines in the process manager's log",
+      "causes": [
+        "The manager killed workers that stopped responding during long blocking work"
+      ],
+      "look": "The process manager's log and the requests in flight on the killed workers.",
+      "confirm": "Kills line up with long synchronous calls or CPU-heavy requests.",
+      "fix": "Remove the blocking work from the request path. A longer worker timeout only hides it."
+    },
+    {
+      "symptom": "Node process exits with JavaScript heap out of memory",
+      "causes": [
+        "Data accumulating in memory across requests",
+        "A very large payload loaded at once"
+      ],
+      "look": "Heap size over time, and the endpoints active before the crash.",
+      "confirm": "Heap grows across requests and reaches the runtime's limit.",
+      "fix": "Stream large payloads and bound in-memory structures. Raising the heap limit only delays the crash."
+    },
+    {
+      "symptom": "PHP-FPM log: server reached pm.max_children setting",
+      "causes": [
+        "Slow external calls tie up every worker",
+        "Too few workers for the traffic"
+      ],
+      "look": "Request duration in the FPM slow log, and which calls are slow.",
+      "confirm": "Workers are busy waiting on slow external calls.",
+      "fix": "Speed up or time-limit the slow call, then size the pool to the memory available."
+    },
+    {
+      "symptom": "Go service memory and goroutine count rise together until it is restarted",
+      "causes": [
+        "Goroutines blocked forever on a channel or a call without a timeout"
+      ],
+      "look": "The goroutine count metric and a goroutine dump grouped by stack.",
+      "confirm": "Thousands of goroutines stuck at the same line.",
+      "fix": "Add timeouts or cancellation to the blocking operation so each goroutine can exit."
+    }
+  ],
+  "glossary": [
+    {
+      "term": "Listening socket",
+      "def": "An operating system handle bound to a port, on which a server accepts new connections."
+    },
+    {
+      "term": "Listen backlog",
+      "def": "The kernel's queue of connections waiting for the server process to accept them."
+    },
+    {
+      "term": "Worker",
+      "def": "A process or thread that handles requests. A process manager usually starts several and restarts any that die."
+    },
+    {
+      "term": "Concurrency",
+      "def": "Having many tasks in progress at once, switching between them while they wait."
+    },
+    {
+      "term": "Parallelism",
+      "def": "Executing several tasks at the same instant on different CPU cores."
+    },
+    {
+      "term": "Event loop",
+      "def": "A scheduler that runs one task at a time and switches to another whenever the current one waits on I/O."
+    },
+    {
+      "term": "Coroutine",
+      "def": "A function that can pause at an await point and resume later, letting the event loop run other work meanwhile."
+    },
+    {
+      "term": "Blocking call",
+      "def": "A call that stops its thread until it finishes. On an event loop, it stops every task on that loop."
+    },
+    {
+      "term": "GIL",
+      "def": "Global Interpreter Lock. In standard CPython, only one thread runs Python code at a time per process."
+    },
+    {
+      "term": "WSGI and ASGI",
+      "def": "Python interfaces between server and app. WSGI is synchronous, one request per worker at a time; ASGI is asynchronous and supports long-lived connections."
+    },
+    {
+      "term": "Connection pool",
+      "def": "A set of open connections, such as to Postgres, that requests borrow and return instead of opening new ones."
+    },
+    {
+      "term": "Backpressure",
+      "def": "Refusing or slowing new work when a system is full, so callers back off instead of queueing forever."
+    },
+    {
+      "term": "OOM kill",
+      "def": "The kernel terminating a process that exceeded its memory limit, with no traceback; often seen as exit code 137."
+    },
+    {
+      "term": "Goroutine",
+      "def": "A lightweight task in Go, scheduled by the Go runtime across operating system threads."
+    }
+  ],
+  "apply": {
+    "title": "Find the blocking calls and held connections in your project",
+    "minutes": 15,
+    "steps": [
+      "List the network calls one request in your project makes: LLM, database, other APIs. Mark each as awaited with an async client or called through a blocking library.",
+      "For any blocking call inside an `async def` function, write down how long it typically takes. That is how long every other request on the process stalls.",
+      "Run your eval or batch script with a small concurrency and watch CPU. Decide whether the work is I/O-bound or CPU-bound from what you see.",
+      "Find where your code opens a database session or HTTP client and where it closes it. Note any slow call made while it is still open."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d03-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "event-loop",
+        "blocking-io"
+      ],
+      "diagnostic": true,
+      "q": "An async web handler calls a synchronous HTTP library that takes 3 seconds to respond. What happens to other requests on the same worker process during those 3 seconds?",
+      "options": [
+        "They run on other threads as usual",
+        "They are moved to a less busy worker",
+        "They wait, because the event loop cannot switch",
+        "They fail immediately with a 503"
+      ],
+      "answer": 2,
+      "explain": "A synchronous call never hands control back to the event loop, so no other task on that loop can run until it returns. Nothing reroutes or rejects the requests; they simply stall. The common misconception is that async code is automatically non-blocking.",
+      "why": [
+        "An event loop runs its tasks on one thread; there are no other threads waiting to take over.",
+        "Requests already accepted by a worker stay on that worker.",
+        "",
+        "Nothing rejects them; they queue silently behind the blocking call."
+      ]
+    },
+    {
+      "id": "d03-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "connection-pool",
+        "diagnosis"
+      ],
+      "context": "Relay's API started failing chat requests at 10:58. Postgres CPU is 12 percent and no query takes over 20 ms. LLM latency rose from 2 to 9 seconds at 10:55.",
+      "artifact": {
+        "lang": "log",
+        "code": "sqlalchemy.exc.TimeoutError: QueuePool limit of size 5 overflow 10 reached,\n  connection timed out, timeout 30.00\n\npostgres sessions from relay-api:  active=2  idle_in_transaction=58  idle=0"
+      },
+      "q": "What is the most likely cause?",
+      "options": [
+        "Postgres has reached its maximum number of connections",
+        "Handlers hold a connection open while they wait on the LLM",
+        "A slow query is locking the tickets table",
+        "The pool's overflow setting is too high for the server"
+      ],
+      "answer": 1,
+      "explain": "Most sessions are idle in transaction, meaning a connection is checked out and a transaction is open, but no query is running. The timing matches the LLM slowdown: each handler holds its connection across a longer model call, so the pool empties. A slow query would show active sessions and slow query log entries.",
+      "why": [
+        "The error is the app's own pool timing out; Postgres is accepting the connections it gets.",
+        "",
+        "A lock would show sessions waiting on active queries, and queries are fast.",
+        "Overflow only adds connections; it cannot cause a shortage."
+      ]
+    },
+    {
+      "id": "d03-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "workers",
+        "io-bound"
+      ],
+      "context": "Relay's ticket triage runs on 8 worker processes that each handle one job at a time. Each job calls the LLM.",
+      "artifact": {
+        "lang": "text",
+        "code": "time   busy_slots  cpu   queue_depth  job_p50  llm_p50\n10:00  3 of 8      22%   4            2.1s     1.8s\n10:30  8 of 8      7%    1,240        6.9s     6.4s"
+      },
+      "q": "What is the best next step to drain the queue?",
+      "options": [
+        "Move the workers to machines with faster CPUs",
+        "Rewrite the triage job in a compiled language",
+        "Add concurrent LLM calls per worker, within the provider's rate limits",
+        "Raise the memory limit of each worker"
+      ],
+      "answer": 2,
+      "explain": "Every slot is busy while CPU is at 7 percent, and job time tracks LLM time, so the workers are waiting, not computing. More concurrent waits per worker raise throughput. Faster CPUs or a compiled language speed up computation that is not the bottleneck.",
+      "why": [
+        "CPU is nearly idle, so a faster CPU has nothing to speed up.",
+        "The time is spent waiting on the LLM, which no language change shortens.",
+        "",
+        "Nothing in the metrics points at memory."
+      ]
+    },
+    {
+      "id": "d03-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "memory",
+        "oom"
+      ],
+      "artifact": {
+        "lang": "text",
+        "title": "relay-api, one pod",
+        "code": "time   rss_worker_1  rss_worker_2  requests_served\n09:00  310 MB        305 MB        12,000\n11:00  780 MB        790 MB        61,000\n13:00  1.4 GB        1.4 GB        118,000\n13:41  container relay-api terminated: reason OOMKilled, exit code 137"
+      },
+      "q": "What is the most likely explanation?",
+      "options": [
+        "Python's garbage collector paused and could not keep up with the request rate",
+        "Each worker keeps references to data from every request until the kernel kills it",
+        "The pod received more traffic at 13:41 than its CPU could handle",
+        "Postgres returned an unusually large result set to both workers at 13:41"
+      ],
+      "answer": 1,
+      "explain": "Memory grows in step with requests served and never levels off, in both workers, which is the shape of a leak such as an unbounded cache. Exit code 137 with OOMKilled means the kernel killed the process at its memory limit. A single large result would show a jump, not a steady climb.",
+      "why": [
+        "Garbage collection pauses cost time, not hours of steady memory growth.",
+        "",
+        "CPU overload slows requests; it does not get a process OOM killed.",
+        "A single large result would produce a sudden spike, not a climb since 09:00."
+      ]
+    },
+    {
+      "id": "d03-q05",
+      "type": "multi",
+      "level": 2,
+      "tags": [
+        "io-bound",
+        "cpu-bound"
+      ],
+      "q": "Which of these tasks in Relay are I/O-bound? Select all that apply.",
+      "options": [
+        "Waiting for the LLM API to return a reply",
+        "Reading a ticket and its history from Postgres",
+        "Parsing a 50 MB uploaded PDF in Python",
+        "Checking a rate-limit counter in Redis",
+        "Computing embeddings for 10,000 chunks on the local CPU"
+      ],
+      "answers": [
+        0,
+        1,
+        3
+      ],
+      "explain": "The LLM call, the Postgres read, and the Redis check all spend their time waiting on another server, so concurrency helps them. Parsing a large PDF and computing embeddings locally keep the CPU busy, so they need more cores or separate processes."
+    },
+    {
+      "id": "d03-q06",
+      "type": "order",
+      "level": 2,
+      "tags": [
+        "server-process",
+        "event-loop"
+      ],
+      "q": "Put the steps of handling one request in Relay's async worker in order.",
+      "items": [
+        "The kernel completes the TCP connection and queues it in the listen backlog",
+        "A worker process accepts the connection",
+        "The event loop reads the bytes and parses the HTTP request",
+        "FastAPI routes the request to the handler coroutine",
+        "The handler awaits Postgres, and the loop serves other requests meanwhile",
+        "The handler resumes, and the response is written to the socket"
+      ],
+      "explain": "The kernel holds connections until a worker accepts them, which is why a stuck worker shows up as connect delays. The await in the middle is where concurrency comes from: while one handler waits, the same loop runs others."
+    },
+    {
+      "id": "d03-q07",
+      "type": "match",
+      "level": 1,
+      "tags": [
+        "runtimes",
+        "concurrency-models"
+      ],
+      "q": "Match each runtime to its main concurrency model.",
+      "pairs": [
+        [
+          "Python with asyncio",
+          "One event loop per process; the GIL stops threads running Python in parallel"
+        ],
+        [
+          "Node",
+          "One event loop per process; a libuv thread pool handles some file and DNS work"
+        ],
+        [
+          "Go",
+          "Lightweight tasks scheduled by the runtime across all cores"
+        ],
+        [
+          "Java, classic servers",
+          "Pools of operating system threads, one request per thread"
+        ],
+        [
+          "PHP-FPM",
+          "A pool of processes, one request each, nothing shared between requests"
+        ]
+      ],
+      "explain": "Each runtime's typical failures follow from these models: event loops stall on blocking work, thread and goroutine models face races and leaks, and process pools run out of workers when calls are slow."
+    },
+    {
+      "id": "d03-q08",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "concurrency",
+        "parallelism"
+      ],
+      "q": "One Python asyncio process on a single core keeps 500 LLM calls in flight at once. Which statement is accurate?",
+      "options": [
+        "This is parallelism, because 500 calls run at the same instant",
+        "This is impossible, because the GIL allows only one call at a time",
+        "This is concurrency without parallelism; the calls mostly wait, which needs no CPU",
+        "This needs 500 threads, one for each call"
+      ],
+      "answer": 2,
+      "explain": "The loop runs one task at a time but switches whenever a call waits, so 500 waits can overlap on one core. Parallelism would need several cores executing at once. The GIL limits executing Python code, not waiting on the network.",
+      "why": [
+        "Only one task executes at any instant on a single loop; overlap comes from waiting.",
+        "The GIL restricts running Python code, and waiting calls are not running code.",
+        "",
+        "An event loop holds many calls on one thread; that is its purpose."
+      ]
+    },
+    {
+      "id": "d03-q09",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "event-loop",
+        "cpu-bound"
+      ],
+      "context": "Relay added a feature that extracts text from uploaded PDFs in an `async def` handler. Since then, load balancer health checks fail for a few seconds whenever a customer uploads a large PDF, and the pod is briefly marked unhealthy.",
+      "q": "What is the right fix?",
+      "options": [
+        "Raise the health check timeout so it tolerates the pauses",
+        "Move PDF extraction to a separate process or a background job",
+        "Add more threads to the event loop",
+        "Switch the PDF library's calls to `await`"
+      ],
+      "answer": 1,
+      "explain": "Text extraction is CPU work that holds the event loop, so the health check waits behind it. Running it in another process, or as a queued job, keeps the loop free. A longer health check timeout hides the stall that every customer request also suffers.",
+      "why": [
+        "The stall still hits every customer request; the check is only the messenger.",
+        "",
+        "An event loop runs on one thread, and Python threads would not run CPU work in parallel under the GIL.",
+        "Adding await to CPU-bound code does not make it yield; it still computes on the loop."
+      ]
+    },
+    {
+      "id": "d03-q10",
+      "type": "open",
+      "level": 3,
+      "tags": [
+        "runtimes",
+        "performance"
+      ],
+      "context": "Relay's p95 latency for chat messages is 4 seconds. A teammate proposes rewriting the API in Go because Python is slow.",
+      "q": "How would you evaluate this proposal, and what would you ask for first?",
+      "rubric": [
+        "Asks for a timing breakdown or trace of slow requests before deciding",
+        "Recognizes that the LLM call likely dominates, so the language's own share is small",
+        "Distinguishes I/O-bound from CPU-bound time",
+        "Names cheaper levers such as streaming, prompt or model changes, caching, or fixing blocking calls",
+        "Mentions the cost of a rewrite: time, ecosystem, risk"
+      ],
+      "model": "I would ask for traces of slow requests to see where the 4 seconds go. In Relay, the LLM call usually takes most of it, and Python's own work is a few milliseconds, so Go would not change p95 noticeably. If the time is waiting, the levers are streaming, a smaller model or shorter prompt, caching, and removing blocking calls. A rewrite costs months and Python's AI libraries; it only makes sense if profiling shows CPU-bound Python dominating."
+    },
+    {
+      "id": "d03-q11",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "gil",
+        "threads"
+      ],
+      "q": "A Python script scores eval answers with a slow pure-Python function. Running it on 8 threads instead of 1 barely changes the total time. Why?",
+      "options": [
+        "The GIL lets only one thread execute Python code at a time",
+        "The operating system limits each process to one thread",
+        "Threads must wait for network responses",
+        "The scoring function caches its results across threads"
+      ],
+      "answer": 0,
+      "explain": "Under the GIL, threads in one process take turns executing Python code, so CPU-bound work does not speed up. Threads help when they wait on I/O. Separate processes give real parallelism for this kind of work.",
+      "why": [
+        "",
+        "Processes routinely run many threads; the limit is the interpreter's lock.",
+        "Scoring is pure computation, with no network waits.",
+        "Caching would make it faster, not explain why threads did not help."
+      ]
+    },
+    {
+      "id": "d03-q12",
+      "type": "mcq",
+      "level": 1,
+      "tags": [
+        "asgi",
+        "frameworks"
+      ],
+      "q": "What does an ASGI framework such as FastAPI support that a classic WSGI framework does not?",
+      "options": [
+        "Running more than one worker process on the same host",
+        "Returning JSON responses with the correct content type",
+        "Connecting to a database through a shared connection pool",
+        "Many concurrent requests per worker, and WebSockets"
+      ],
+      "answer": 3,
+      "explain": "ASGI is built on coroutines, so one worker can interleave many requests and hold long-lived connections open cheaply. Multiple processes, JSON, and connection pools all work with WSGI too.",
+      "why": [
+        "WSGI servers commonly run many worker processes.",
+        "Any framework can return JSON.",
+        "Connection pools are independent of the server interface.",
+        ""
+      ]
+    }
+  ],
+  "drills": [
+    {
+      "id": "d03-x1",
+      "title": "Everything got slow after a small change",
+      "brief": "Since this morning's deploy, every Relay endpoint is slow: p50 latency rose from 40 ms to over a second, even for ticket list pages that never call the model. The deploy added a `lookup_order` tool that fetches order details from the store's API. The on-call engineer suspects Postgres, because the ticket pages read from it.",
+      "artifact": {
+        "lang": "text",
+        "title": "Dashboard, 30 minutes after deploy",
+        "code": "endpoint             p50      p95\nGET  /api/health     1.1s     1.9s\nGET  /api/tickets    1.2s     2.0s\nPOST /api/messages   4.8s     7.2s\n\napi cpu: 9%    postgres cpu: 11%    postgres slow queries: 0"
+      },
+      "steps": [
+        {
+          "q": "What does the dashboard already tell you?",
+          "options": [
+            "Postgres is the bottleneck, because ticket pages read from it",
+            "Something stalls the whole API process, since even /health, which does no I/O, is slow",
+            "The LLM provider is slow, because messages are slowest",
+            "The load balancer is overloaded and delaying everything"
+          ],
+          "answer": 1,
+          "explain": "The health endpoint touches no database and no model, yet it is as slow as the ticket pages. That clears Postgres and the LLM and points inside the API process. Postgres is at 11 percent CPU with no slow queries, so the obvious suspect is wrong.",
+          "reveal": "Calling a worker directly, bypassing nginx and the load balancer, gives the same slow health checks. The delay is inside the worker."
+        },
+        {
+          "q": "CPU is at 9 percent and every request on a worker is slow. What is the most likely mechanism?",
+          "options": [
+            "A blocking call is freezing the event loop",
+            "Garbage collection pauses on every request",
+            "The workers have run out of memory",
+            "The kernel's listen backlog is too small"
+          ],
+          "answer": 0,
+          "explain": "Low CPU with every task delayed means the loop is waiting inside a call that does not yield. GC pauses and memory pressure would show in CPU or memory metrics, and backlog trouble would show as connect delays before requests begin.",
+          "reveal": "The deploy diff shows the new tool uses a synchronous HTTP client inside an async handler. The store's API takes about 1 to 2 seconds per call.",
+          "artifact": {
+            "lang": "diff",
+            "code": "+async def lookup_order(order_id: str) -> dict:\n+    resp = requests.get(f\"{STORE_API}/orders/{order_id}\", timeout=10)\n+    return resp.json()"
+          }
+        },
+        {
+          "q": "What is the right fix?",
+          "options": [
+            "Double the number of uvicorn workers",
+            "Raise nginx's timeout so slow requests can finish",
+            "Add a Redis cache in front of the health endpoint",
+            "Make the call with an async HTTP client, keeping a timeout"
+          ],
+          "answer": 3,
+          "explain": "An awaited async call lets the loop serve other requests while the store's API responds. More workers would spread the stalls thinner, but every worker would still freeze on each lookup. A cache on /health would hide the symptom from monitoring while customers still wait."
+        }
+      ],
+      "debrief": "Root cause: a synchronous HTTP call inside an async handler blocked the event loop for one to two seconds per order lookup, stalling every request on the same worker. Postgres was a plausible but wrong suspect; a slow /health endpoint with low CPU cleared it in one look. Catch it earlier with a lint rule or review check for blocking libraries in async code, and with asyncio debug mode in staging. The general lesson: when everything on a process slows together, look for what is holding the loop."
+    },
+    {
+      "id": "d03-x2",
+      "title": "Chat fails with pool errors while Postgres is idle",
+      "brief": "At 11:00 Relay's chat started failing with 500 errors. The API log is full of `QueuePool limit of size 5 overflow 10 reached`. The database team says Postgres looks healthy: CPU 15 percent, no slow queries. A teammate proposes raising the pool size to 100 on every pod.",
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Raise the pool size to 100 and watch the error rate",
+            "See what Relay's open Postgres sessions are doing right now",
+            "Restart all API pods to release the connections",
+            "Upgrade Postgres to a larger instance"
+          ],
+          "answer": 1,
+          "explain": "The pool is empty while the database is idle, so the question is what the borrowed connections are doing. Raising the pool or restarting acts before you know, and a larger database fixes load it does not have.",
+          "reveal": "Almost all of Relay's sessions are open but doing nothing, inside a transaction, for tens of seconds.",
+          "artifact": {
+            "lang": "text",
+            "code": "state                 count   longest\nactive                    3   0.02s\nidle in transaction      57   41s\nidle                      0   -"
+          }
+        },
+        {
+          "q": "What does 'idle in transaction' for 20 to 40 seconds suggest?",
+          "options": [
+            "Postgres is slow to execute the queries it receives from Relay",
+            "The handler opened a transaction, then waited on something else",
+            "The network between the API and Postgres is losing packets",
+            "Another service holds locks on Relay's tables and blocks writes"
+          ],
+          "answer": 1,
+          "explain": "Idle in transaction means the client holds an open transaction and is not sending queries. The database is waiting for the app. Slow queries would appear as active sessions, and locks would show sessions waiting on locks.",
+          "reveal": "The chat handler opens a session, loads the ticket, calls the LLM, then writes the reply in the same transaction. LLM latency rose from 3 seconds to 30 to 40 seconds at 10:55."
+        },
+        {
+          "q": "What is the durable fix?",
+          "options": [
+            "Release the connection before the LLM call; write in a new short transaction",
+            "Raise the pool size to 100 on every pod so bursts are absorbed",
+            "Raise the pool timeout from 30 to 120 seconds so requests wait longer",
+            "Add a Postgres read replica to take the ticket reads off the primary"
+          ],
+          "answer": 0,
+          "explain": "Holding a connection only while talking to the database makes each request need it for milliseconds, whatever the LLM does. A pool of 100 per pod, times workers and pods, can exceed Postgres's connection limit and still runs dry if the LLM slows further. A longer timeout makes requests wait longer before failing."
+        }
+      ],
+      "debrief": "Root cause: the chat handler kept a database transaction open across the LLM call, so connections were held for as long as the model took. When LLM latency jumped, the pool emptied and requests failed waiting for a connection while Postgres sat idle. Raising the pool size was the plausible wrong fix. Catch it earlier by alerting on idle-in-transaction sessions, and consider Postgres's idle-in-transaction timeout as a safety net. The general lesson: never hold a scarce resource across a slow call to something else."
+    }
+  ]
+}

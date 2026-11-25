@@ -1,0 +1,617 @@
+{
+  "id": "d04",
+  "day": 4,
+  "phase": "p1",
+  "title": "API design: REST done properly",
+  "tagline": "Resources, pagination, errors, idempotency, and changing an API without breaking the clients that depend on it.",
+  "minutes": 55,
+  "why": "Many bugs you will chase are not inside one service. They sit in the seam between a client and an API: a page that skipped rows, a retry that charged twice, a field that was renamed on one side only. Knowing how a well-designed API behaves tells you which side of the seam to blame and what evidence settles it.",
+  "objectives": [
+    "Predict the duplicates and gaps offset pagination produces when rows change during paging, and name the cursor fix",
+    "Explain how an idempotency key turns a retried POST into a safe operation, and where the key must be created",
+    "Classify a proposed API change as additive or breaking before it ships",
+    "Read a 429 and a validation error and say which side must change: client, configuration, or server"
+  ],
+  "lessons": [
+    {
+      "id": "d04-l1",
+      "title": "Resources, verbs, and statelessness",
+      "minutes": 13,
+      "blocks": [
+        {"t": "p", "text": "A **REST API** models a system as **resources**, the nouns of the domain, each addressed by a URL. The HTTP method says what to do to the resource. The value of the style is predictability: a client that has learned one endpoint can guess how the others behave, and so can you when you read a log."},
+        {"t": "p", "text": "Relay's nouns are tickets, messages, orders, and refunds. A message belongs to a ticket, so it lives at `/tickets/451/messages`. A refund belongs to an order, so creating one is `POST /orders/8812/refunds`. The URL shows the relationship, and the method shows the intent."},
+        {"t": "compare",
+          "caption": "The same operations in two URL styles",
+          "columns": ["", "Action-style URLs", "Resource-style URLs"],
+          "rows": [
+            ["Create a refund", "`POST /issueRefund` with the order id in the body", "`POST /orders/8812/refunds`"],
+            ["List a ticket's messages", "`POST /getTicketMessages`", "`GET /tickets/451/messages`"],
+            ["Close a ticket", "`POST /closeTicket`", "`PATCH /tickets/451` with a new status"],
+            ["Is it safe to retry?", "Unknown, since every call is a POST", "Visible from the method: GET, PUT, DELETE yes; POST needs a key"],
+            ["Can a cache or proxy help?", "No, caches do not store POST responses in practice", "GET responses can be cached and replayed"]
+          ],
+          "verdict": "Resource style wins for public and shared APIs because tools, caches, and people can infer behavior from the method. Action style is fine for an internal operation that is truly a verb, such as `POST /tickets/451/reindex`."},
+        {"t": "h", "text": "Use methods and status codes the same way everywhere"},
+        {"t": "list", "items": [
+          "`GET` only reads. If a GET changes state, a crawler, a prefetching browser, or a retrying proxy will change it for you.",
+          "`POST` creates or triggers. A create returns `201 Created` and a `Location` header pointing at the new resource.",
+          "`PUT` replaces the whole resource and `PATCH` changes some fields. Sending the same PUT twice leaves the same result.",
+          "`DELETE` removes. A second identical DELETE must not cause harm, whether it returns 204 or 404.",
+          "`400` for a request the server cannot parse, `422` for one it parsed but rejected, `404` for a missing resource, `409` for a conflict with current state."
+        ]},
+        {"t": "callout", "kind": "pitfall", "title": "Errors returned as 200", "text": "Some APIs answer every call with `200 OK` and put `{\"ok\": false}` in the body. Your dashboards then count failures as successes, client libraries do not retry, and a cache may store the error. When an integration fails silently, check whether the status code tells the truth before anything else."},
+        {"t": "h", "text": "Statelessness"},
+        {"t": "p", "text": "A **stateless** API handles each request using only what the request carries plus shared stores such as Postgres and Redis. Nothing about the caller lives in one worker's memory between requests. Identity travels in a token on every call, and the conversation history lives in the database."},
+        {"t": "tradeoff",
+          "title": "Where per-user state lives between requests",
+          "options": [
+            {"name": "In the worker's memory", "gain": ["No network hop to read it", "Simple to write"], "cost": ["Each user must hit the same worker", "Lost on every restart and deploy", "Bugs depend on which worker answered"], "choose": "Choose this only for a single-process prototype that nobody else depends on."},
+            {"name": "In Postgres or Redis", "gain": ["Any worker can serve any request", "Scale by adding workers", "A failed request can be replayed from its log"], "cost": ["One extra round trip per request", "The store becomes a dependency that can fail"], "choose": "Choose this for anything behind a load balancer, which is every real deployment of Relay."}
+          ]},
+        {"t": "callout", "kind": "debug", "title": "A bug that hits one request in N", "text": "Relay runs four uvicorn workers. If a feature works on roughly one request in four, suspect state kept in process memory: only the worker that stored it can find it. Log the worker's process id next to each request and see whether successes all come from one process."},
+        {"t": "callout", "kind": "ai", "title": "The LLM API is stateless too", "text": "The model remembers nothing between calls. Relay resends the system prompt, the conversation so far, and the tool results on every request. That is why you can reproduce an agent's turn exactly if you logged the full request body, and why you cannot if you only logged the last user message."},
+        {"t": "check",
+          "q": "A developer keeps each customer's unsent reply draft in a Python dictionary inside the FastAPI process. Relay runs four workers. Customers say drafts vanish most of the time. Why?",
+          "options": ["Garbage collection clears the dictionary between requests", "Each worker process has its own separate dictionary", "Postgres rolls back the draft when the request commits"],
+          "answer": 1,
+          "explain": "Workers are separate processes with separate memory. With round-robin balancing, three requests in four reach a worker that never saw the draft. Moving the draft to Redis or Postgres fixes it."}
+      ]
+    },
+    {
+      "id": "d04-l2",
+      "title": "Pagination, filtering, and error shapes",
+      "minutes": 14,
+      "blocks": [
+        {"t": "p", "text": "Any endpoint that returns a list must return it in **pages**, bounded slices with a way to ask for the next one. How the API defines the boundary between pages decides whether a client that reads every page sees every row exactly once while other people are writing."},
+        {"t": "compare",
+          "caption": "Two ways to say where the next page starts",
+          "columns": ["", "Offset: `?offset=40&limit=20`", "Cursor: `?after=<token>&limit=20`"],
+          "rows": [
+            ["How the next page is found", "Skip the first 40 rows of the sorted result", "Start strictly after the last row the client saw"],
+            ["A row inserted ahead of the reader", "Everything shifts down, so a row repeats on the next page", "No effect on later pages"],
+            ["A row removed ahead of the reader", "Everything shifts up, so a row is skipped", "No effect on later pages"],
+            ["Page 500 of a large table", "Slow, the database still walks the skipped rows", "As fast as page 1 with a suitable index"],
+            ["Jump straight to page 37", "Easy", "Not possible, only next and previous"],
+            ["What it needs", "Nothing beyond a sort order", "A sort key that is unique and stable"]
+          ],
+          "verdict": "Use cursors for anything a program walks end to end, such as exports, syncs, and eval dataset pulls. Offsets are acceptable for a human clicking through a small, slow-changing list."},
+        {"t": "code",
+          "lang": "http",
+          "title": "A cursor-paginated response from Relay",
+          "code": "GET /tickets?status=open&sort=-created_at&limit=3 HTTP/1.1\nAuthorization: Bearer eyJhbGciOi...\n\nHTTP/1.1 200 OK\nContent-Type: application/json\n\n{\n  \"data\": [\n    {\"id\": 9104, \"created_at\": \"2025-03-02T10:15:09Z\", \"status\": \"open\"},\n    {\"id\": 9101, \"created_at\": \"2025-03-02T10:15:09Z\", \"status\": \"open\"},\n    {\"id\": 9087, \"created_at\": \"2025-03-02T10:11:42Z\", \"status\": \"open\"}\n  ],\n  \"next_cursor\": \"eyJjIjoiMjAyNS0wMy0wMlQxMDoxMTo0MloiLCJpIjo5MDg3fQ\"\n}",
+          "notes": [
+            "Two tickets share a `created_at`. Sorting by time alone would let the page boundary fall between them unpredictably.",
+            "The cursor is opaque to the client. Here it encodes the last row's time **and** id, which together are unique.",
+            "When `next_cursor` is absent or null, the client has reached the end. A client that stops at a short page instead can stop early by mistake."
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "A cursor on a non-unique key still loses rows", "text": "If the cursor holds only `created_at`, the next page starts strictly after that time and silently drops any other row with the same timestamp. Always add a unique tie-breaker, usually the id, to both the sort and the cursor."},
+        {"t": "check",
+          "q": "An export walks `/tickets?offset=N&limit=100` sorted newest first, while new tickets keep arriving. What does the export most likely contain?",
+          "options": ["Some tickets twice, because new arrivals push older rows onto the next page", "Every ticket exactly once, because each request is consistent", "Only the newest 100 tickets, repeated on every page"],
+          "answer": 0,
+          "explain": "Each new ticket inserts at the top and shifts every older row down one position, so the first row of the next page is one the client already read. Each request is consistent on its own, but the pages are not consistent with each other."},
+        {"t": "h", "text": "Filters, sorting, and what to do with a typo"},
+        {"t": "p", "text": "Filters and sort orders usually travel as query parameters: `?status=open&sort=-created_at`. A good API publishes which fields can be filtered and sorted. The interesting question is what happens with `?stauts=open`. If the server ignores unknown parameters, the client gets every ticket and believes they are all open."},
+        {"t": "tradeoff",
+          "title": "How strictly to validate input",
+          "options": [
+            {"name": "Strict", "gain": ["Typos and wrong types fail at the edge with a clear message", "The error appears near its cause"], "cost": ["An older client that sends an extra field starts failing", "Every addition must be coordinated"], "choose": "Choose this for requests that act on the world, such as refunds, and for filters whose silent loss would mislead."},
+            {"name": "Lenient", "gain": ["Old and new clients keep working across versions", "Easier to evolve"], "cost": ["Mistakes are silently ignored or coerced", "Bugs surface far from the cause"], "choose": "Choose this for clients reading responses: ignore unknown fields so the server can add some."}
+          ]},
+        {"t": "h", "text": "One error shape for the whole API"},
+        {"t": "code",
+          "lang": "json",
+          "title": "A machine-readable 422 body",
+          "code": "{\n  \"type\": \"validation_error\",\n  \"title\": \"Request body is invalid\",\n  \"status\": 422,\n  \"errors\": [\n    {\"field\": \"amount\", \"code\": \"must_be_positive\", \"message\": \"amount must be > 0\"},\n    {\"field\": \"reason\", \"code\": \"required\", \"message\": \"reason is required\"}\n  ],\n  \"request_id\": \"req_7f3a91\"\n}",
+          "notes": [
+            "A stable `code` per error lets a client branch on it. Matching on `message` breaks when someone edits the wording.",
+            "Every field error is listed at once, so the caller fixes them in one pass.",
+            "`request_id` is the thread that joins this response to the server's log line. This shape resembles the problem-details standard, served as `application/problem+json`."
+          ]},
+        {"t": "callout", "kind": "debug", "title": "A 500 that should have been a 422", "text": "When input is not validated at the edge, a bad value travels until something deeper rejects it, and you see a 500 with a database error such as `invalid input syntax for type uuid`. The fix is to validate where the request enters, where the error can name the field."},
+        {"t": "reveal", "prompt": "Relay's eval harness pulls open tickets page by page and counts 4,982. A direct database count at the end of the run says 5,031. Before reading any code, what two numbers would you compute from the export?", "answer": "The number of distinct ticket ids and the number of duplicated ids. If distinct is below the total rows, pages overlapped. If the database count exceeds distinct, rows were also skipped. Both together point at offset paging over changing data."}
+      ]
+    },
+    {
+      "id": "d04-l3",
+      "title": "Idempotency keys, retries, and rate limits",
+      "minutes": 14,
+      "blocks": [
+        {"t": "p", "text": "A request can succeed on the server while its response is lost on the way back. The client sees a timeout and cannot tell whether the work happened. Retrying is the only way to finish reliably, so every write that might be retried must be safe to repeat."},
+        {"t": "p", "text": "GET, PUT, and DELETE are **idempotent** by definition: doing them twice leaves the same state as doing them once. POST is not. A retried `POST /orders/8812/refunds` creates a second refund unless the API can recognize the retry. An **idempotency key** is how it recognizes one."},
+        {"t": "flow",
+          "title": "A refund retried with an idempotency key",
+          "steps": [
+            {"actor": "Tool executor", "label": "Creates a key once for this refund", "detail": "The key is a random id generated before the first attempt and sent as an `Idempotency-Key` header on every attempt.", "fail": "If the key is generated inside the retry loop, each attempt has a new key and nothing is deduplicated."},
+            {"actor": "API", "label": "Records the key before doing the work", "detail": "It inserts the key, the caller, and a hash of the body into Postgres under a unique constraint, marked in progress.", "fail": "Without a unique constraint, two concurrent attempts both pass the check and both refund."},
+            {"actor": "API", "label": "Calls the payment provider", "detail": "The refund succeeds at the provider. The API stores the response it is about to send next to the key.", "fail": "A crash here leaves the key in progress; the next attempt must check the provider before charging again."},
+            {"actor": "Network", "label": "Loses the response", "detail": "The client's 10-second timeout fires first. From the outside, this looks exactly like a failure.", "fail": "The client logs a timeout although the money has moved."},
+            {"actor": "Tool executor", "label": "Retries with the same key", "detail": "The API finds the key completed and returns the stored 201 without touching the provider.", "fail": "If the retry carries the same key with a different amount, the API must reject it rather than guess."}
+          ]},
+        {"t": "compare",
+          "caption": "What a client may safely retry after a timeout",
+          "columns": ["", "Safe to retry blindly?", "Why"],
+          "rows": [
+            ["`GET /orders/8812`", "Yes", "Reading twice changes nothing"],
+            ["`PUT /tickets/451/assignee`", "Yes", "The second call writes the same value"],
+            ["`POST /orders/8812/refunds` with no key", "No", "Each call creates a new refund"],
+            ["The same POST with a stable key", "Yes", "The server returns the first result for a repeated key"]
+          ],
+          "verdict": "Retries are only as safe as the operation underneath them, so put the key on every POST that moves money or sends something to a person."},
+        {"t": "callout", "kind": "pitfall", "title": "Keys that do not survive the retry", "text": "The common bug is a key created per attempt, often by a generic HTTP wrapper that adds a fresh UUID to each request. It looks correct in code review and protects nothing. Check that one logical operation produces exactly one key, and that the key is logged."},
+        {"t": "callout", "kind": "ai", "title": "Agents retry at two levels", "text": "The HTTP client inside a tool may retry on timeout, and the model may also call `issue_refund` again after reading an ambiguous tool error. Deriving the key from the tool call id covers the first case. For the second, return a clear tool result such as 'refund already issued' so the model does not try again."},
+        {"t": "h", "text": "Rate limits, briefly"},
+        {"t": "p", "text": "Relay's API also caps how often each partner integration may call it. Three counting schemes are common: a **fixed window** counts per calendar minute and allows a double burst at the edge, a **sliding window** counts the last 60 seconds, and a **token bucket** refills an allowance steadily and allows short bursts up to its size. All three answer an excess request with `429 Too Many Requests`."},
+        {"t": "code",
+          "lang": "http",
+          "title": "One partner over its limit",
+          "code": "POST /tickets HTTP/1.1\nAuthorization: Bearer pk_live_acme_...\n\nHTTP/1.1 429 Too Many Requests\nRetry-After: 30\nX-RateLimit-Limit: 600\nX-RateLimit-Remaining: 0\nContent-Type: application/json\n\n{\"type\": \"rate_limited\", \"status\": 429, \"request_id\": \"req_c21e04\"}",
+          "notes": [
+            "`Retry-After` is either a number of seconds or an HTTP date. A client must wait at least that long.",
+            "The limit headers' names vary between APIs. What matters is that remaining allowance is visible on every response, not only on the 429.",
+            "The key in `Authorization` is what the limit is counted against, so one partner's burst only throttles that partner."
+          ]},
+        {"t": "tradeoff",
+          "title": "What to count a rate limit against",
+          "options": [
+            {"name": "Per API key", "gain": ["A noisy client throttles only itself", "Limits can differ by plan"], "cost": ["Needs a lookup per request", "Unauthenticated endpoints need another key"], "choose": "Choose this for any authenticated API with more than one consumer."},
+            {"name": "Per client IP", "gain": ["Works before authentication", "Blocks crude abuse at the edge"], "cost": ["Many users behind one IP share a limit", "Behind a proxy, every request may show the proxy's IP"], "choose": "Choose this for login and signup pages, alongside a per-key limit."},
+            {"name": "One global limit", "gain": ["Protects the backend's total capacity", "Trivial to run"], "cost": ["One noisy client causes 429s for everyone"], "choose": "Choose this only as an outer safety net behind per-key limits."}
+          ]},
+        {"t": "callout", "kind": "debug", "title": "Sudden 429s across many clients", "text": "Group the 429 responses by the key they were counted against. If one key accounts for most of the traffic, a single noisy client is spending a shared budget, and the fix is per-key limits. If 429s spread evenly at normal volume, the limit is too low or is keyed on the wrong thing."},
+        {"t": "reveal", "prompt": "A refund POST timed out after 10 seconds and the client retried with the same idempotency key 2 seconds later. The first attempt is still running on the server. What should the second attempt receive?", "answer": "A conflict response, typically 409, saying the original request is still in progress. The server must not start the work a second time, and it cannot return a stored result yet. The client should wait and retry with the same key."}
+      ]
+    },
+    {
+      "id": "d04-l4",
+      "title": "Contracts and versioning",
+      "minutes": 14,
+      "blocks": [
+        {"t": "p", "text": "An API is a promise about paths, fields, types, and status codes. **OpenAPI** is a standard machine-readable format for writing that promise down. **Contract drift** is the gap that grows between what the server actually does and what its clients assume, and it is one of the most common sources of integration bugs."},
+        {"t": "p", "text": "FastAPI builds an OpenAPI document from Relay's route signatures and Pydantic models and serves it as JSON. Because the document comes from the code, the spec and the server rarely disagree. The drift happens on the other side: client code generated months ago, or a script that hard-codes a field name."},
+        {"t": "compare",
+          "caption": "Which changes existing clients survive",
+          "columns": ["Change", "Safe for existing clients?", "Why"],
+          "rows": [
+            ["Add a field to a response", "Usually", "Clients that ignore unknown fields are unaffected; strict ones break"],
+            ["Add an optional request parameter with a default", "Yes", "Old requests still mean what they meant"],
+            ["Rename a field", "No", "Old clients read a key that no longer exists"],
+            ["Make an optional request field required", "No", "Old requests now fail validation"],
+            ["Change a type, such as an integer id to a string", "No", "Parsers and comparisons break, sometimes silently"],
+            ["Add a value to an enum", "Risky", "Clients with an exhaustive switch hit the unhandled case"],
+            ["Remove an endpoint", "No", "Callers get 404"]
+          ],
+          "verdict": "Additive changes are the default way to evolve. Anything else needs a migration path and a date."},
+        {"t": "callout", "kind": "pitfall", "title": "The rename that looked harmless", "text": "Relay renamed `customer_email` to `email` in the ticket response. The web app was redeployed with the change, the nightly eval harness was not, and it read `None` for every email without raising. Renames should be done as add the new field, keep the old one, migrate readers, then remove."},
+        {"t": "tradeoff",
+          "title": "How to change an API over time",
+          "options": [
+            {"name": "Version in the URL", "gain": ["Visible in every log line and curl command", "Easy to route at the proxy"], "cost": ["Whole-API copies for one change", "Clients must change every URL to upgrade"], "choose": "Choose this for public APIs with many external clients and rare, large changes."},
+            {"name": "Version in a header", "gain": ["URLs stay stable", "Versions can be fine-grained, even per date"], "cost": ["Invisible unless you log the header", "Easy to forget in a test or a curl"], "choose": "Choose this when many small versions must coexist and you control logging."},
+            {"name": "Additive evolution only", "gain": ["No version bookkeeping", "Clients never have to upgrade"], "cost": ["Old fields linger for a long time", "Requires discipline on every change"], "choose": "Choose this for internal APIs where you can see and move every client."}
+          ]},
+        {"t": "h", "text": "Deprecating without surprises"},
+        {"t": "list", "style": "number", "items": [
+          "Add the replacement alongside the old field or endpoint.",
+          "Mark the old one deprecated in the spec and announce a removal date. A `Sunset` response header can carry the date.",
+          "Measure usage of the old endpoint or parameter per API key, so you know who still depends on it.",
+          "Contact or migrate the remaining callers, then remove when usage reaches zero."
+        ]},
+        {"t": "callout", "kind": "debug", "title": "A client broke right after a deploy", "text": "Diff the OpenAPI document of the previous release against the current one. Removed or renamed properties, newly required fields, and changed types show up in a few lines. Then match them against the field named in the client's error or the value that came back empty."},
+        {"t": "callout", "kind": "ai", "title": "Tool schemas are contracts", "text": "The JSON schema Relay gives the model for `lookup_order` is an API contract with a very forgiving client. Rename `order_id` to `id` and the model may adapt, or may keep sending the old name it saw in a few-shot example. Version tool schemas with the prompt, and rerun the eval after any change."},
+        {"t": "check",
+          "q": "Relay wants to change `order.total` from a number in dollars to an integer in cents. Which plan avoids breaking existing clients?",
+          "options": ["Change the type and announce it in release notes", "Add `total_cents` next to `total`, migrate readers, then retire `total`", "Return a string so both interpretations parse"],
+          "answer": 1,
+          "explain": "Changing the meaning of an existing field breaks every reader silently, since a number still parses. Adding a new, clearly named field is additive, and the old one is removed only after readers move."},
+        {"t": "reveal", "prompt": "A contract test in CI runs the eval harness's API client against Relay's current OpenAPI spec. What kind of bug does it catch that unit tests on either side miss?", "answer": "Drift between the two sides. Each side's unit tests check it against its own assumptions, so both pass after a rename. Only a test that checks one side against the other's published contract notices that the field the client reads no longer exists."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Export or sync has duplicate rows, and some rows are missing, when walking all pages",
+      "causes": ["Offset pagination while rows are inserted or deleted ahead of the reader", "Cursor or sort on a non-unique key such as a timestamp"],
+      "look": "The pagination parameters in the client's request log, and the sort order the endpoint uses.",
+      "confirm": "Duplicated ids sit at page boundaries, and the count of distinct ids differs from a direct database count.",
+      "fix": "Switch to a cursor on a unique, stable key such as `(created_at, id)`. You lose jump-to-page."
+    },
+    {
+      "symptom": "Client broke after a deploy: KeyError, undefined, or None where a field used to be",
+      "causes": ["A field was renamed or removed", "A type or the meaning of a value changed"],
+      "look": "A diff of the OpenAPI document between the two releases, and the exact field the client reads.",
+      "confirm": "The field the client reads is absent from the new spec or the new response.",
+      "fix": "Restore the old field alongside the new one, then migrate readers before removing it. Add a contract test."
+    },
+    {
+      "symptom": "Customer charged or refunded twice; the client log shows a timeout and a retry",
+      "causes": ["POST retried with no idempotency key", "Idempotency key generated per attempt instead of per operation"],
+      "look": "Server access logs for two identical POSTs a few seconds apart, and the client's timeout and retry log.",
+      "confirm": "The first request completed on the server after the client had given up, and the two requests carry different keys or none.",
+      "fix": "Generate one key per logical operation, send it on every attempt, and enforce it with a unique constraint."
+    },
+    {
+      "symptom": "Sudden 429 Too Many Requests for many clients at normal total traffic",
+      "causes": ["One noisy client spending a shared or global limit", "Limit keyed on the proxy's IP instead of the caller"],
+      "look": "429 responses grouped by the key or IP they were counted against.",
+      "confirm": "One key or one IP accounts for most of the requests in the window.",
+      "fix": "Count limits per API key, and keep a global limit only as an outer safety net."
+    },
+    {
+      "symptom": "422 Unprocessable Entity on a request that worked yesterday, from an older client",
+      "causes": ["Server started rejecting unknown fields", "A request field became required"],
+      "look": "The 422 body's field errors and the server's recent schema changes.",
+      "confirm": "The error names a field the old client sends or omits, and new clients succeed.",
+      "fix": "Accept and ignore the extra field, or default the new one, until old clients are gone."
+    },
+    {
+      "symptom": "Integration failed silently; dashboards show 100 percent success",
+      "causes": ["API returns 200 with an error flag in the body", "Client never checks the body"],
+      "look": "Raw responses for a request you know failed.",
+      "confirm": "Status is 200 and the body holds an error.",
+      "fix": "Return real 4xx and 5xx codes. Until then, alert on the body's error field."
+    },
+    {
+      "symptom": "Listing endpoint is fast on page 1 and very slow on deep pages",
+      "causes": ["Offset pagination makes the database walk and discard every skipped row"],
+      "look": "Query time against the offset value in the slow query log.",
+      "confirm": "Latency grows roughly in line with the offset.",
+      "fix": "Use cursor pagination with an index on the sort key."
+    },
+    {
+      "symptom": "A feature works on some requests and not others, about one in N",
+      "causes": ["State kept in one worker's memory", "One instance runs a different version or config"],
+      "look": "The worker process id or instance name logged next to each success and failure.",
+      "confirm": "Successes all come from one worker or instance.",
+      "fix": "Move the state to Redis or Postgres, or redeploy so every instance matches."
+    },
+    {
+      "symptom": "500 with a database error such as invalid input syntax, on user input",
+      "causes": ["No validation at the API edge, so bad input reaches Postgres"],
+      "look": "The stack trace for the 500 and the request body.",
+      "confirm": "The same body fails the same way every time.",
+      "fix": "Validate at the edge and return a 422 that names the field."
+    }
+  ],
+  "glossary": [
+    {"term": "Resource", "def": "A thing an API exposes, such as a ticket or an order, addressed by its own URL."},
+    {"term": "Stateless", "def": "Handling each request using only what it carries plus shared stores, with nothing kept in one server's memory between requests."},
+    {"term": "Offset pagination", "def": "Paging by skipping a number of rows from the start of a sorted result. Simple, but rows shift when data changes."},
+    {"term": "Cursor pagination", "def": "Paging by starting after the last row the client saw, encoded in an opaque token. Needs a unique, stable sort key."},
+    {"term": "Idempotent", "def": "Safe to perform more than once with the same effect as performing it once."},
+    {"term": "Idempotency key", "def": "A client-generated id sent with a write so the server can recognize a retry and return the first result instead of acting again."},
+    {"term": "429 and Retry-After", "def": "The status code for a caller over its rate limit, and the header saying how long to wait, in seconds or as a date."},
+    {"term": "Token bucket", "def": "A rate limiting scheme in which allowance refills at a steady rate up to a cap, so short bursts are allowed."},
+    {"term": "OpenAPI", "def": "A standard machine-readable description of an HTTP API: paths, parameters, schemas, and responses."},
+    {"term": "Contract drift", "def": "Divergence between what an API actually does and what its clients or documentation assume."},
+    {"term": "Breaking change", "def": "A change that makes a correct existing client fail, such as renaming a field or making an optional input required."},
+    {"term": "Expand and contract", "def": "Changing a contract in steps: add the new form, move every reader, then remove the old form."}
+  ],
+  "apply": {
+    "title": "Find the retry and contract risks in your own project",
+    "minutes": 15,
+    "steps": [
+      "Find every place your code makes an outbound call that changes something: sends a message, writes a record, starts a job. Write down for each whether a retry could repeat it.",
+      "Check the default timeout and retry count of the LLM SDK or HTTP client you use, and whether any wrapper adds its own retries on top.",
+      "If your project exposes an endpoint or tool schema, save its current schema to a file. Tomorrow's diff against it is your first contract test.",
+      "Pick one list API you consume and check whether it pages by offset or cursor, and what happens to your loop if the last page is short."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d04-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["pagination"],
+      "diagnostic": true,
+      "q": "A client pages through a list sorted newest first using `?offset=N&limit=20`. Between fetching page 1 and page 2, three new items are created. What does the client see on page 2?",
+      "options": [
+        "Exactly the next 20 items with no overlap",
+        "An error, because the result set changed",
+        "Three items it already saw on page 1",
+        "The three new items at the top of page 2"
+      ],
+      "answer": 2,
+      "explain": "The new items take the first three positions, pushing the last three rows of page 1 into positions 21 to 23. Offset 20 now starts on those, so they repeat. The tempting belief is that each page is a stable slice, but each request sorts the current data afresh.",
+      "why": ["Offsets count positions in the current data, and three positions were inserted ahead of the reader.", "Most APIs have no notion of a result set that persists between requests, so nothing detects the change.", "", "The new items are now at positions 1 to 3, which belong to page 1, so page 2 never shows them."]
+    },
+    {
+      "id": "d04-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["idempotency", "retries"],
+      "context": "A customer was refunded twice for one order. The agent trace shows a single `issue_refund` tool call.",
+      "artifact": {"lang": "log", "title": "Relay API request log: start time, status, duration", "code": "10:42:01.118 POST /orders/8812/refunds 201 11.82s req=req_a1 idem=-\n10:42:13.204 POST /orders/8812/refunds 201 0.94s  req=req_a2 idem=-"},
+      "q": "What is the most likely cause?",
+      "options": [
+        "The model called the refund tool twice in one turn",
+        "The client timed out, retried, and the API had no key to detect it",
+        "nginx duplicated the request while forwarding it",
+        "The payment provider replayed the refund on its side"
+      ],
+      "answer": 1,
+      "explain": "The first request took almost 12 seconds and still succeeded, and the second followed 12 seconds after it started, which fits a 10-second client timeout plus a short retry delay. `idem=-` shows no idempotency key on either request. The model is ruled out by the trace showing one tool call.",
+      "why": ["The trace shows one tool call, so the second POST came from below the model.", "", "Both requests have distinct request ids and arrived 12 seconds apart, which fits a client retry, not a proxy copy.", "The provider replaying would not produce a second POST in Relay's own access log."]
+    },
+    {
+      "id": "d04-q03",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["versioning", "breaking-changes"],
+      "q": "You need to rename `customer_email` to `email` in Relay's ticket response, and you do not control every client. What is the safest plan?",
+      "options": [
+        "Rename it and bump the API version in the URL the same day",
+        "Rename it and rely on clients ignoring unknown fields",
+        "Return `email` only to clients that send a new header",
+        "Add `email` next to the old field and remove the old one later"
+      ],
+      "answer": 3,
+      "explain": "Expand and contract keeps old readers working while new ones move, and removal waits until nobody reads the old field. Ignoring unknown fields protects clients from additions, but a rename is also a removal, which nothing protects against.",
+      "why": ["A same-day version bump still breaks every client that has not moved to the new URL.", "Ignoring unknown fields helps with additions; the old field disappearing is what breaks clients.", "Header-gated fields work but add per-client branching for a change that expand and contract handles without it.", ""]
+    },
+    {
+      "id": "d04-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["rate-limit", "noisy-client"],
+      "context": "Since 14:00, many partners report 429s from Relay's public API. Total traffic is only slightly above normal.",
+      "artifact": {"lang": "text", "title": "Requests per minute by API key, 14:00 to 14:10", "code": "key             req/min   share of 429s\npk_live_acme    18,400    (all keys see 429s)\npk_live_bolt       140\npk_live_cora        95\n... 61 other keys  ~2,100 total\nlimiter: single bucket, 20,000 req/min, all keys"},
+      "q": "What is the best fix?",
+      "options": [
+        "Count the limit per API key so one partner is throttled alone",
+        "Raise the global limit until the 429s stop",
+        "Ask every partner to add backoff with jitter",
+        "Move the limiter from Redis into each worker's memory"
+      ],
+      "answer": 0,
+      "explain": "One key sends almost 90 percent of the traffic into a single shared bucket, so its burst spends the budget everyone else needs. Per-key limits isolate it. Raising the global limit only moves the problem to the backend the limit protects.",
+      "why": ["", "A higher shared limit lets the noisy key consume more and pushes the load onto Postgres and the LLM quota.", "Backoff helps each client recover but does not stop one key from starving the rest.", "Per-worker counters make the real limit a multiple of the configured one and do not separate callers."]
+    },
+    {
+      "id": "d04-q05",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["idempotency"],
+      "q": "A client reuses an idempotency key from a completed refund of $20, but this request's body asks for $35. What should the server do?",
+      "options": [
+        "Return the stored $20 response as if it were a retry",
+        "Process the $35 refund, since the body changed",
+        "Reject the request as a misuse of the key",
+        "Refund the $15 difference between the two"
+      ],
+      "answer": 2,
+      "explain": "A key promises 'this is the same operation'. A different body breaks that promise, so the server should refuse with an error instead of guessing. Returning the old response is tempting but would hide a client bug and tell the caller $35 was refunded when it was not.",
+      "why": ["Returning the $20 response would mislead the client into thinking its $35 request succeeded.", "Processing it ignores the key entirely, which defeats the protection the key exists for.", "", "Inventing a new operation from two requests is guessing at intent with real money."]
+    },
+    {
+      "id": "d04-q06",
+      "type": "mcq",
+      "level": 1,
+      "tags": ["statelessness"],
+      "q": "What does it mean for Relay's API to be stateless?",
+      "options": [
+        "It stores no data at all, in any database",
+        "Nothing about a caller is kept in one worker between requests",
+        "Each request opens and closes its own database connection",
+        "Clients may not send cookies or tokens"
+      ],
+      "answer": 1,
+      "explain": "Statelessness is about where per-caller state lives between requests: in shared stores, never in one process's memory. Relay still stores everything in Postgres. The common confusion is to read it as having no state anywhere.",
+      "why": ["Stateless servers still use databases; the state just lives outside the worker.", "", "Connection handling is unrelated; pooled connections are normal in stateless services.", "Tokens on every request are how a stateless API knows who is calling."]
+    },
+    {
+      "id": "d04-q07",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["validation", "breaking-changes"],
+      "context": "After Tuesday's deploy, the old version of Relay's mobile app gets 422 on every new message. The current web app works.",
+      "artifact": {"lang": "json", "title": "Response body", "code": "{\n  \"type\": \"validation_error\",\n  \"status\": 422,\n  \"errors\": [{\"field\": \"client_hint\", \"code\": \"extra_forbidden\",\n              \"message\": \"Extra inputs are not permitted\"}],\n  \"request_id\": \"req_e7b2\"\n}"},
+      "q": "What changed on the server?",
+      "options": [
+        "A required field was added to the message body",
+        "The mobile client's token expired",
+        "The message endpoint moved to a new URL",
+        "The schema started rejecting fields it does not define"
+      ],
+      "answer": 3,
+      "explain": "`extra_forbidden` on `client_hint` means the server now refuses a field it does not know, which the old app still sends. A new required field would report `required` or `missing` on that field instead. Strict input validation turned a harmless extra field into a breaking change.",
+      "why": ["A missing required field is reported as missing, naming the absent field, not as an extra input.", "An expired token produces 401 before validation runs.", "A moved endpoint returns 404 or 405, not a field-level validation error.", ""]
+    },
+    {
+      "id": "d04-q08",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["versioning"],
+      "q": "What does putting the version in the URL give you that a version header does not?",
+      "options": [
+        "The version appears in every access log and curl command without extra setup",
+        "Clients never have to change anything to upgrade",
+        "Old and new versions can share the same handler code",
+        "Breaking changes become safe to ship at any time"
+      ],
+      "answer": 0,
+      "explain": "A URL version is visible wherever the path is, which helps debugging and routing. Header versions are invisible unless you choose to log them. Neither approach makes breaking changes free, since old clients still need a migration path.",
+      "why": ["", "Clients upgrading must change every URL they call.", "Code sharing between versions is a server design choice unrelated to where the version is written.", "Versioning gives a place to put breaking changes; old clients still have to move."]
+    },
+    {
+      "id": "d04-q09",
+      "type": "multi",
+      "level": 2,
+      "tags": ["breaking-changes", "contracts"],
+      "q": "Relay's clients all ignore unknown fields in responses. Which of these changes would still break some of them? Select all that apply.",
+      "options": [
+        "Renaming `ticket.priority` to `ticket.urgency`",
+        "Making the optional `reason` field required on refund requests",
+        "Changing `order.id` from an integer to a string",
+        "Adding a new `ticket.language` field to responses",
+        "Adding a new `GET /tickets/{id}/summary` endpoint"
+      ],
+      "answers": [0, 1, 2],
+      "explain": "A rename removes the old field, a newly required input fails old requests, and a type change breaks parsing or comparisons. Adding a response field or a new endpoint is additive, and clients that ignore unknown fields never notice it."
+    },
+    {
+      "id": "d04-q10",
+      "type": "order",
+      "level": 2,
+      "tags": ["versioning", "deprecation"],
+      "q": "Put the steps of retiring Relay's old `customer_email` field in order.",
+      "items": [
+        "Add `email` to responses alongside `customer_email`",
+        "Mark `customer_email` deprecated in the spec and announce a removal date",
+        "Update the web app, eval harness, and partner clients to read `email`",
+        "Confirm that every client version still in use reads `email`",
+        "Remove `customer_email` from responses"
+      ],
+      "explain": "The new field must exist before anyone can move to it, and removal comes last, only after you have evidence that no live client depends on the old one. Skipping the confirmation step is how the eval harness ends up reading None."
+    },
+    {
+      "id": "d04-q11",
+      "type": "match",
+      "level": 3,
+      "tags": ["pagination", "idempotency", "rate-limit"],
+      "q": "Match each observation to its most likely cause.",
+      "pairs": [
+        ["Duplicate ids exactly at page boundaries", "Offset paging while new rows are inserted"],
+        ["Two identical POSTs 12 seconds apart, both 201", "Client retry after timeout with no idempotency key"],
+        ["Old eval harness reads None for a field", "Field renamed on the server"],
+        ["All partners throttled when one runs a backfill", "One global rate limit shared by every key"],
+        ["Page 1 takes 20 ms and page 400 takes 4 s", "Offset makes the database walk skipped rows"]
+      ],
+      "explain": "Each symptom points at one mechanism: where a page boundary is defined, whether a retry is recognized, whether the contract changed, and what a limit is counted against. Naming the mechanism tells you which side of the seam to fix."
+    },
+    {
+      "id": "d04-q12",
+      "type": "open",
+      "level": 3,
+      "tags": ["idempotency", "retries"],
+      "context": "Relay's tool executor retries `issue_refund` up to three times on timeout. Finance wants a guarantee that one tool call can never refund twice.",
+      "q": "Describe what the client and the API must each do to provide that guarantee.",
+      "rubric": [
+        "The client creates one idempotency key per tool call, before the first attempt, and sends it on every retry",
+        "The API records the key under a unique constraint before calling the payment provider",
+        "A repeated key returns the stored result; a key still in progress returns a conflict",
+        "A repeated key with a different body is rejected",
+        "Explains why raising the timeout or disabling retries does not give the guarantee"
+      ],
+      "model": "The tool executor derives one idempotency key from the tool call id and sends it on every attempt. The API inserts the key with a hash of the body under a unique constraint before calling the provider, stores the response when done, returns that stored response for a repeat, returns 409 while the first attempt is still running, and rejects the key if the body differs. A longer timeout only makes duplicates rarer, and no retries means lost refunds."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d04-x1",
+      "title": "One tool call, two refunds",
+      "brief": "Finance flags three orders refunded twice this week, each pair a few seconds apart. The support lead is sure the model is 'getting confused and calling the tool twice'. Last Monday the payment provider's refund endpoint started responding more slowly.",
+      "artifact": {"lang": "log", "title": "Payment provider dashboard, order 8812", "code": "refund rf_19A  order=8812  amount=42.00  created=10:42:12.9\nrefund rf_19B  order=8812  amount=42.00  created=10:42:14.1"},
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Add a line to the system prompt telling the model never to refund twice",
+            "Compare the agent trace's tool calls with Relay's API access log for this order",
+            "Disable the refund tool until the cause is known",
+            "Raise the payment provider client's timeout to 30 seconds"
+          ],
+          "answer": 1,
+          "explain": "The question that halves the search is whether the duplicate came from the model or from below it. The trace and the access log answer it in a minute. Editing the prompt assumes the model is at fault, and raising a timeout assumes a cause nobody has seen yet.",
+          "reveal": "The agent trace shows one `issue_refund` call, id `toolu_8c1`. Relay's access log shows two `POST /orders/8812/refunds`, the first taking 11.8 seconds, the second starting 12 seconds after the first. The model is cleared.",
+          "artifact": {"lang": "log", "code": "10:42:01.118 POST /orders/8812/refunds 201 11.82s req=req_a1 idem=-\n10:42:13.204 POST /orders/8812/refunds 201 0.94s  req=req_a2 idem=-"}
+        },
+        {
+          "q": "One tool call produced two POSTs. Which log do you open next?",
+          "options": [
+            "The tool executor's log for tool call `toolu_8c1`",
+            "Postgres's slow query log for the refunds table",
+            "nginx's error log for upstream failures",
+            "The model's full prompt for that turn"
+          ],
+          "answer": 0,
+          "explain": "The process that sent both POSTs is the tool executor, so its log says why it sent the second one. nginx forwarded two distinct requests with distinct ids, and the prompt is already cleared by the trace.",
+          "reveal": "The executor's HTTP client timed out after 10 seconds and retried. The first request was still running on the server and finished successfully a moment later.",
+          "artifact": {"lang": "log", "code": "10:42:11.121 tool=issue_refund call=toolu_8c1 attempt=1 error=ReadTimeout(10.0s)\n10:42:13.201 tool=issue_refund call=toolu_8c1 attempt=2 status=201"}
+        },
+        {
+          "q": "What is the durable fix?",
+          "options": [
+            "Raise the client timeout above the provider's slowest response",
+            "Turn off retries in the tool executor",
+            "Send an idempotency key per tool call and enforce it in the API",
+            "Check the provider for an existing refund before each attempt"
+          ],
+          "answer": 2,
+          "explain": "A key makes any number of retries safe, however slow the provider gets. A longer timeout only makes the race rarer. No retries means refunds silently lost on real failures. Checking first is a race of its own, since two attempts can both check before either refunds.",
+          "reveal": "The team adds an `Idempotency-Key` header to every refund POST and a unique constraint on the key in Postgres."
+        },
+        {
+          "q": "In staging, the fix still lets a duplicate through. Where was the key most likely created?",
+          "options": [
+            "Once per tool call, before the first attempt",
+            "By the API, after receiving the request",
+            "From the order id and amount combined",
+            "Inside the retry loop, once per attempt"
+          ],
+          "answer": 3,
+          "explain": "A key created per attempt differs on the retry, so the server sees two unrelated operations. A key from the tool call id is the same on every attempt. A server-generated key cannot identify a client retry at all.",
+          "reveal": "A shared HTTP wrapper was adding a fresh UUID header to every outgoing request. Moving key creation into the tool, keyed on the tool call id, closes the gap."
+        }
+      ],
+      "debrief": "Root cause: the provider got slower, the executor's 10-second timeout fired while refunds were still completing, and the retry created a second refund because the API could not recognize it. The model was never involved. The fix is one idempotency key per tool call, enforced by a unique constraint. A test that delays the provider past the client timeout would have caught it. The general lesson: when a write happens twice, find which layer sent it twice before blaming the top one."
+    },
+    {
+      "id": "d04-x2",
+      "title": "The eval set that will not hold still",
+      "brief": "Relay's nightly eval pulls every open ticket from `GET /tickets?status=open` to build its dataset. The pass rate has drifted by a few points on nights with no prompt or model change. Someone suggests the model provider is changing the model silently. The export runs at 18:00, when support is busiest.",
+      "artifact": {"lang": "log", "title": "eval-export summary", "code": "18:00:02 export start  endpoint=/tickets?status=open&sort=-created_at&limit=100\n18:06:41 export done   pages=50 rows=5000\n18:06:42 eval start    cases=5000"},
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Rerun the eval twice and compare the pass rates",
+            "Count distinct and duplicated ticket ids in last night's export",
+            "Ask the provider whether the model changed",
+            "Move the export to 03:00 when traffic is low"
+          ],
+          "answer": 1,
+          "explain": "A changing dataset and a changing model both move scores, and the export file can rule one in for free. Rerunning adds noise, asking the provider is slow, and moving the job applies a fix before you know the cause.",
+          "reveal": "The export holds 5,000 rows but only 4,961 distinct ids. Thirty-nine ids appear twice. A database count of open tickets created before 18:00 gives 5,031."
+        },
+        {
+          "q": "The duplicated ids sit at the end of one page and the start of the next. Which explanation fits?",
+          "options": [
+            "A page request failed and was retried, returning that page twice",
+            "A read replica lagging behind the primary",
+            "Offset paging while new tickets arrived at the top of the sort",
+            "A cache serving a stale page"
+          ],
+          "answer": 2,
+          "explain": "New tickets sort first and shift older rows down, so each page starts with rows the previous page ended with. A retried page would duplicate all 100 rows of that page, not a handful at the boundary.",
+          "reveal": "The endpoint uses `OFFSET`. Ninety-one tickets were created during the export. Tickets closed during the export shifted rows up and explain the missing ones."
+        },
+        {
+          "q": "What should the endpoint change to?",
+          "options": [
+            "A cursor on `created_at` alone",
+            "A cursor on `created_at` and `id` together",
+            "A page size of 1,000 to reduce the number of boundaries",
+            "Ascending order so new tickets land at the end"
+          ],
+          "answer": 1,
+          "explain": "A cursor removes the shifting, and the id tie-breaker stops rows with identical timestamps from being skipped. Larger pages reduce boundaries without removing them. Ascending order fixes inserts but not tickets that close mid-export.",
+          "reveal": "After the change, the export has no duplicates. Its row count still differs from night to night, because tickets open and close all day."
+        },
+        {
+          "q": "The eval team wants comparable scores across nights. What do you add?",
+          "options": [
+            "Freeze the case list as a versioned file of ticket ids and reuse it",
+            "Keep pulling live open tickets with the new cursor",
+            "Average the pass rate over the last seven nights",
+            "Pull tickets from a read replica instead of the primary"
+          ],
+          "answer": 0,
+          "explain": "Comparing scores across runs needs the same cases in every run. Correct pagination gives a correct snapshot of a moving set, which is still a different set each night. Averaging hides the drift without removing it.",
+          "reveal": "The team freezes 5,000 ticket ids as dataset v1 and refreshes it deliberately once a month."
+        }
+      ],
+      "debrief": "Root cause: offset pagination over a busy, filtered table produced duplicates from new tickets and gaps from closed ones, and the eval used a different set every night. The model never changed. The fixes are a cursor on a unique key and a frozen, versioned eval dataset. A check that distinct ids equal total rows would have caught it on the first night. The general lesson: before blaming the model for a moving score, confirm the inputs held still."
+    }
+  ]
+}

@@ -1,0 +1,620 @@
+{
+  "id": "d10",
+  "day": 10,
+  "phase": "p3",
+  "title": "Transactions and concurrency",
+  "tagline": "What the database promises when two things happen at once, what it does not, and how the gap shows up as wrong numbers.",
+  "minutes": 55,
+  "why": "Concurrency bugs never show up in a single-user test and always show up under load: a balance that is off by one refund, two bookings for one slot, a refund endpoint that hangs every afternoon. If you can read an interleaving and a lock table, you can name the bug in minutes instead of adding sleeps and retries until it hides. Relay's agent makes this worse, because a slow LLM call inside a transaction holds locks for seconds.",
+  "objectives": [
+    "Say what each ACID property guarantees for a Relay refund, and what it leaves to you",
+    "Name the anomaly in a two-transaction timeline and the lowest PostgreSQL isolation level that prevents it",
+    "Read a 'deadlock detected' log entry and a pg_stat_activity listing and point to the blocking session",
+    "Choose between an atomic update, a version column, SELECT FOR UPDATE, and a unique constraint for a given race",
+    "Explain why a transaction must never stay open across an LLM or payment API call"
+  ],
+  "lessons": [
+    {
+      "id": "d10-l1",
+      "title": "ACID and what a transaction promises",
+      "minutes": 9,
+      "blocks": [
+        {"t": "p", "text": "A **transaction** is a group of statements the database treats as one unit: either all their effects become permanent together, or none of them do. You start one with `BEGIN`, end it with `COMMIT` to keep the work, or with `ROLLBACK` to throw it away."},
+        {"t": "p", "text": "Relay's `issue_refund` tool inserts a refund row, sets the order's status to `refunded`, and adds a message to the ticket. Without a transaction, a worker that dies after the first insert leaves a refund on record for an order that still says `paid`. With one, the crash leaves no trace at all, and a retry starts clean."},
+        {"t": "compare",
+          "caption": "The four ACID properties, applied to one refund",
+          "columns": ["", "What it promises", "What it does not promise", "Relay example"],
+          "rows": [
+            ["Atomicity", "All statements in the transaction take effect, or none do", "Anything outside the database, such as an email or a payment API call", "The refund row and the order status land together"],
+            ["Consistency", "Constraints you declared hold after every commit", "That your business rules are correct; it only enforces the ones written down", "A CHECK keeps a refund amount from going negative"],
+            ["Isolation", "Concurrent transactions interfere only as much as the isolation level allows", "That transactions behave as if run one at a time, unless you ask for serializable", "Two agents refunding one order get defined behavior"],
+            ["Durability", "Once COMMIT returns, the change survives a crash or power loss", "Survival of a destroyed disk without replicas or backups", "A confirmed refund is still there after a restart"]
+          ],
+          "verdict": "Atomicity and durability are always on and cost you little. Isolation is the property with settings, and most of today is about it."},
+        {"t": "h", "text": "What a crash does at each point"},
+        {"t": "flow",
+          "title": "A refund transaction, and a crash at each step",
+          "steps": [
+            {"actor": "API", "label": "BEGIN", "detail": "Postgres starts a transaction for this connection. Nothing it does is visible to other sessions yet.", "fail": "If the connection drops here, nothing happened and nothing needs cleaning up."},
+            {"actor": "API", "label": "INSERT refund, UPDATE order", "detail": "Each change is written as a new row version stamped with this transaction's id. Other sessions keep seeing the old versions.", "fail": "A crash here: on restart Postgres treats the transaction as aborted and both changes are invisible, as if never made."},
+            {"actor": "API", "label": "COMMIT", "detail": "Postgres writes a commit record to the **write-ahead log** (WAL), the append-only file of changes, and flushes it to disk before replying.", "fail": "If the connection breaks while waiting for the reply, the client cannot tell whether the commit happened."},
+            {"actor": "Postgres", "label": "Replies COMMIT", "detail": "The change is durable. New snapshots in other sessions see it.", "fail": "A crash after this point loses nothing: recovery replays the WAL."},
+            {"actor": "Worker", "label": "Calls the payment provider, sends email", "detail": "This work happens outside the database, so the transaction cannot undo it or make it atomic with the refund row.", "fail": "If this step fails, the database says refunded while no money moved. Only an idempotent retry or a reconciliation job fixes it."}
+          ]},
+        {"t": "callout", "kind": "insight", "title": "The ambiguous commit", "text": "When the connection dies during `COMMIT`, the outcome is unknown, and the client must find out before retrying. Look the row up by an idempotency key or the refund's own id. Blindly retrying a refund that did commit creates a second one."},
+        {"t": "h", "text": "Autocommit, and the transaction you did not know you opened"},
+        {"t": "p", "text": "**Autocommit** means each statement is its own transaction, committed as soon as it finishes. Postgres behaves this way when a client sends a statement without `BEGIN`. Python drivers such as psycopg default the other way: they open a transaction silently at the first statement and keep it open until your code calls commit or rollback. ORMs with a session object behave similarly."},
+        {"t": "p", "text": "That default is convenient, because a whole request rolls back on an exception. It is also how most long transactions are born. Code that reads a ticket, then does slow work, then writes, has held a transaction open the whole time without ever writing `BEGIN`."},
+        {"t": "tradeoff",
+          "title": "Short transactions vs convenience",
+          "options": [
+            {"name": "Short, explicit transactions", "gain": ["Locks held for milliseconds", "Old row versions can be cleaned up promptly", "A failure is cheap to retry"], "cost": ["More care at each call site", "Multi-step logic must be grouped deliberately"], "choose": "Choose this for every request path and worker that handles real traffic."},
+            {"name": "One transaction per request, by the framework", "gain": ["Everything rolls back together on an exception", "Less code to write"], "cost": ["Locks are held across slow work, including API calls", "A 20-second LLM call becomes a 20-second lock"], "choose": "Choose this only when nothing slow happens between the first query and the commit."}
+          ]},
+        {"t": "callout", "kind": "ai", "title": "Never hold a transaction open across a model call", "text": "If Relay's agent loop marks a ticket `in_progress`, calls the LLM for 20 seconds, then writes the reply in the same transaction, the row lock on that ticket lasts 20 seconds. Postgres shows the session as `idle in transaction`. Commit before the call, then open a new short transaction to write the result."},
+        {"t": "callout", "kind": "pitfall", "title": "A rollback does not unsend the email", "text": "Sending an email or calling a payment API inside a transaction and then rolling back leaves the outside world changed and the database unchanged. Do the database write first, commit, then do the outside work in a step that can be retried safely."},
+        {"t": "check",
+          "q": "A worker runs BEGIN, inserts a refund row, updates the order to `refunded`, and is killed before COMMIT. What does the next query from another session see?",
+          "options": ["Neither change", "The refund row but not the status change", "Both changes, since they were already written to disk"],
+          "answer": 0,
+          "explain": "Uncommitted changes are never visible to other sessions, and after a crash Postgres treats the transaction as aborted. Having bytes on disk is not the same as being committed; the commit record decides."}
+      ]
+    },
+    {
+      "id": "d10-l2",
+      "title": "Isolation levels and their anomalies",
+      "minutes": 11,
+      "blocks": [
+        {"t": "p", "text": "An **isolation level** is a setting that decides how much one transaction can be affected by others running at the same time. Stronger levels prevent more anomalies. You pay with more waiting or with more transactions that the database aborts and you must retry."},
+        {"t": "p", "text": "An **anomaly** is a result that could not happen if the transactions had run one after the other. Five of them matter in practice."},
+        {"t": "list", "items": [
+          "**Dirty read**: you see another transaction's uncommitted change, which may later be rolled back.",
+          "**Non-repeatable read**: you read the same row twice in one transaction and get different values, because someone committed in between.",
+          "**Phantom**: you run the same query twice and a row appears or disappears, because someone inserted or deleted a matching row.",
+          "**Lost update**: two transactions read the same value, each computes a new one, and the second write overwrites the first.",
+          "**Write skew**: two transactions read overlapping data, each writes a different row based on what it read, and together they break a rule neither broke alone."
+        ]},
+        {"t": "code",
+          "lang": "text",
+          "title": "A lost update on a store-credit wallet, read committed",
+          "code": "     T1: refund adds 30                  T2: purchase spends 20\nt1   BEGIN                               BEGIN\nt2   SELECT credit ... WHERE user_id=7\n     -> 100\nt3                                       SELECT credit ... WHERE user_id=7\n                                         -> 100\nt4   UPDATE wallets SET credit = 130\n       WHERE user_id = 7\nt5                                       UPDATE wallets SET credit = 80\n                                           WHERE user_id = 7\n                                         ... waits for T1's row lock\nt6   COMMIT\nt7                                       lock granted, row set to 80\n                                         COMMIT\n\n     final credit: 80        expected: 110",
+          "notes": [
+            "Both transactions read 100 before either wrote. The application computed each new value from a read that was already stale.",
+            "T2's UPDATE waits at t5 because T1 holds the row lock. Once T1 commits, read committed lets T2 write 80 anyway. The lock ordered the two writes; nothing ordered the reads.",
+            "At repeatable read, T2 would fail at t7 with `could not serialize access due to concurrent update`, and the application would have to retry it.",
+            "Writing `SET credit = credit - 20` avoids the race entirely, because the arithmetic happens inside the database on the current row."
+          ]},
+        {"t": "compare",
+          "caption": "What each level prevents, as PostgreSQL implements it",
+          "columns": ["", "Read committed", "Repeatable read", "Serializable"],
+          "rows": [
+            ["Dirty read", "Prevented", "Prevented", "Prevented"],
+            ["Non-repeatable read", "Possible", "Prevented", "Prevented"],
+            ["Phantom", "Possible", "Prevented in Postgres, though the SQL standard allows it", "Prevented"],
+            ["Lost update (read, compute, write)", "Possible", "Prevented: the second writer gets a serialization error", "Prevented"],
+            ["Write skew", "Possible", "Possible", "Prevented"],
+            ["How it works", "A fresh snapshot for each statement", "One snapshot for the whole transaction", "One snapshot plus tracking of read and write dependencies"]
+          ],
+          "verdict": "Postgres defaults to read committed. Raise the level for a specific transaction that reads, decides, and then writes, and be ready to retry it."},
+        {"t": "p", "text": "Postgres accepts `READ UNCOMMITTED` but runs it as read committed, so you never see a dirty read in Postgres. Other databases differ: MySQL's InnoDB engine defaults to repeatable read, and its repeatable read does not behave exactly like Postgres's. Read the documentation of the database you are actually on before trusting a level's name."},
+        {"t": "h", "text": "Write skew, the anomaly snapshots miss"},
+        {"t": "p", "text": "Relay requires at least one human supervisor on duty. Ana and Ben are both on duty and both click \"go off duty\" at the same moment. Each transaction counts supervisors on duty, sees 2, and updates its own row. The two transactions write different rows, so there is no write conflict to detect. Both commit, and nobody is on duty. Repeatable read allows this; serializable detects the dependency and aborts one."},
+        {"t": "tradeoff",
+          "title": "Stronger isolation vs throughput",
+          "options": [
+            {"name": "Read committed plus targeted guards", "gain": ["Fewest aborts", "Highest concurrency", "The default every library expects"], "cost": ["You must find each race yourself", "Correctness depends on every code path"], "choose": "Choose this as the default, and guard the few critical read-then-write paths explicitly."},
+            {"name": "Repeatable read", "gain": ["One stable view for multi-query reads", "Lost updates become errors instead of silent overwrites"], "cost": ["Write skew still possible", "Conflicting writers must retry"], "choose": "Choose this for reports and exports that must see one consistent picture across several queries."},
+            {"name": "Serializable", "gain": ["Behaves as if transactions ran one at a time", "No need to find each race by hand"], "cost": ["More aborts under contention", "Every caller needs a retry loop", "Some overhead to track dependencies"], "choose": "Choose this for small, critical transactions where a missed race costs money, wrapped in a retry loop."}
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "A stronger level without a retry loop is an outage", "text": "At repeatable read and serializable, Postgres resolves conflicts by aborting a transaction with SQLSTATE `40001`. If the application turns that into a 500, raising the level converts a silent data bug into user-visible errors. Retry the whole transaction from `BEGIN`, a few times, with backoff."},
+        {"t": "check",
+          "q": "Relay runs at read committed. Two workers each run `UPDATE tickets SET reply_count = reply_count + 1 WHERE id = 42` at the same moment, starting from 3. What is the result?",
+          "options": ["5, because the second update waits and then applies to the new row", "4, because both updates computed from the value 3", "An error, because one worker gets a serialization failure"],
+          "answer": 0,
+          "explain": "At read committed, the second UPDATE waits for the first one's row lock, then re-reads the committed row and adds 1 to it. A lost update needs a read in the application between the read and the write, which this statement does not have."},
+        {"t": "reveal", "prompt": "The atomic `SET credit = credit - 20` fixes the wallet race. Why does the same trick not fix the supervisors' write skew?", "answer": "The atomic update works because the read and the write touch the same row inside one statement. Write skew involves a decision based on several rows (a count) followed by writes to different rows, so no single row conflicts. You need serializable isolation, a lock on a shared row such as the on-call schedule, or a constraint that encodes the rule."}
+      ]
+    },
+    {
+      "id": "d10-l3",
+      "title": "Locks, MVCC, and deadlocks",
+      "minutes": 11,
+      "blocks": [
+        {"t": "p", "text": "**MVCC** (multi-version concurrency control) means Postgres never overwrites a row in place. An update writes a new version and leaves the old one. Each transaction reads from a **snapshot**, a record of which versions were committed when its statement or transaction began. As a result, plain reads never wait for writes and writes never wait for plain reads."},
+        {"t": "p", "text": "Writers still wait for writers. Updating or deleting a row takes a **row lock** that is held until the transaction ends, and a second transaction that wants to modify the same row waits for it. Schema changes take table-level locks, which can stop everything on a table."},
+        {"t": "compare",
+          "caption": "The locks you will actually meet",
+          "columns": ["", "Taken by", "Blocks", "How it looks"],
+          "rows": [
+            ["Row lock", "UPDATE, DELETE, SELECT ... FOR UPDATE", "Other writers and FOR UPDATE on the same row, until commit", "Sessions with `wait_event_type = Lock` in pg_stat_activity"],
+            ["Weak table lock", "Every query, on each table it touches", "Only schema changes and maintenance that need stronger locks", "Invisible until a migration runs"],
+            ["ACCESS EXCLUSIVE table lock", "Most ALTER TABLE forms, DROP, TRUNCATE", "Every read and write on that table", "Many sessions waiting on one relation"],
+            ["Advisory lock", "Application code, by an agreed number", "Only other callers asking for the same number", "Rows of type `advisory` in pg_locks"]
+          ],
+          "verdict": "Most production lock trouble is a row lock held too long, or an ACCESS EXCLUSIVE request stuck behind a long transaction with every other query queued behind it."},
+        {"t": "check",
+          "q": "Relay's nightly report runs a SELECT that scans the tickets table for ten minutes. Meanwhile workers update ticket rows. What happens?",
+          "options": ["The report reads old versions and neither side waits", "The worker updates wait until the report finishes", "The report pauses at each row a worker is updating"],
+          "answer": 0,
+          "explain": "Under MVCC, a plain SELECT takes no row locks and reads the versions visible in its snapshot. Readers and writers do not block each other. The long report does have a cost: it keeps old row versions from being cleaned up."},
+        {"t": "h", "text": "Deadlocks"},
+        {"t": "p", "text": "A **deadlock** is two transactions each waiting for a lock the other holds, so neither can ever proceed. It almost always comes from two code paths that lock the same rows in opposite orders."},
+        {"t": "code",
+          "lang": "text",
+          "title": "Refund worker and triage worker, opposite lock order",
+          "code": "     T1: refund worker                   T2: triage worker\nt1   BEGIN                               BEGIN\nt2   UPDATE orders ... WHERE id = 501\n     (holds lock on order 501)\nt3                                       UPDATE tickets ... WHERE id = 88\n                                         (holds lock on ticket 88)\nt4   UPDATE tickets ... WHERE id = 88\n     ... waits for T2\nt5                                       UPDATE orders ... WHERE id = 501\n                                         ... waits for T1\nt6   (a cycle: after deadlock_timeout, Postgres looks for one and finds it)\nt7                                       ERROR: deadlock detected\n                                         (T2 rolled back, lock on 88 freed)\nt8   UPDATE on ticket 88 proceeds\n     COMMIT",
+          "notes": [
+            "Each worker alone is correct. The bug only exists when the two interleave, which is why it appears under load and never in tests.",
+            "Postgres waits `deadlock_timeout` (one second by default) before checking for a cycle, so each deadlock costs at least that much latency.",
+            "Postgres picks which transaction to abort. Do not assume it will be the same one each time.",
+            "The aborted transaction's error carries SQLSTATE `40P01`. Its work is rolled back and is safe to retry from the start."
+          ]},
+        {"t": "callout", "kind": "debug", "title": "Reading 'deadlock detected'", "text": "The `DETAIL` lines name each process, the transaction it waits for, and who blocks it; the server log adds each process's statement. Find the two code paths, write down the order in which each locks rows, and look for the reversal. Fix by locking in one consistent order (for example, order before ticket, or ascending id), keeping transactions short, and retrying on `40P01`."},
+        {"t": "h", "text": "Long transactions hold everything up"},
+        {"t": "p", "text": "A session that is **idle in transaction** has run `BEGIN` and some statements, and is now waiting for the application to send the next one. Meanwhile it keeps every row lock it took. Its snapshot also stops vacuum, the cleanup process, from removing old row versions, so tables and indexes bloat while it stays open."},
+        {"t": "code",
+          "lang": "sql",
+          "title": "A pileup, seen from pg_stat_activity",
+          "code": "SELECT pid, state, now() - xact_start AS xact_age,\n       wait_event_type, left(query, 38) AS query\n  FROM pg_stat_activity WHERE datname = 'relay' ORDER BY xact_start;\n\n pid  |        state        | xact_age | wait_event_type | query\n------+---------------------+----------+-----------------+-----------------------\n 4102 | idle in transaction | 00:04:12 | Client          | UPDATE orders SET status = 'refundin\n 4130 | active              | 00:01:55 | Lock            | UPDATE orders SET status = 'refunded\n 4131 | active              | 00:01:40 | Lock            | UPDATE orders SET status = 'refunded\n 4177 | active              | 00:00:31 | Lock            | UPDATE orders SET note = 'agent repl\n\nSELECT pg_blocking_pids(4130);   -- {4102}",
+          "notes": [
+            "The oldest transaction is idle. It is waiting on the client, meaning the application, not on the database.",
+            "For an idle session, `query` shows the last statement it ran, not something still running.",
+            "`pg_blocking_pids` confirms that 4102 is the session everyone waits behind.",
+            "Ending session 4102 unblocks the queue for now. The real fix is the code path that left it open, plus `idle_in_transaction_session_timeout` as a safety net."
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "The queue behind a migration", "text": "An `ALTER TABLE` that needs ACCESS EXCLUSIVE waits for any long transaction on the table to finish. While it waits, every new query on that table queues behind it. A five-minute idle transaction plus a harmless-looking migration becomes a five-minute outage. Set a short `lock_timeout` on migrations."},
+        {"t": "reveal", "prompt": "Why does a ten-minute read-only report not block Relay's refunds, while a forgotten transaction that updated one order blocks every refund for that order?", "answer": "The report only reads, and under MVCC plain reads take no row locks. The forgotten transaction wrote a row, so it holds that row's lock until it commits or rolls back, and every other writer to that row waits. Both hold back vacuum, but only the writer blocks other writers."}
+      ]
+    },
+    {
+      "id": "d10-l4",
+      "title": "Race conditions in application code",
+      "minutes": 10,
+      "blocks": [
+        {"t": "p", "text": "A **race condition** is a bug whose outcome depends on the timing of concurrent operations. Two shapes cover most of them. **Check-then-act**: you check a condition, then act as if it is still true. **Read-modify-write**: you read a value, compute a new one in the application, and write it back. Both leave a gap in which another request can change the world."},
+        {"t": "p", "text": "Relay lets a customer book a callback slot with a human agent, and each slot holds one booking. The booking code counts existing bookings for the slot, and inserts one if the count is zero. Each request is correct on its own, and two of them together book the same slot twice."},
+        {"t": "code",
+          "lang": "log",
+          "title": "Two bookings for slot 17, from the API log",
+          "code": "12:00:01.204 w=2 req=a1 user=311 slot=17 count(bookings) -> 0\n12:00:01.209 w=5 req=b7 user=588 slot=17 count(bookings) -> 0\n12:00:01.215 w=2 req=a1 user=311 slot=17 INSERT booking -> ok\n12:00:01.219 w=5 req=b7 user=588 slot=17 INSERT booking -> ok\n12:00:01.230 w=2 req=a1 status=200 booked=true\n12:00:01.233 w=5 req=b7 status=200 booked=true",
+          "notes": [
+            "Both checks ran before either insert. Each check was true at the moment it ran.",
+            "The requests are 5 milliseconds apart and were handled by different uvicorn workers (`w=2`, `w=5`), so a lock inside one Python process could not have seen both.",
+            "Wrapping the check and insert in one read committed transaction does not help: neither transaction can see the other's uncommitted insert."
+          ]},
+        {"t": "h", "text": "Three guards, and when each fits"},
+        {"t": "compare",
+          "caption": "Ways to close the gap",
+          "columns": ["", "Optimistic: version column", "Pessimistic: SELECT FOR UPDATE", "Unique constraint"],
+          "rows": [
+            ["How it works", "Update only if the version you read is unchanged", "Lock the row as you read it; others wait until you commit", "The database rejects a second row with the same key"],
+            ["What the loser sees", "Zero rows updated; it retries or tells the user", "It waits, then reads the new value", "A duplicate key error"],
+            ["Cost", "Retries when conflicts are frequent", "Waiting, deadlock risk, locks held across slow work", "Only fits rules of the form at most one per key"],
+            ["Best fit", "Low contention, edits that span a user's think time", "Hot rows, short transactions", "Bookings, idempotency keys, one active session per user"]
+          ],
+          "verdict": "Use a constraint whenever the rule can be written as one. Use optimistic locking when conflicts are rare or the read and write happen in different requests. Use pessimistic locking for short, contended updates."},
+        {"t": "code",
+          "lang": "sql",
+          "title": "Optimistic locking: the AI agent and a human edit one draft",
+          "code": "-- Both loaded ticket 42's draft reply at version 7.\n\nUPDATE tickets SET draft = '...agent text...', version = version + 1\n WHERE id = 42 AND version = 7;\nUPDATE 1        -- the agent wins; version is now 8\n\nUPDATE tickets SET draft = '...human text...', version = version + 1\n WHERE id = 42 AND version = 7;\nUPDATE 0        -- no row matched: someone changed it first",
+          "notes": [
+            "`UPDATE 0` is the whole signal. If the application ignores the row count, the human's edit vanishes without an error.",
+            "No lock is held while the human types, which is why this fits edits that take minutes.",
+            "ORMs that support a version column turn the zero-row result into an exception you can catch."
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "A lock in Python does not protect the database", "text": "A threading lock or an in-memory flag guards one process. Relay runs several uvicorn workers on several machines, and the worker fleet on more. Only something every process shares can serialize them: the database, through a constraint or a row lock, or Redis used with care."},
+        {"t": "reveal", "prompt": "Why does `SELECT ... FROM bookings WHERE slot_id = 17 FOR UPDATE` not prevent the double booking?", "answer": "FOR UPDATE locks the rows the query returns, and when the slot is free there are no booking rows to lock. Both requests lock nothing and both insert. Lock the slot's own row in the slots table instead, or add a unique constraint on bookings.slot_id."},
+        {"t": "h", "text": "Idempotency closes the loop"},
+        {"t": "p", "text": "Retries create a race with yourself: the same request arrives twice because the client timed out and tried again. An **idempotency key**, a unique id the client sends with the request, stored under a unique constraint, makes the second attempt fail at insert. The server then returns the first attempt's result instead of doing the work again."},
+        {"t": "callout", "kind": "ai", "title": "Agents repeat tool calls", "text": "A model can call `issue_refund` twice in one trajectory, and an orchestrator can retry a tool call that timed out after it actually succeeded. Derive an idempotency key from the ticket and order, enforce it with a unique constraint, and have the tool return the existing refund when the key is already used."},
+        {"t": "callout", "kind": "debug", "title": "Finding a race after the fact", "text": "Races leave timestamps milliseconds apart on the two conflicting rows or log lines. Find the pair, then reproduce it by sending 20 identical requests in parallel at the suspect endpoint and checking the final state. If one request at a time is always correct and parallel requests are not, you have a race."},
+        {"t": "check",
+          "q": "Relay's booking code counts bookings for a slot and inserts one if the count is zero, at read committed. Which change prevents double booking most reliably?",
+          "options": ["A unique constraint on bookings.slot_id", "One transaction around the count and the insert", "A second count just before the insert", "A Python lock around the booking function"],
+          "answer": 0,
+          "explain": "The constraint is checked by the database at insert time, across every process, so the second insert fails no matter how the requests interleave. A transaction at read committed cannot see the other request's uncommitted insert, so it changes nothing."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Two customers both got the last callback slot (or seat, or unit of stock)",
+      "causes": ["Check-then-act: both requests checked before either inserted", "No unique constraint or row lock guards the rule"],
+      "look": "The two rows' creation timestamps and the request logs for both requests.",
+      "confirm": "The rows were created milliseconds apart and both checks returned 'available'.",
+      "fix": "Add a unique constraint, or lock the parent row with SELECT FOR UPDATE before checking. Then handle the duplicate key error as 'already taken'."
+    },
+    {
+      "symptom": "Balance or counter off by one update under load, always correct in tests",
+      "causes": ["Lost update: the application reads, computes, and writes back a value", "Two code paths write the same row from stale reads"],
+      "look": "Code that SELECTs a value and later UPDATEs it with a computed constant. Compare the row's history with the ledger or event log.",
+      "confirm": "The missing change was committed within a few hundred milliseconds of another write to the same row.",
+      "fix": "Do the arithmetic in SQL (`SET x = x + 1`), add a version column, or lock the row. Arithmetic in SQL is cheapest when it fits."
+    },
+    {
+      "symptom": "ERROR: deadlock detected (SQLSTATE 40P01) a few times a day",
+      "causes": ["Two code paths lock the same rows in opposite order", "Batch updates that touch rows in different orders"],
+      "look": "The DETAIL lines and the statements for both processes in the Postgres server log.",
+      "confirm": "Path A locks X then Y, and path B locks Y then X.",
+      "fix": "Lock in one consistent order, keep transactions short, and retry on 40P01. Retrying alone hides the bug but keeps paying the detection delay."
+    },
+    {
+      "symptom": "Queries pile up waiting on Lock behind one session that is idle in transaction",
+      "causes": ["Code opened a transaction, wrote, and then did slow work before committing", "An exception path that never commits or rolls back"],
+      "look": "pg_stat_activity ordered by xact_start, and `pg_blocking_pids()` for a waiting session.",
+      "confirm": "The oldest transaction shows `idle in transaction` with wait_event_type Client, and it blocks the others.",
+      "fix": "End the session to unblock now. Then commit before slow work, and set `idle_in_transaction_session_timeout` so it cannot recur silently."
+    },
+    {
+      "symptom": "could not serialize access due to concurrent update, right after raising the isolation level",
+      "causes": ["Repeatable read or serializable aborting a conflicting transaction, as designed", "No retry loop in the application"],
+      "look": "Error rate by SQLSTATE: 40001 is a serialization failure.",
+      "confirm": "Errors appear only under concurrency, on the transactions whose level was raised.",
+      "fix": "Retry the whole transaction from BEGIN with backoff. If retries are frequent, reduce contention or use a targeted lock instead."
+    },
+    {
+      "symptom": "A migration hangs, then every query on that table times out",
+      "causes": ["The ALTER TABLE waits for ACCESS EXCLUSIVE behind a long transaction", "New queries queue behind the waiting ALTER"],
+      "look": "pg_stat_activity for the ALTER's pid and `pg_blocking_pids()` on it.",
+      "confirm": "The ALTER is waiting on Lock, and an old transaction on the same table is its blocker.",
+      "fix": "Cancel the migration, end or wait out the long transaction, and rerun with a short `lock_timeout` and retries."
+    },
+    {
+      "symptom": "Table and index size grow steadily; vacuum runs but frees little",
+      "causes": ["A long-running or idle-in-transaction session holds back cleanup of old row versions"],
+      "look": "The oldest `xact_start` in pg_stat_activity.",
+      "confirm": "Dead row counts stop falling while that transaction is open and drop after it ends.",
+      "fix": "Find and shorten the long transaction. Vacuum can only remove versions no open snapshot can still see."
+    },
+    {
+      "symptom": "Connection error during COMMIT; nobody knows whether the refund was saved",
+      "causes": ["Network or server failure between sending COMMIT and receiving the reply"],
+      "look": "The refund table, searched by the request's idempotency key or the refund id.",
+      "confirm": "Either the row exists, so the commit landed, or it does not.",
+      "fix": "Make retries idempotent so the client can retry without checking by hand. Never assume rollback just because no reply arrived."
+    }
+  ],
+  "glossary": [
+    {"term": "Transaction", "def": "A group of statements that take effect together or not at all, started with BEGIN and ended with COMMIT or ROLLBACK."},
+    {"term": "ACID", "def": "Atomicity, consistency, isolation, durability: the four guarantees a transactional database makes about a group of changes."},
+    {"term": "Autocommit", "def": "A mode in which every statement is committed on its own. Many Python drivers default to the opposite and open a transaction implicitly."},
+    {"term": "Write-ahead log (WAL)", "def": "The append-only file where Postgres records every change before applying it. A commit is durable once its record is flushed there."},
+    {"term": "Isolation level", "def": "The setting that decides which anomalies concurrent transactions can cause: read committed, repeatable read, or serializable."},
+    {"term": "Snapshot", "def": "The set of committed row versions a statement or transaction can see. Read committed takes one per statement; repeatable read, one per transaction."},
+    {"term": "MVCC", "def": "Multi-version concurrency control: updates write new row versions so readers see a consistent snapshot without blocking writers."},
+    {"term": "Lost update", "def": "Two transactions read the same value and both write back a computed result, so one change silently disappears."},
+    {"term": "Write skew", "def": "Two transactions read overlapping data and write different rows, together breaking a rule. Only serializable isolation prevents it automatically."},
+    {"term": "Row lock", "def": "A lock taken by UPDATE, DELETE, or SELECT FOR UPDATE that makes other writers to that row wait until the transaction ends."},
+    {"term": "Deadlock", "def": "Two transactions each waiting for a lock the other holds. Postgres detects the cycle and aborts one with 'deadlock detected'."},
+    {"term": "Idle in transaction", "def": "A session that opened a transaction and is waiting for the application, while still holding its locks and snapshot."},
+    {"term": "Optimistic locking", "def": "Detecting conflicts at write time, usually with a version column: update only if the version is unchanged, otherwise retry."},
+    {"term": "Pessimistic locking", "def": "Locking a row when you read it, with SELECT FOR UPDATE, so that others wait until you commit."}
+  ],
+  "apply": {
+    "title": "Find one race and one long transaction in your own code",
+    "minutes": 15,
+    "steps": [
+      "Search your project for places that read a value, compute a new one in Python, and write it back: counters, balances, statuses, eval result tallies. List them.",
+      "For each, write down which guard it has: an atomic SQL update, a version column, a row lock, a unique constraint, or none.",
+      "Find any code path where a database session or transaction stays open across an LLM or HTTP call. Note how long that call usually takes; that is how long the locks are held.",
+      "Pick one unguarded path and send 20 identical requests or tasks at it in parallel. Compare the final state with what one-at-a-time execution would give.",
+      "If your project uses Postgres, run a query on pg_stat_activity during an eval or batch run and look for any session that stays `idle in transaction` for more than a second."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d10-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["lost-update", "atomic-update"],
+      "diagnostic": true,
+      "q": "Two requests each read a counter as 10, add 1 in application code, and both write back 11. What most directly prevents this?",
+      "options": [
+        "Adding an index on the counter column",
+        "Raising the database connection pool size",
+        "Doing the increment in SQL with `SET n = n + 1`",
+        "Running both reads inside a read-only transaction"
+      ],
+      "answer": 2,
+      "explain": "The bug is a lost update: each request computed from a stale read. Doing the arithmetic in one UPDATE makes the database apply each increment to the current row under its row lock. The tempting wrong answer is a transaction, but a read-only transaction around the reads does nothing to order the writes.",
+      "why": ["An index speeds up finding the row; it does not order concurrent read-modify-write cycles.", "More connections allow more concurrency, which makes the race more frequent, not less.", "", "A read-only transaction cannot write, and wrapping the reads does not stop both from seeing 10."]
+    },
+    {
+      "id": "d10-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["deadlock", "locks"],
+      "context": "Relay's refund worker updates an order and then closes its ticket. The triage worker raises a ticket's priority and then flags its order. This entry appears in the Postgres log a few times a day.",
+      "artifact": {"lang": "log", "title": "Postgres server log", "code": "[4188] ERROR:  deadlock detected\n[4188] DETAIL:  Process 4188 waits for ShareLock on transaction 99807;\n          blocked by process 4121.\n        Process 4121 waits for ShareLock on transaction 99812;\n          blocked by process 4188.\n        Process 4188: UPDATE orders SET flagged = true WHERE id = 501\n        Process 4121: UPDATE tickets SET status = 'closed' WHERE id = 88\n[4188] CONTEXT:  while updating tuple (12,4) in relation \"orders\""},
+      "q": "Which change removes the cause?",
+      "options": [
+        "Raise `deadlock_timeout` so Postgres waits longer before aborting",
+        "Run both workers' transactions at serializable isolation",
+        "Make both workers lock the order first and the ticket second",
+        "Add an index on tickets.id so the updates finish faster"
+      ],
+      "answer": 2,
+      "explain": "Each process waits for a row the other already locked, because the two paths lock order and ticket in opposite orders. One consistent order makes a cycle impossible. Serializable is the tempting answer, but it still takes row locks for updates, so the same cycle can form.",
+      "why": ["A longer timeout only delays detection; the cycle still forms and one transaction is still aborted.", "Serializable isolation still takes row locks on UPDATE, so opposite lock orders still deadlock.", "", "Both updates are by primary key and already use an index; speed does not change the lock order."]
+    },
+    {
+      "id": "d10-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["idle-in-transaction", "locks"],
+      "context": "Every afternoon, Relay's refund endpoint times out. Database CPU is at 15 percent.",
+      "artifact": {"lang": "text", "title": "pg_stat_activity, ordered by transaction start", "code": " pid  |        state        | xact_age | wait_event_type | query\n------+---------------------+----------+-----------------+-------------------------------\n 4102 | idle in transaction | 00:09:03 | Client          | UPDATE orders SET status = 're\n 4130 | active              | 00:02:41 | Lock            | UPDATE orders SET status = 're\n 4131 | active              | 00:02:10 | Lock            | UPDATE orders SET status = 're\n 4177 | active              | 00:00:44 | Lock            | UPDATE orders SET note = 'agen"},
+      "q": "What is the most likely cause of the timeouts?",
+      "options": [
+        "The waiting queries lack an index on orders.id",
+        "Session 4102 holds a row lock while its application does something else",
+        "The connection pool is too small for the afternoon traffic",
+        "Database CPU is saturated by the three active queries"
+      ],
+      "answer": 1,
+      "explain": "Session 4102 updated an order nine minutes ago and never committed; it waits on its client, so it still holds the row lock, and the others wait on Lock behind it. A small pool would show requests waiting for a connection in the application, not sessions waiting on Lock in the database.",
+      "why": ["The waiters are blocked on a lock, not scanning; an index would not change who holds the lock.", "", "A pool shortage shows up as waits in the application; these sessions already have connections and are blocked inside Postgres.", "CPU is at 15 percent and the active sessions are waiting, not computing."]
+    },
+    {
+      "id": "d10-q04",
+      "type": "mcq",
+      "level": 1,
+      "tags": ["isolation-levels", "write-skew"],
+      "q": "In PostgreSQL, which is the lowest isolation level that prevents write skew?",
+      "options": [
+        "Read committed",
+        "Repeatable read",
+        "Read uncommitted",
+        "Serializable"
+      ],
+      "answer": 3,
+      "explain": "Write skew involves writes to different rows, so no row conflict exists for repeatable read's snapshot to catch. Only serializable tracks read and write dependencies and aborts one transaction. Repeatable read is the common wrong answer because it does prevent lost updates.",
+      "why": ["Read committed allows write skew and lost updates.", "Repeatable read prevents lost updates on the same row but allows write skew across different rows.", "Postgres runs read uncommitted as read committed, which allows write skew.", ""]
+    },
+    {
+      "id": "d10-q05",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["isolation-levels", "snapshots"],
+      "context": "A nightly finance report runs three queries in one transaction at read committed: total refunds today, refunds by agent, and refund count. Refunds keep being issued while it runs. Once a week, the per-agent totals add up to more than the overall total.",
+      "q": "What explains the mismatch, and what fixes it?",
+      "options": [
+        "A dirty read of uncommitted refunds; use read committed explicitly",
+        "A lost update on the totals; add SELECT FOR UPDATE to each query",
+        "Each statement takes a new snapshot; run the report at repeatable read",
+        "Replica lag between queries; run the report on the primary"
+      ],
+      "answer": 2,
+      "explain": "At read committed each statement sees everything committed before it started, so refunds committed between the first and second query appear only in the second. Repeatable read gives the whole transaction one snapshot. Dirty reads are the tempting answer, but Postgres never allows them.",
+      "why": ["Postgres never shows uncommitted data, and the report already runs at read committed.", "The report only reads; nothing is being overwritten, and locking rows would block refunds.", "", "All three queries run in one transaction on one server; the problem is per-statement snapshots."]
+    },
+    {
+      "id": "d10-q06",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["optimistic-locking", "pessimistic-locking"],
+      "context": "A human agent opens a ticket's draft reply, edits it for several minutes, then saves. The AI agent may revise the same draft in the meantime.",
+      "q": "Which guard fits this edit best?",
+      "options": [
+        "A version column checked when the human saves",
+        "SELECT FOR UPDATE on the draft when the editor opens",
+        "Serializable isolation on the save transaction",
+        "A unique constraint on the draft's ticket id"
+      ],
+      "answer": 0,
+      "explain": "The read and the write happen minutes apart in different requests, so the guard must work without holding anything open. A version check detects the conflict at save time. Locking on open is the tempting answer, but it holds a transaction idle for minutes and blocks the AI agent.",
+      "why": ["", "This keeps a transaction and a row lock open for the whole editing session, which is exactly the idle-in-transaction problem.", "The read happened in an earlier request, so the save transaction cannot see the dependency to detect it.", "There is one draft per ticket already; the problem is concurrent edits to that one row, not duplicate rows."]
+    },
+    {
+      "id": "d10-q07",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["durability", "idempotency"],
+      "q": "Relay's API sends COMMIT for a refund, and the connection drops before any reply arrives. What does the API know?",
+      "options": [
+        "The refund was rolled back, since no reply arrived",
+        "The refund was committed, since COMMIT was sent",
+        "The refund is pending and completes on reconnect",
+        "The refund may or may not have been committed"
+      ],
+      "answer": 3,
+      "explain": "The commit may have been flushed just before the connection failed, or never reached the server. The client cannot tell, so it must check, for example by idempotency key, before retrying. Assuming rollback is the dangerous misconception, because a blind retry then creates a second refund.",
+      "why": ["The server may have committed and failed to deliver the reply.", "The message may never have reached the server.", "Postgres does not resume a transaction on a new connection; it either committed or it did not.", ""]
+    },
+    {
+      "id": "d10-q08",
+      "type": "mcq",
+      "level": 1,
+      "tags": ["mvcc", "locks"],
+      "q": "Under MVCC in PostgreSQL, which of these waits for the other when both touch the same row at the same time?",
+      "options": [
+        "A plain SELECT, waiting on an uncommitted UPDATE",
+        "An UPDATE, waiting on another uncommitted UPDATE",
+        "An UPDATE, waiting on a long-running plain SELECT",
+        "A plain SELECT, waiting on another plain SELECT"
+      ],
+      "answer": 1,
+      "explain": "Writers take row locks, so a second writer to the same row waits for the first to commit or roll back. Plain reads take no row locks and read from their snapshot. Many people expect readers to block writers, as in older lock-based databases, which MVCC avoids.",
+      "why": ["The SELECT reads the last committed version from its snapshot and does not wait.", "", "Plain reads take no row locks, so the UPDATE does not wait for them.", "Two reads never block each other."]
+    },
+    {
+      "id": "d10-q09",
+      "type": "multi",
+      "level": 2,
+      "tags": ["race-condition", "unique-constraint"],
+      "q": "Which of these prevent two customers from both booking Relay's last callback slot? Select all that apply.",
+      "options": [
+        "A Python threading lock around the booking function",
+        "A unique constraint on bookings.slot_id",
+        "Wrapping the count and the insert in one read committed transaction",
+        "Locking the slot's row with SELECT FOR UPDATE before counting",
+        "Running the count and insert at serializable isolation, with retries",
+        "Caching the slot's availability in Redis for a few seconds"
+      ],
+      "answers": [1, 3, 4],
+      "explain": "The constraint rejects the second insert, the slot-row lock makes the second request wait and then see the booking, and serializable detects the conflict and aborts one transaction. A Python lock only covers one process, and a read committed transaction cannot see the other request's uncommitted insert."
+    },
+    {
+      "id": "d10-q10",
+      "type": "order",
+      "level": 2,
+      "tags": ["durability", "transactions"],
+      "q": "Put the steps of a committed refund in the order they happen.",
+      "items": [
+        "BEGIN starts a transaction",
+        "UPDATE writes a new row version that other sessions cannot see",
+        "The client sends COMMIT",
+        "Postgres flushes the commit record in the WAL to disk",
+        "Postgres replies COMMIT to the client",
+        "The worker sends the 'refund issued' email"
+      ],
+      "explain": "Durability comes from flushing the WAL before replying, so a crash after the reply loses nothing. The email comes last because it cannot be undone; sending it before the commit risks telling a customer about a refund that rolled back."
+    },
+    {
+      "id": "d10-q11",
+      "type": "match",
+      "level": 3,
+      "tags": ["diagnosis", "locks"],
+      "q": "Match each observation to its most likely cause.",
+      "pairs": [
+        ["Final credit 80, expected 110", "Two read-compute-write transactions: a lost update"],
+        ["ERROR: deadlock detected", "Two transactions locked the same rows in opposite order"],
+        ["could not serialize access due to concurrent update", "Repeatable read caught a conflicting write; retry the transaction"],
+        ["Dozens of sessions waiting on Lock", "One idle-in-transaction session holding a row lock"],
+        ["Two bookings for one slot", "Check-then-act with no constraint or lock"]
+      ],
+      "explain": "Each message points to a different mechanism. Errors that name serialization or deadlocks are the database working as designed and need a retry or a lock-order fix; silent wrong numbers point to an unguarded application race."
+    },
+    {
+      "id": "d10-q12",
+      "type": "open",
+      "level": 3,
+      "tags": ["idle-in-transaction", "llm-calls"],
+      "context": "Relay's agent loop opens a database session when it picks up a ticket, sets the ticket to `in_progress`, calls the LLM (10 to 40 seconds), may call `issue_refund`, writes the reply, and then commits. Under load, refunds for those tickets' orders time out and pg_stat_activity shows sessions idle in transaction.",
+      "q": "Explain what goes wrong and how you would restructure the loop.",
+      "rubric": [
+        "Identifies that the transaction stays open across the LLM call, holding row locks for its whole duration",
+        "Connects the idle-in-transaction sessions to the refund timeouts through lock waits",
+        "Proposes committing the status change before the model call and writing results in a new short transaction",
+        "Mentions making the refund idempotent or otherwise safe to retry once work is split across transactions",
+        "Mentions a safety net such as idle_in_transaction_session_timeout or lock_timeout"
+      ],
+      "model": "The session's first UPDATE takes a row lock that lasts until commit, and the commit only comes after a 10 to 40 second LLM call, so the session sits idle in transaction holding the lock. Any refund touching the same rows waits behind it and times out. Commit the in_progress update immediately, make the model call with no transaction open, then open a short transaction to write the reply. Because the steps are now separate, make issue_refund idempotent by ticket and order, and set idle_in_transaction_session_timeout so a regression fails loudly."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d10-x1",
+      "title": "Store credit goes missing",
+      "brief": "Finance reports that 14 customers' store-credit balances are lower than the sum of their credit ledger entries. All are customers who received a refund as credit from Relay this week. Last Monday two things shipped: the agent's new `issue_credit` tool, and a promo job that adds a small bonus to active wallets every hour. Relay caches wallet balances in Redis for display.",
+      "artifact": {"lang": "text", "title": "Reconciliation, first 4 of 14", "code": "user_id  ledger_sum  wallet.credit  diff\n7           140.00         110.00  -30.00\n1912         55.00          50.00   -5.00\n3307        245.00         215.00  -30.00\n4410         40.00          20.00  -20.00"},
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Flush the Redis cache and see whether the balances correct themselves",
+            "Compare when each missing ledger entry was written with other writes to the same wallet",
+            "Switch the database to serializable isolation for all transactions",
+            "Disable the issue_credit tool until the cause is known"
+          ],
+          "answer": 1,
+          "explain": "The reconciliation compares two values stored in Postgres, so flushing the display cache cannot change either one. Lining up timestamps per wallet is cheap and tells you whether concurrency is involved. Switching isolation globally or disabling the tool is a fix before a diagnosis.",
+          "reveal": "In every one of the 14 wallets, the missing amount was written within 300 milliseconds of a promo bonus on the same wallet. Wallets without a promo bonus are all correct.",
+          "artifact": {"lang": "log", "title": "Wallet 7, application log", "code": "14:00:00.112 promo   user=7 read credit=100\n14:00:00.140 credit  user=7 read credit=100 add=30\n14:00:00.151 credit  user=7 UPDATE wallets SET credit=130\n14:00:00.163 promo   user=7 UPDATE wallets SET credit=110  # 100 + 10 bonus\n14:00:00.170 credit  user=7 COMMIT\n14:00:00.190 promo   user=7 COMMIT"}
+        },
+        {
+          "q": "What does this log show?",
+          "options": [
+            "A dirty read: the promo job saw the credit before it committed",
+            "A deadlock between the two jobs that Postgres resolved silently",
+            "A lost update: both read 100 and each wrote a value computed from it",
+            "Replica lag: the promo job read from a replica that was behind"
+          ],
+          "answer": 2,
+          "explain": "Both paths read 100, computed a new value in Python, and wrote a constant back, so the second write erased the first. Postgres never allows dirty reads, and a deadlock would have produced an error and a rollback, not two commits.",
+          "reveal": "Both `issue_credit` and the promo job use the same helper: SELECT the credit, compute in Python, UPDATE with the result. Neither uses a lock or a version column."
+        },
+        {
+          "q": "What is the most durable fix?",
+          "options": [
+            "Add SELECT FOR UPDATE to the issue_credit path only",
+            "Move the promo job to 3 a.m. when there is less traffic",
+            "Add a retry when the UPDATE reports zero rows changed",
+            "Change the helper to `SET credit = credit + :delta` for both paths"
+          ],
+          "answer": 3,
+          "explain": "Doing the arithmetic in SQL applies each change to the current row under its lock, for every caller of the helper. Locking only one path leaves the promo job reading without a lock, so it can still overwrite. A zero-row retry needs a version column that does not exist, and moving the job only makes the collision rarer."
+        },
+        {
+          "q": "How could this have been caught before release?",
+          "options": [
+            "A test that applies many concurrent credits to one wallet and checks the sum",
+            "More unit tests of the helper with different amounts",
+            "A code review rule against floating point money",
+            "Lowering the promo job's frequency in staging"
+          ],
+          "answer": 0,
+          "explain": "The bug only exists when two writers interleave, so only a concurrent test can expose it. Unit tests run one call at a time and pass. A check that the ledger sum equals the wallet balance after a parallel burst catches every lost-update variant."
+        }
+      ],
+      "debrief": "Root cause: two code paths shared a read-compute-write helper, so concurrent writes to one wallet lost updates. The cache was a plausible suspect but could not explain a mismatch between two database columns. The fix is an atomic SQL update, and a nightly ledger-versus-balance reconciliation as a detector. The general lesson: any value computed in Python from an earlier read and written back is a race until something proves otherwise."
+    },
+    {
+      "id": "d10-x2",
+      "title": "Refunds hang every afternoon",
+      "brief": "Between 14:00 and 16:00, Relay's `issue_refund` tool times out after 30 seconds on about one call in five. Database CPU stays near 15 percent. Last week a refactor moved the agent loop to a single database session per ticket, so that 'everything rolls back together if the agent fails'.",
+      "artifact": {"lang": "text", "title": "Refund endpoint, hourly", "code": "hour   calls  timeouts  p50_ms  p99_ms\n12:00    310         0      90     240\n13:00    420         2      95     900\n14:00    690       131     110  30,000\n15:00    720       150     120  30,000\n16:00    400        11      95   4,100"},
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Add an index on orders.status to speed up the refund UPDATE",
+            "Raise the refund tool's timeout to 60 seconds",
+            "Look at pg_stat_activity during the afternoon for what refunds wait on",
+            "Move the database to a larger instance"
+          ],
+          "answer": 2,
+          "explain": "Low CPU with high latency means the work is waiting, not computing, and pg_stat_activity shows what each session waits on. Indexes and bigger instances address computation that the evidence already rules out, and a longer timeout only makes the hang longer.",
+          "reveal": "Refund sessions are `active` with wait_event_type `Lock`. `pg_blocking_pids` points to sessions in state `idle in transaction`, each between 10 and 40 seconds old."
+        },
+        {
+          "q": "A blocking session shows `idle in transaction`, wait_event_type `Client`, last query `UPDATE orders SET status = 'refunding' ...`. What does that tell you?",
+          "options": [
+            "The UPDATE is still running slowly inside Postgres",
+            "The application ran that UPDATE, has not committed, and is busy elsewhere",
+            "Postgres is waiting for the disk to flush the UPDATE",
+            "The session crashed and Postgres is cleaning up its locks"
+          ],
+          "answer": 1,
+          "explain": "Idle in transaction means the database has finished every statement it was sent and is waiting for the client's next one. The query column shows the last statement, not a running one. The lock on that order stays held until the application commits.",
+          "reveal": "The session's application_name is the agent worker. Its trace shows the UPDATE, then a 25-second LLM call, then the reply insert and COMMIT, all inside one transaction."
+        },
+        {
+          "q": "What is the durable fix?",
+          "options": [
+            "Commit the status change before the model call and write the reply in a new short transaction",
+            "Run a cron job that terminates idle sessions every minute",
+            "Raise lock_timeout so refunds wait longer before failing",
+            "Switch to a faster, smaller model to shorten the call"
+          ],
+          "answer": 0,
+          "explain": "The lock is held because the transaction spans the model call, so the fix is to not hold a transaction across it. Killing sessions, waiting longer, or a faster model all leave the design in place; a faster model only shrinks the window.",
+          "reveal": "After the change, no transaction in the agent loop lives longer than 50 milliseconds, and refund p99 returns to about 250 milliseconds."
+        },
+        {
+          "q": "Which setting would end an offending session automatically if this regresses?",
+          "options": [
+            "statement_timeout",
+            "deadlock_timeout",
+            "max_connections",
+            "idle_in_transaction_session_timeout"
+          ],
+          "answer": 3,
+          "explain": "idle_in_transaction_session_timeout ends sessions that sit idle inside an open transaction, which is exactly this failure. statement_timeout only limits statements that are running, and an idle session is running nothing.",
+          "reveal": "With the timeout set to 15 seconds, a later regression shows up as clear errors in the agent worker within minutes instead of as afternoon refund timeouts."
+        }
+      ],
+      "debrief": "Root cause: a refactor put the whole agent loop in one transaction, so a row lock taken before the LLM call lasted as long as the call. The tempting suspects were a slow query or an undersized database, both ruled out by low CPU. The fix is short transactions on either side of slow external work, plus idle_in_transaction_session_timeout as a tripwire. General lesson: low CPU and high latency mean waiting, so ask what is being waited on."
+    }
+  ]
+}

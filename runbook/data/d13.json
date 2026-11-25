@@ -1,0 +1,503 @@
+{
+  "id": "d13",
+  "day": 13,
+  "phase": "p3",
+  "title": "Performance: finding the bottleneck",
+  "tagline": "Measure first: latency, throughput, saturation, and the one resource that is holding everything back.",
+  "minutes": 60,
+  "why": "When Relay feels slow, the instinct is to guess: the model, the database, Python itself. An optimization aimed at the wrong place changes nothing and costs a week. This day gives you the measurements that point at the one resource holding everything back, and explains why a system that looks fine at 70 percent load can collapse at 90.",
+  "objectives": [
+    "Read a percentile table and say whether a slowdown hits every request or a minority on a slow path",
+    "Predict how waiting time changes as utilization rises, using the hockey-stick curve and Little's law",
+    "Read a wall-clock flame graph and name the box worth fixing first",
+    "Choose between load, stress, soak, and spike tests, and explain why a benchmark disagrees with production",
+    "Decide whether to optimize the code or add hardware, using where the time actually goes"
+  ],
+  "lessons": [
+    {
+      "id": "d13-l1",
+      "title": "Latency, throughput, and percentiles",
+      "minutes": 13,
+      "blocks": [
+        {"t": "p", "text": "**Latency** is how long one request takes, measured from the caller's side. **Throughput** is how many requests the system completes per second. They are related but separate: a nightly batch job can have huge throughput and terrible latency, and a single fast worker can have low latency and tiny throughput."},
+        {"t": "p", "text": "Every request has a **latency budget**, the total time you can afford, split across the hops it passes through. Writing the budget down tells you which hop is worth attention. For Relay's chat endpoint, one hop dominates, and it is the one you control least."},
+        {"t": "code", "lang": "trace", "title": "Where one Relay chat request spends 2.1 seconds", "code": "POST /chat  total 2,114 ms\n├─ nginx -> api                       1 ms\n├─ session lookup (Redis)             2 ms\n├─ load ticket + messages (Postgres)  9 ms\n├─ search_help_center (pgvector)     41 ms\n├─ llm.create (2 tool rounds)     2,031 ms\n├─ save reply (Postgres)              7 ms\n└─ serialize response                 3 ms", "notes": ["The LLM call is about 96 percent of the request. Making the database ten times faster would save about 15 ms.", "This is one request. Its shape tells you where to look, and percentiles tell you how many requests share that shape.", "A budget like this is the first thing to write down before anyone proposes an optimization."]},
+        {"t": "h", "text": "Percentiles, and what the average hides"},
+        {"t": "p", "text": "A **percentile** is the value below which a given share of requests fall. The p50 (median) is the typical request. The p99 is the value that 99 percent of requests beat, so one request in a hundred is at least that slow. The average blends everything into one number and moves very little when a small group gets much slower."},
+        {"t": "code", "lang": "text", "title": "POST /chat, 5-minute windows (seconds)", "code": "window   reqs    mean   p50    p95    p99    max\n13:55    9,120   1.92   1.70   3.10   4.20    6.1\n14:00    9,240   1.93   1.71   3.12   4.31    6.4\n14:05    9,180   2.01   1.71   3.30   9.80   14.2\n14:10    9,300   2.03   1.70   3.35  10.40   15.0", "notes": ["p50 did not move, so the typical request is unaffected.", "p99 more than doubled at 14:05. A minority of requests now hit a slow path.", "The mean rose by about 0.1 s, a change nobody would alert on. This is why dashboards that show only averages miss incidents.", "Request count is flat, so this is not a traffic surge."]},
+        {"t": "compare", "caption": "Which latency number answers which question", "columns": ["", "Mean", "p50", "p99 and max"], "rows": [
+          ["Tells you", "Total time spent, useful for cost and capacity", "What a typical user experiences", "What your unluckiest users experience"],
+          ["Hides", "A slow minority, swamped by fast requests", "Everything slower than the middle", "Nothing about the typical case"],
+          ["Moves when", "Everything shifts a little, or a few requests shift a lot", "Most requests change", "A small group hits a slow path"],
+          ["Use it for", "Capacity math and Little's law", "Noticing broad regressions", "SLOs and catching slow paths early"]
+        ], "verdict": "Watch p50 and p99 together. If both move, the whole path got slower. If only p99 moves, find what the slow requests have in common."},
+        {"t": "h", "text": "Why fan-out makes the tail worse"},
+        {"t": "p", "text": "**Tail latency** is the slow end of the distribution, p99 and beyond. When one request waits for several parallel calls, it is as slow as the slowest of them. If each call is slow 1 percent of the time, a request that waits for 10 calls is slow about 10 percent of the time (1 minus 0.99 to the 10th). With 100 calls it is about 63 percent."},
+        {"t": "check", "q": "Relay's retrieval step queries 10 index partitions in parallel and waits for all of them. Each partition is slower than its own p99 about 1 percent of the time. Roughly how often is the whole retrieval step slow?", "options": ["About 1 percent of the time", "About 10 percent of the time", "About 50 percent of the time"], "answer": 1, "explain": "The step is slow if any one of 10 calls is slow: 1 minus 0.99 to the 10th, about 9.6 percent. One partition's rare tail becomes the whole step's common case."},
+        {"t": "tradeoff", "title": "Batching vs responsiveness", "options": [
+          {"name": "Batch items together", "gain": ["Higher throughput per machine", "Fewer round trips and less overhead", "Often cheaper per item"], "cost": ["Each item waits for the batch to fill", "Worse latency when traffic is low", "One bad item can delay the whole batch"], "choose": "Choose this for background work like re-embedding help-center articles, where nobody is waiting on one item."},
+          {"name": "Handle each item as it arrives", "gain": ["Lowest latency per item", "Simple to reason about and retry"], "cost": ["More overhead per item", "Lower peak throughput on the same hardware"], "choose": "Choose this when a person is waiting, like a customer reading Relay's reply."}
+        ]},
+        {"t": "callout", "kind": "pitfall", "title": "You cannot average percentiles", "text": "The mean of three servers' p99 values is not the fleet's p99. Percentiles must be computed from the combined data, which is why metrics systems store histograms. A dashboard that averages per-host p99s can hide one host that is very slow."},
+        {"t": "callout", "kind": "ai", "title": "Agent turns stack their latencies", "text": "An agent turn that makes four model calls in sequence adds four latencies together, and each call has its own tail. A turn with several tool rounds will have a much worse p99 than a single model call, even when every call looks healthy on its own."}
+      ]
+    },
+    {
+      "id": "d13-l2",
+      "title": "Saturation and queues",
+      "minutes": 14,
+      "blocks": [
+        {"t": "p", "text": "**Utilization** is the fraction of time a resource is busy. **Saturation** is work that has to wait because the resource is busy. As utilization approaches 100 percent, waiting time grows sharply, so latency curves upward like a hockey stick instead of rising in a straight line."},
+        {"t": "p", "text": "The cause is randomness. Requests do not arrive evenly. A burst arrives while a worker is busy and has to queue. At low utilization the queue drains before the next burst. At high utilization the next burst lands on a queue that never emptied, and the waits stack up."},
+        {"t": "code", "lang": "text", "title": "The hockey stick, worked: one server, 10 ms of work per request", "code": "simple queue model: time in system = service time / (1 - utilization)\n\nutilization   time in system   of which waiting\n   50%            20 ms             10 ms\n   70%            33 ms             23 ms\n   80%            50 ms             40 ms\n   90%           100 ms             90 ms\n   95%           200 ms            190 ms\n   99%         1,000 ms            990 ms", "notes": ["The work itself never changes: 10 ms per request. Everything above 10 ms is time spent waiting in line.", "Going from 80 to 90 percent busy doubles latency. Going from 90 to 99 percent multiplies it by ten.", "This formula assumes one server and random arrivals and service times. Real systems differ in detail, but the shape of the curve is the same."]},
+        {"t": "p", "text": "Past 100 percent, there is no steady state. Arrivals exceed completions, the queue grows every second, and latency grows with it. Clients then time out and retry, which adds more arrivals. This is why systems tend to fall over suddenly at a traffic threshold instead of degrading gently."},
+        {"t": "check", "q": "A worker pool runs at 90 percent utilization, with 10 ms of work per request and an average time in system of 100 ms. Traffic grows by 5 percent. Using the simple model, what happens to the average time in system?", "options": ["It rises about 5 percent, to about 105 ms", "It nearly doubles, to about 180 ms", "It stays flat until utilization reaches 100 percent"], "answer": 1, "explain": "Utilization goes from 90 to about 94.5 percent, so time in system goes from 10/0.10 = 100 ms to 10/0.055, about 182 ms. Near saturation, small load changes cause large latency changes."},
+        {"t": "h", "text": "Queues hide inside everything"},
+        {"t": "layers", "title": "Where a Relay request can wait in line", "layers": [
+          {"name": "Load balancer and nginx", "role": "Accept connections and pass them to an API instance.", "breaks": "Connections wait in the listen backlog, then fail as timeouts or 502s when it overflows."},
+          {"name": "uvicorn workers", "role": "Each worker handles requests on its event loop.", "breaks": "A blocking call stalls the loop, so every request on that worker waits."},
+          {"name": "Database connection pool", "role": "Lends a fixed number of Postgres connections to handlers.", "breaks": "Handlers wait for a free connection. CPU stays low while latency climbs."},
+          {"name": "Postgres", "role": "Runs queries, takes row locks.", "breaks": "Queries wait on locks or on disk. Wait events show which."},
+          {"name": "LLM API", "role": "Generates replies under a rate limit.", "breaks": "Slower generations hold everything upstream longer. 429s arrive when the budget is spent."},
+          {"name": "Job queue", "role": "Holds background work for the worker fleet.", "breaks": "Queue depth grows when arrivals exceed what the workers complete."}
+        ]},
+        {"t": "p", "text": "**Little's law** connects the numbers: requests in flight equal arrival rate times time in system. If Relay receives 40 chat requests per second and each takes 2 seconds, about 80 are in flight at any moment. If the model slows to 4 seconds at the same traffic, 160 are in flight. A slower dependency fills your pools with no increase in traffic at all."},
+        {"t": "callout", "kind": "debug", "title": "CPU is low and latency is high", "text": "The bottleneck is a resource that is not CPU. Look for time spent waiting: connection pool acquire time, the number of busy workers, lock waits in Postgres, upstream latency. Measure waiting time separately from working time, or you will tune the code that is already fast."},
+        {"t": "h", "text": "Amdahl's law: speed up the part that matters"},
+        {"t": "p", "text": "**Amdahl's law** says the overall speedup is limited by the share of time you did not improve. A Relay request takes 2,000 ms: 1,500 in the LLM call, 300 in Postgres, 200 elsewhere. Make Postgres ten times faster and the request takes 1,730 ms, only 13.5 percent faster. Even deleting the database time entirely leaves 1,700 ms."},
+        {"t": "tradeoff", "title": "Optimize the code or scale the hardware", "options": [
+          {"name": "Optimize the code or query", "gain": ["Cost drops for good", "Fixes the cause, everywhere it runs", "Often a large win from one change"], "cost": ["Engineer time", "Risk of new bugs", "Needs a profile to aim at the right place"], "choose": "Choose this when a measurement shows one clear hot spot, such as a missing index or a connection held too long."},
+          {"name": "Add instances or bigger machines", "gain": ["Fast to apply", "No code risk"], "cost": ["Recurring cost", "Useless against a shared bottleneck like one database, a lock, or an upstream rate limit", "Can move the queue somewhere else"], "choose": "Choose this when the bottleneck is CPU or memory on stateless instances and the code is already reasonable."}
+        ]},
+        {"t": "analogy", "text": "A supermarket checkout is the classic queue. With half the cashiers idle, a rush barely matters. With every cashier busy, a few extra shoppers make the lines long, and the lines keep growing while the rush lasts. The analogy stops at one point: shoppers see the line and leave, while requests keep arriving and often retry when they time out."},
+        {"t": "callout", "kind": "rule", "title": "Leave headroom on anything that queues", "text": "As a rough rule, plan for sustained utilization of a queueing resource well below saturation, often around 70 percent, so that bursts drain. Running at 95 percent looks efficient on a cost report and feels like an outage to users."}
+      ]
+    },
+    {
+      "id": "d13-l3",
+      "title": "Profiling and flame graphs",
+      "minutes": 13,
+      "blocks": [
+        {"t": "p", "text": "A **profiler** measures where a running program spends its time, down to the function. Its job is to replace guessing. Engineers asked to guess the hot spot in a familiar codebase are often wrong, because the slow part is usually something nobody thought of as work, like serializing a large object or waiting on a lock."},
+        {"t": "compare", "caption": "Two clocks a profiler can use", "columns": ["", "CPU time", "Wall-clock time"], "rows": [
+          ["Counts", "Time a thread is actually running on a CPU", "Real elapsed time, including waiting"],
+          ["Includes waiting on network, disk, locks", "No", "Yes"],
+          ["Good for", "CPU-bound work: parsing, hashing, serialization", "Requests that spend most of their time waiting"],
+          ["In a Relay chat request", "Shows JSON encoding and prompt building", "Shows the LLM call, pool waits, and lock waits"]
+        ], "verdict": "Start with wall-clock time for a slow request. Switch to CPU time once you know the slow part is computation."},
+        {"t": "p", "text": "A **sampling profiler** interrupts the program many times per second and records the call stack of each thread. Functions that appear in many samples are where the time goes. The overhead is low enough for production, and the result is statistical. A tracing profiler such as Python's built-in cProfile records every call instead, which is exact for call counts but slows the program and distorts small, frequent functions."},
+        {"t": "h", "text": "Reading a flame graph"},
+        {"t": "p", "text": "A **flame graph** draws each sampled stack as a tower of boxes, caller below callee. The width of a box is the share of samples in which that function was on the stack. In a classic flame graph, left-to-right order is alphabetical and says nothing about time. Read it by looking for wide boxes, then asking which of them are surprising."},
+        {"t": "code", "lang": "text", "title": "Wall-clock profile, POST /chat, 30 s under normal load", "code": "share of samples (all threads)              notes\n100.0%  handle_chat\n 11.8%  ├─ load_ticket_history\n  3.1%  │   ├─ Message query (Postgres)         waiting on socket\n  8.4%  │   └─ messages_to_json                  on CPU\n 80.6%  ├─ run_agent_turn\n 62.0%  │   ├─ llm_client.create               waiting on socket\n  9.1%  │   ├─ search_help_center\n  5.2%  │   │   ├─ embed_query (HTTP)          waiting on socket\n  3.7%  │   │   └─ pgvector query              waiting on socket\n  9.0%  │   └─ token_budget.acquire            waiting on a lock\n  4.1%  ├─ save_message\n  3.5%  └─ other", "notes": ["The widest box is the LLM call. That is expected and mostly outside your code.", "`messages_to_json` at 8.4 percent is CPU work that grows with ticket length. It is more than double the database query that fetched the same rows.", "`token_budget.acquire` at 9 percent is pure waiting on an in-process lock. That is **lock contention**, and it only appears under concurrent load.", "A CPU-only profile of the same process would show the JSON work and hide the LLM wait and the lock wait entirely."]},
+        {"t": "list", "items": [
+          "Database calls: many small queries per request (the N+1 pattern from Day 9), or one query with no index.",
+          "Network calls made one after another when they could run in parallel.",
+          "Serialization: converting large objects to JSON or validating big payloads on every request.",
+          "Lock contention: many requests waiting for one shared lock or one hot row.",
+          "Heavy logging: formatting and writing large log lines inside a hot loop."
+        ]},
+        {"t": "check", "q": "A CPU profile of Relay's API shows 90 percent of CPU samples in JSON encoding. Host CPU utilization is 15 percent and p95 latency is 6 seconds. What does this tell you?", "options": ["JSON encoding is the main cause of the 6-second latency", "Most of the latency is waiting, which a CPU profile cannot show", "The profiler is broken because CPU and samples disagree"], "answer": 1, "explain": "The CPU profile describes how the little CPU time is spent. With CPU at 15 percent and latency at 6 seconds, most of each request is spent waiting. A wall-clock profile or a trace will show on what."},
+        {"t": "callout", "kind": "pitfall", "title": "Profiling in conditions that hide the problem", "text": "A profile taken locally with one user and ten rows in the database will not show lock contention, pool waits, or the cost of serializing a ticket with 3,000 messages. Profile under realistic data and concurrency, or in production with a sampling profiler."},
+        {"t": "callout", "kind": "debug", "title": "Trace first, then profile", "text": "Use a trace (Day 7) to find which service and which span holds the time. Then profile inside that one process. Profiling every service at once produces a lot of graphs and no answer."},
+        {"t": "reveal", "prompt": "The flame graph shows `llm_client.create` at 62 percent. A teammate proposes rewriting the agent loop in Go to make Relay faster. What do you say?", "answer": "The 62 percent is time spent waiting for the model over the network, so no language makes it shorter. Ask for fewer output tokens, streaming, a smaller model for simple turns, or running independent tool calls in parallel. Then look at the surprising boxes, the JSON work and the lock, which are in your own code."}
+      ]
+    },
+    {
+      "id": "d13-l4",
+      "title": "Load testing and capacity",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "A **load test** sends synthetic traffic at a system to learn how it behaves at a given rate before real users find out. The point is to find the **knee**, the load at which latency starts climbing steeply, and to learn which resource saturates first."},
+        {"t": "compare", "caption": "Four kinds of performance test", "columns": ["", "Traffic shape", "Question it answers", "Typical finding"], "rows": [
+          ["Load test", "Expected peak, held steady", "Do we meet the latency target at normal peak?", "p99 is fine, or one endpoint misses its target"],
+          ["Stress test", "Rising until something breaks", "Where is the knee, and what fails first?", "The connection pool or the LLM rate limit saturates first"],
+          ["Soak test", "Moderate load for hours", "Does anything degrade over time?", "Memory grows steadily, or connections leak"],
+          ["Spike test", "Sudden jump from low to high", "Do we survive a burst and recover?", "Cold caches and autoscaling lag cause a burst of timeouts"]
+        ], "verdict": "Run a stress test to find the knee, then a soak test at normal load. Add a spike test if traffic really arrives in bursts."},
+        {"t": "code", "lang": "text", "title": "Stress test of POST /chat with the real LLM, 5 minutes per step", "code": "offered  achieved   p50     p99     errors\n rps       rps      (s)     (s)\n  20        20      1.8     3.1     0.0%\n  40        40      1.8     3.4     0.0%\n  60        60      1.9     4.8     0.1%\n  70        68      2.6     9.7     0.4%\n  80        66      7.9    30.0     6.2%   (30.0 = client timeout)\n  90        61     15.2    30.0    18.0%", "notes": ["The knee is between 60 and 70 rps: p50 starts moving and p99 doubles.", "Past the knee, achieved throughput falls as offered load rises. Timed-out requests used capacity and produced nothing.", "A p99 of exactly 30.0 means the client gave up. The true latency is unknown and worse.", "Plan capacity from the knee with headroom, not from the highest number that ever succeeded."]},
+        {"t": "p", "text": "Realistic traffic matters more than high traffic. Replay the real mix of endpoints, real payload sizes, and real ticket lengths. Prefer a load generator that sends requests at a fixed arrival rate. One that waits for each response before sending the next slows down when the server slows, which hides exactly the queueing you are trying to measure."},
+        {"t": "callout", "kind": "pitfall", "title": "The benchmark that does not match production", "text": "Common reasons: warm caches, a tiny database, one endpoint instead of the real mix, a stubbed dependency with unrealistic latency, a load generator on the same machine, or a test region with no network distance. Each one makes the system look faster than it is."},
+        {"t": "callout", "kind": "ai", "title": "Stubbing the LLM changes the concurrency", "text": "If the load test replaces the model with a stub that answers in 10 ms, each request holds its worker and its connections for 10 ms instead of 2 seconds. By Little's law that is 200 times fewer requests in flight, so pools never fill. Give the stub a realistic latency distribution, and remember the provider's tokens-per-minute limit is often the real ceiling."},
+        {"t": "p", "text": "**Capacity planning** turns these numbers into a decision. Take the knee for one instance, keep headroom below it, and divide your expected peak by that safe rate. Check shared limits separately: adding API instances does nothing if Postgres connections or the LLM rate limit saturate first."},
+        {"t": "tradeoff", "title": "Measuring vs guessing", "options": [
+          {"name": "Measure, then optimize", "gain": ["Effort goes where the time is", "You can prove the change worked", "Avoids changes that only add complexity"], "cost": ["Setup time for traces, profiles, or a load test", "Feels slower at the start"], "choose": "Choose this whenever the system is already running and the cost of a wrong guess is days of work."},
+          {"name": "Optimize from intuition", "gain": ["Immediate action", "Sometimes right for obvious cases"], "cost": ["Often aims at the wrong hop", "No baseline to compare against", "Adds complexity that may never pay off"], "choose": "Choose this only for a known, measured pattern, such as adding an index the query plan already asked for."}
+        ]},
+        {"t": "callout", "kind": "insight", "title": "When optimization is premature", "text": "Optimizing is premature when you have no measurement showing the code is slow enough to matter, or when the time is spent somewhere else. It is overdue when a percentile breaks your target and a profile points at one place."},
+        {"t": "reveal", "prompt": "A load test with a 10 ms LLM stub says one API instance handles 400 rps. Production with the real model falls over at about 60 rps. Before reading any code, what single number explains most of the gap?", "answer": "Time in system per request. The stub made each request last about 10 ms, the real model about 2 seconds. By Little's law, at the same rate the real system has about 200 times more requests in flight, so pools and workers saturate at a much lower rate."},
+        {"t": "check", "q": "Which test is most likely to catch a slow leak of database connections that only shows after several hours?", "options": ["A spike test", "A soak test", "A stress test"], "answer": 1, "explain": "A soak test holds moderate load for hours, which is when slow growth in memory or leaked connections becomes visible. Stress and spike tests are too short to show it."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "p99 latency climbs while p50 stays flat",
+      "causes": ["A minority of requests hit a slow path, such as very long tickets", "One host, partition, or dependency is slow", "Lock contention or occasional pauses"],
+      "look": "Split the latency histogram by endpoint, host, customer, or payload size, and pull traces for requests above p99.",
+      "confirm": "The slow requests share an attribute, and the fast ones do not have it.",
+      "fix": "Fix the slow path, such as capping history size or fixing the slow host. Raising timeouts only hides it."
+    },
+    {
+      "symptom": "Latency fine until a traffic threshold, then sudden collapse",
+      "causes": ["A queueing resource passed saturation", "Timeouts trigger retries that add more load"],
+      "look": "Utilization of pools, workers, and upstream rate limits at the moment of collapse, and the retry rate.",
+      "confirm": "A stress test reproduces a knee at the same rate, and achieved throughput falls as offered load rises.",
+      "fix": "Raise the capacity of the saturated resource or shed load before it. Add backoff to retries. Plan for headroom below the knee."
+    },
+    {
+      "symptom": "CPU low and latency high",
+      "causes": ["Handlers waiting for a database connection", "Lock contention", "A slow upstream such as the LLM API", "A blocking call inside async code"],
+      "look": "A trace of one slow request, pool acquire time, the count of busy workers, and Postgres wait events.",
+      "confirm": "Most of the request time sits in waiting spans, and a wall-clock profile shows wait, not work.",
+      "fix": "Shorten how long each request holds the scarce resource. Adding CPU will not help."
+    },
+    {
+      "symptom": "A benchmark that does not match production",
+      "causes": ["Stubbed dependencies with unrealistic latency", "Small or cached data", "A traffic mix unlike production", "A closed-loop load generator that slows with the server"],
+      "look": "Compare time in system, data size, cache hit ratio, and endpoint mix between the test and production.",
+      "confirm": "Requests in flight during the test are far below production for the same rate.",
+      "fix": "Use production-shaped data and realistic dependency latency, and generate load at a fixed arrival rate."
+    },
+    {
+      "symptom": "Latency and memory creep up over hours, then recover after a restart",
+      "causes": ["A memory leak or an unbounded in-process cache", "Leaked connections or file handles"],
+      "look": "Memory and open connections per process over time, and the time since the last restart.",
+      "confirm": "A soak test reproduces steady growth at constant load.",
+      "fix": "Find and bound the growing structure. Scheduled restarts are a stopgap that hides the cause."
+    },
+    {
+      "symptom": "Adding API instances does not raise throughput",
+      "causes": ["A shared bottleneck: Postgres, a single lock, or the LLM rate limit"],
+      "look": "Which shared resource is at its limit when throughput plateaus: database connections, CPU, row locks, or 429s.",
+      "confirm": "Throughput stays flat as instances double, while one shared resource sits at its limit.",
+      "fix": "Relieve the shared resource: fix the query, shorten transactions, batch, or raise the quota. More instances only add contention."
+    },
+    {
+      "symptom": "Profile shows the hot function is the LLM or network call",
+      "causes": ["Expected: the request is mostly waiting on a remote service"],
+      "look": "Output tokens per call, number of sequential model calls per turn, and whether independent calls run in parallel.",
+      "confirm": "Time scales with output length or call count, not with CPU work.",
+      "fix": "Reduce output length, stream, parallelize independent calls, or route simple turns to a smaller model. Each one has a quality tradeoff."
+    },
+    {
+      "symptom": "Performance got worse and nobody can say by how much",
+      "causes": ["No baseline measurement was taken", "Dashboards show only averages"],
+      "look": "Whether percentile histograms exist per endpoint, and whether a load test result from before the change exists.",
+      "confirm": "Two people quote different numbers for the same endpoint.",
+      "fix": "Record p50, p95, and p99 per endpoint, and keep one repeatable load test as a baseline."
+    }
+  ],
+  "glossary": [
+    {"term": "Latency", "def": "How long one request takes, measured from the caller's side."},
+    {"term": "Throughput", "def": "How many requests a system completes per unit of time."},
+    {"term": "Percentile", "def": "The value below which a given share of measurements fall. The p99 is the latency that 99 percent of requests beat."},
+    {"term": "Tail latency", "def": "The slow end of the latency distribution, usually p99 and above. It grows when requests wait on many parallel calls."},
+    {"term": "Utilization", "def": "The fraction of time a resource is busy doing work."},
+    {"term": "Saturation", "def": "Work that has to wait because a resource is fully busy. It shows up as queue length or wait time."},
+    {"term": "Little's law", "def": "Requests in flight equal arrival rate times average time in system. It links throughput, latency, and pool sizes."},
+    {"term": "Amdahl's law", "def": "The overall speedup from improving one part is limited by the share of time that part takes."},
+    {"term": "Sampling profiler", "def": "A profiler that records call stacks at a fixed rate and estimates where time goes from how often each function appears."},
+    {"term": "Flame graph", "def": "A picture of sampled call stacks where box width is the share of samples a function was on the stack."},
+    {"term": "Wall-clock time", "def": "Real elapsed time, including time spent waiting on the network, disk, or locks."},
+    {"term": "Lock contention", "def": "Many threads or requests waiting to take the same lock, so work that could run in parallel runs one at a time."},
+    {"term": "Knee", "def": "The load level at which latency stops rising slowly and starts rising steeply."},
+    {"term": "Soak test", "def": "A load test held at moderate load for hours to reveal leaks and slow degradation."}
+  ],
+  "apply": {
+    "title": "Find where one of your own requests spends its time",
+    "minutes": 15,
+    "steps": [
+      "Pick one slow operation in your project, such as an agent turn or an eval case, and run it 30 times. Record the time of each run.",
+      "Sort the 30 times and read off the median and the slowest few. Write down how far the slowest is from the median.",
+      "Add timing around each stage of one run (retrieval, each model call, tool calls, saving results) and write a latency budget like the one in lesson 1.",
+      "Using Amdahl's law, calculate the best possible speedup from making your second-largest stage instantly fast. Decide whether it is worth any effort."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d13-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["percentiles", "latency"],
+      "diagnostic": true,
+      "q": "An endpoint has a mean latency of 300 ms and a p99 of 5 seconds, and its p50 is 200 ms. What is the most likely description of its traffic?",
+      "options": [
+        "Every request takes about 300 ms, and the p99 is measurement noise",
+        "Most requests are fast, and a small minority is very slow",
+        "The server is saturated, so every request is waiting in a queue",
+        "The p99 must be wrong, because it cannot exceed ten times the mean"
+      ],
+      "answer": 1,
+      "explain": "A low median with a high p99 means a fast majority and a slow minority. The mean sits close to the median because the slow 1 percent barely moves it. A saturated server would push the p50 up too, not just the tail.",
+      "why": ["A p99 of 5 s means one request in a hundred took at least 5 s. That is real data, not noise.", "", "Saturation makes most requests wait, which would raise the p50 as well.", "No such rule exists. A small slow minority can sit far above the mean."]
+    },
+    {
+      "id": "d13-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["percentiles", "tail-latency"],
+      "context": "Relay's chat p99 doubled this week while p50 did not move. You split the latency by the number of messages in the ticket.",
+      "artifact": {"lang": "text", "title": "POST /chat by ticket length, last 24 h", "code": "messages    share of reqs   p50 (s)   p99 (s)\n1-50            81%          1.7       3.2\n51-500          17%          1.9       3.9\n501+             2%          6.8      14.6"},
+      "q": "What is the most likely explanation for the p99 regression?",
+      "options": [
+        "The LLM provider became slower for every request this week",
+        "The database is overloaded and every query is waiting longer",
+        "Requests on very long tickets hit a slow path that grows with history",
+        "Network latency between nginx and the API rose for all traffic"
+      ],
+      "answer": 2,
+      "explain": "Short and medium tickets are close to normal, and the 2 percent of requests on tickets with over 500 messages are four times slower at the median. That group alone can set the overall p99. A fleet-wide slowdown would move every row.",
+      "why": ["A provider-wide slowdown would raise p50 in every row, not mainly in the long-ticket row.", "General database overload would slow all ticket sizes, including the 81 percent that look normal.", "", "A network problem would not care how many messages the ticket has."]
+    },
+    {
+      "id": "d13-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["saturation", "connection-pool"],
+      "context": "After a deploy, Relay's chat p95 rose from 3 s to 11 s. Request rate is unchanged, API CPU is 20 percent, and Postgres CPU is 15 percent. The metric `db_pool_acquire_seconds` p95 went from 1 ms to 8 s. The deploy wraps each chat turn, including the LLM call, in one database transaction.",
+      "q": "What is the most likely cause?",
+      "options": [
+        "Each request now holds a database connection for the whole LLM call",
+        "Postgres queries became slow because of a missing index",
+        "The API needs more uvicorn workers to use the idle CPU",
+        "The Python GIL prevents the handlers from using the CPU"
+      ],
+      "answer": 0,
+      "explain": "Holding a transaction across a 2-second model call means each request keeps a connection for about 2 seconds instead of milliseconds. By Little's law the pool needs far more connections at the same rate, so requests queue for one. Postgres is idle, which rules out slow queries.",
+      "why": ["", "Slow queries would show high Postgres CPU or I/O and long query spans. Postgres is at 15 percent.", "More workers would compete for the same full pool, and could exhaust Postgres connections, without fixing the hold time.", "The GIL limits CPU parallelism, but CPU is at 20 percent. The time is spent waiting, not computing."]
+    },
+    {
+      "id": "d13-q04",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["saturation", "queueing"],
+      "q": "A single-server queue does 10 ms of work per request and runs at 80 percent utilization, with an average time in system of 50 ms. Traffic grows until utilization reaches 90 percent. Using the simple model, what is the new average time in system?",
+      "options": [
+        "About 56 ms",
+        "About 60 ms",
+        "About 75 ms",
+        "About 100 ms"
+      ],
+      "answer": 3,
+      "explain": "Time in system is service time divided by one minus utilization: 10 / 0.2 = 50 ms, and 10 / 0.1 = 100 ms. A 12.5 percent increase in load doubles latency because the curve is a hockey stick. Scaling linearly with traffic would give about 56 ms, which is the common wrong intuition.",
+      "why": ["This scales latency in proportion to traffic, which ignores how queueing grows near saturation.", "This adds the same 10 points to latency as to utilization. Queueing is not linear.", "This underestimates the curve. The formula gives 10 / 0.1 = 100 ms.", ""]
+    },
+    {
+      "id": "d13-q05",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["amdahl", "optimization"],
+      "q": "A Relay request takes 3.0 s: 2.4 s waiting for the LLM and 0.6 s in your own code and database calls. You make your own code three times faster. How long does the request take now?",
+      "options": [
+        "About 1.0 s",
+        "About 2.6 s",
+        "About 2.0 s",
+        "About 2.8 s"
+      ],
+      "answer": 1,
+      "explain": "Only the 0.6 s part improves, to 0.2 s, so the total is 2.4 + 0.2 = 2.6 s. Dividing the whole request by three is the Amdahl's law mistake: the part you did not touch sets the floor.",
+      "why": ["This divides the whole request by three, as if the LLM call also got faster.", "", "This would need the LLM part to shrink too.", "This underestimates the gain: 0.6 s becomes 0.2 s, saving 0.4 s."]
+    },
+    {
+      "id": "d13-q06",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["load-testing", "saturation"],
+      "artifact": {"lang": "text", "title": "Stress test, POST /chat", "code": "offered rps  achieved rps  p99 (s)  errors\n    60           60          4.8      0.1%\n    70           68          9.7      0.4%\n    80           66         30.0      6.2%\n    90           61         30.0     18.0%"},
+      "q": "Why does achieved throughput fall as offered load rises past 70 rps?",
+      "options": [
+        "The load generator could not send more than 70 rps",
+        "The API instances crashed and restarted during the test",
+        "Timed-out requests used capacity and produced no result",
+        "The LLM provider returned errors unrelated to load"
+      ],
+      "answer": 2,
+      "explain": "Past the knee, queues grow, requests hit the 30-second client timeout, and the work already done for them is wasted. Useful throughput drops even though the system is fully busy. Errors rising in step with offered load point at saturation, not at the generator or a coincidence.",
+      "why": ["The offered column shows the generator did send 80 and 90 rps.", "Crashes would show as connection errors and gaps, and nothing here suggests them. A p99 pinned at 30 s points at timeouts.", "", "Errors that grow step by step with offered load are a load effect, not a coincidence."]
+    },
+    {
+      "id": "d13-q07",
+      "type": "mcq",
+      "level": 1,
+      "tags": ["profiling", "flame-graph"],
+      "q": "In a classic flame graph, what does the width of a box represent?",
+      "options": [
+        "The share of samples in which that function was on the stack",
+        "The moment during the run when the function was executing",
+        "The number of times the function was called",
+        "The amount of memory the function allocated"
+      ],
+      "answer": 0,
+      "explain": "Width is the fraction of samples that included the function, which estimates its share of time. Left-to-right order is alphabetical in a classic flame graph, so it says nothing about when something ran, and a sampler does not count calls."
+    },
+    {
+      "id": "d13-q08",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["load-testing", "littles-law"],
+      "context": "A load test of Relay's API, with the LLM replaced by a stub that answers in 10 ms, showed one instance handling 400 rps comfortably. In production, with real model calls of about 2 seconds, one instance falls over at about 60 rps.",
+      "q": "What is the most likely reason for the gap?",
+      "options": [
+        "Production hardware is slower than the test machine",
+        "The load test did not include enough distinct users",
+        "Production traffic uses larger HTTP request bodies",
+        "Each real request is in flight 200 times longer, so pools fill far sooner"
+      ],
+      "answer": 3,
+      "explain": "By Little's law, requests in flight equal rate times time in system. With 2-second requests instead of 10 ms ones, each request holds a worker and connections 200 times longer, so the same pools saturate at a far lower rate. Hardware differences cannot explain a gap this large.",
+      "why": ["Hardware differences are usually a small factor, not a sevenfold gap tied to a stubbed dependency.", "User count matters little here. The stub changed how long each request lasts.", "Body size affects parsing cost slightly and cannot explain saturation at one sixth of the rate.", ""]
+    },
+    {
+      "id": "d13-q09",
+      "type": "multi",
+      "level": 2,
+      "tags": ["saturation", "cpu-low-latency-high"],
+      "q": "Relay's API shows low CPU and high latency. Which of these could explain it? Select all that apply.",
+      "options": [
+        "Requests waiting for a connection from a full database pool",
+        "Requests waiting on a shared in-process lock",
+        "Slow responses from the LLM API",
+        "A CPU-heavy regular expression run on every request",
+        "A slow Python sort over a large list in every handler"
+      ],
+      "answers": [0, 1, 2],
+      "explain": "Pool waits, lock waits, and slow upstream calls all spend time without using CPU. A heavy regex or a slow sort is CPU work, which would push CPU up along with latency."
+    },
+    {
+      "id": "d13-q10",
+      "type": "order",
+      "level": 2,
+      "tags": ["method", "profiling"],
+      "q": "Put the steps of investigating a slow endpoint in a sensible order.",
+      "items": [
+        "Confirm the slowdown with percentiles: which endpoint, which percentile, since when",
+        "Pull traces of slow requests to find which span holds the time",
+        "Profile the process that owns that span under realistic load",
+        "Change one thing that the profile points to",
+        "Repeat the same measurement to confirm the improvement"
+      ],
+      "explain": "Each step narrows the search with cheap evidence before anyone changes code. Changing something before a trace and profile exist is guessing, and measuring again at the end is the only proof the change helped."
+    },
+    {
+      "id": "d13-q11",
+      "type": "match",
+      "level": 2,
+      "tags": ["load-testing"],
+      "q": "Match each test to the question it answers best.",
+      "pairs": [
+        ["Load test", "Do we meet the latency target at expected peak?"],
+        ["Stress test", "At what rate does latency turn sharply upward, and what fails first?"],
+        ["Soak test", "Does anything leak or degrade over several hours?"],
+        ["Spike test", "Do we survive a sudden burst and recover afterward?"]
+      ],
+      "explain": "The tests differ in traffic shape. Steady peak checks a target, rising load finds the knee, long duration finds leaks, and a sudden jump tests caches and autoscaling under shock."
+    },
+    {
+      "id": "d13-q12",
+      "type": "open",
+      "level": 3,
+      "tags": ["optimization", "scaling"],
+      "context": "Relay's chat p99 rose from 4 s to 12 s over a month. Someone proposes doubling the number of API instances. API CPU averages 25 percent. Nobody has looked at a trace.",
+      "q": "What would you check before agreeing, and why?",
+      "rubric": [
+        "Notes that low CPU means the bottleneck is probably not API compute",
+        "Asks for traces of slow requests to see which span holds the time",
+        "Checks shared resources that more instances would not relieve: Postgres connections, locks, LLM rate limit",
+        "Checks whether only p99 moved, and splits slow requests by an attribute to find a slow path",
+        "Mentions that more instances can add contention on a shared bottleneck"
+      ],
+      "model": "With CPU at 25 percent, API compute is probably not the limit, so more instances may change nothing. I would pull traces of requests above p99 to see which span grew, and check whether p50 moved too. Then I would check shared resources that extra instances do not relieve, such as database pool waits, row locks, and the LLM rate limit. If the slow requests share an attribute like long tickets, the fix is that slow path. Adding instances in front of a shared bottleneck can make contention worse."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d13-x1",
+      "title": "Slow replies, idle CPU",
+      "brief": "Support agents report that Relay replies take 10 to 30 seconds since this morning, against a normal 2 to 3. API CPU is at 18 percent. The LLM provider's status page shows 'elevated latency in one region'. Yesterday evening a deploy added an audit row to every chat turn.",
+      "artifact": {"lang": "text", "title": "POST /chat, 5-minute windows", "code": "window   rps    p50 (s)   p99 (s)   api cpu\n09:00    30     2.0       4.1       17%\n09:30    30     9.8      28.0       18%\n10:00    31    10.4      29.5       18%"},
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Open a ticket with the LLM provider, since their status page reports a problem",
+            "Pull a trace of one slow request and see which span holds the time",
+            "Double the number of API instances to spread the load",
+            "Raise the LLM client timeout so fewer requests fail"
+          ],
+          "answer": 1,
+          "explain": "A trace splits the 10 seconds between hops in one step and tells you whether the provider is involved at all. The status page is a plausible story, but you have not checked it against your own data. Scaling and timeout changes act before you know where the time goes.",
+          "reveal": "The trace shows almost 8 seconds spent before the handler runs its first query, waiting to acquire a database connection. The LLM call takes 2.1 seconds, close to its usual 1.9.",
+          "artifact": {"lang": "trace", "code": "POST /chat  total 10,212 ms\n├─ db.pool.acquire          7,904 ms\n├─ insert audit_log             3 ms\n├─ load ticket                  8 ms\n├─ llm.create               2,118 ms\n├─ save reply                   6 ms\n└─ commit                       2 ms"}
+        },
+        {
+          "q": "The time is in waiting for a connection, and request rate has not changed. What do you look at next?",
+          "options": [
+            "Postgres CPU and the slow query log, to find a slow query",
+            "Connection states in Postgres, and yesterday's diff to the chat handler",
+            "Restart Postgres to clear whatever is holding connections",
+            "Raise the pool size from 10 to 100 per instance"
+          ],
+          "answer": 1,
+          "explain": "Pool waits with unchanged traffic mean each request holds a connection longer than before. Connection states show what the holders are doing, and the diff shows what changed. The query spans are already fast, so the slow query log is the layer the trace has cleared.",
+          "reveal": "`pg_stat_activity` shows most of the 30 connections (3 instances with 10 each) in state `idle in transaction` for about 2 seconds each. The diff shows the audit insert now opens a transaction at the start of the handler, and the commit happens after the LLM call returns."
+        },
+        {
+          "q": "Each turn now holds a connection for about 2.1 s instead of about 30 ms. What is the right fix?",
+          "options": [
+            "Raise the pool to 100 connections per instance",
+            "Commit the audit row before the LLM call starts",
+            "Add three more API instances",
+            "Cache LLM responses so fewer calls are made"
+          ],
+          "answer": 1,
+          "explain": "By Little's law, 30 rps times 2.1 s is about 63 connections in use, against 30 available, so requests queue. Before the deploy it was about 1. Committing before the model call restores millisecond hold times. A bigger pool would track LLM latency and could exceed Postgres's connection limit.",
+          "reveal": "After the fix ships, `db.pool.acquire` drops to under 1 ms and p50 returns to 2.0 s. The provider's regional issue never affected Relay's region."
+        }
+      ],
+      "debrief": "Root cause: the deploy held a database transaction open across the LLM call, which multiplied connection hold time by about seventy, so the pool saturated at unchanged traffic. The provider's status page was a coincidence. A trace found the real span in one step. The general lesson is to never hold a scarce resource, such as a connection, lock, or transaction, across a slow remote call. A load test with realistic LLM latency would have caught it before release."
+    },
+    {
+      "id": "d13-x2",
+      "title": "Some customers wait twenty seconds",
+      "brief": "A support lead reports that a few large business customers see Relay replies take 15 to 20 seconds, while everyone else is fine. Dashboards show p50 flat at 1.8 s and p99 up from 4 s to 13 s over two weeks. Two weeks ago, a change began sending the full ticket history to the model for better context.",
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Switch to a faster model, since the LLM is the slowest hop",
+            "Split chat latency by an attribute of the request, such as ticket length",
+            "Add API instances to bring down the p99",
+            "Read the code of the history change line by line"
+          ],
+          "answer": 1,
+          "explain": "A flat p50 with a rising p99 means a minority hits a slow path. Splitting by an attribute finds that minority in one query. Switching models or adding instances acts on the whole fleet, which is already fine.",
+          "reveal": "Requests on tickets with more than 500 messages are 2 percent of traffic and have a p50 of 7 s. Every other bucket is normal."
+        },
+        {
+          "q": "You profile requests on long tickets under realistic load. Which box deserves attention first?",
+          "artifact": {"lang": "text", "title": "Wall-clock profile, chat on tickets with 500+ messages", "code": "100.0%  handle_chat\n 31.0%  ├─ build_prompt\n 27.5%  │   └─ messages_to_json         on CPU\n 64.0%  ├─ llm_client.create          waiting on socket\n  5.0%  └─ other"},
+          "options": [
+            "`llm_client.create`, because it is the widest box",
+            "`messages_to_json`, because it is CPU work in your own code that grows with history",
+            "`other`, because unexplained time usually hides the bug"
+          ],
+          "answer": 1,
+          "explain": "The LLM box is wide partly because the prompt is now very long, but you cannot make the model faster by itself. The JSON work is your own code, it is large, and it grows with ticket length. Both point at the same root: sending the entire history.",
+          "reveal": "Each long-ticket request serializes about 3,000 messages and sends a prompt many times larger than normal, which slows both the CPU work and the model."
+        },
+        {
+          "q": "What fix addresses both wide boxes?",
+          "options": [
+            "Cache the serialized history in Redis",
+            "Send only recent messages plus a stored summary of older ones",
+            "Raise the client timeout to 30 seconds for business customers"
+          ],
+          "answer": 1,
+          "explain": "Bounding the history shrinks both the serialization work and the prompt, so both boxes narrow. A cache helps only the JSON step and goes stale with every new message. A longer timeout hides the slowness.",
+          "reveal": "With history capped and summarized, the long-ticket p50 drops to 2.4 s and the overall p99 returns to about 4.5 s."
+        }
+      ],
+      "debrief": "Root cause: a change sent the full ticket history on every turn, so cost grew with ticket length. Most tickets are short, which kept the p50 flat and the averages calm. Splitting latency by ticket length found the group, and a wall-clock profile showed that the slow work and the slow model call shared one cause. Bounding input size per request is the fix, and it should be checked with production-shaped data before shipping."
+    }
+  ]
+}

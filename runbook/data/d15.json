@@ -1,0 +1,528 @@
+{
+  "id": "d15",
+  "day": 15,
+  "phase": "p4",
+  "title": "Authentication",
+  "tagline": "How a server becomes confident about who is calling, and how to read the 401 when it is not.",
+  "minutes": 60,
+  "why": "Relay's agent can issue refunds, so every request has to carry proof of who is asking. Authentication failures are also among the most common errors you hit in daily work: an expired token in a long eval run, a staging key used against production, a sign-in redirect that fails. Knowing what each credential proves, and how to read a token and a 401, turns these into five-minute fixes.",
+  "objectives": [
+    "Explain why passwords are stored as slow salted hashes, and what a database leak exposes under each scheme",
+    "Choose between server-side sessions and JWTs for a given product, including how each handles logout",
+    "Walk through the OAuth2 authorization code flow with PKCE and say what breaks at each step",
+    "Decode a JWT and read its claims to explain a 401",
+    "Work through a 401 checklist: missing, malformed, expired, wrong audience, wrong environment, clock skew"
+  ],
+  "lessons": [
+    {
+      "id": "d15-l1",
+      "title": "Proving identity: passwords and hashing",
+      "minutes": 13,
+      "blocks": [
+        {"t": "p", "text": "**Authentication** answers 'who is calling'. **Authorization** answers 'what may this caller do', and is Day 16. The status codes follow the split: 401 means the server could not establish who you are, and 403 means it knows who you are and refuses the action."},
+        {"t": "p", "text": "The oldest proof of identity is a password. The server must be able to check a password without being able to recover it, because one day the database will leak. So it stores a **password hash**, the output of a one-way function, and on login it hashes the submitted password and compares the results."},
+        {"t": "compare", "caption": "How a stored password survives a database leak", "columns": ["", "Fast hash (SHA-256)", "Fast hash with salt", "Slow salted hash (bcrypt, argon2)"], "rows": [
+          ["Identical passwords", "Identical hashes, so one crack reveals all", "Different hashes, thanks to the salt", "Different hashes, thanks to the salt"],
+          ["Precomputed lookup tables", "Work", "Useless, since each salt needs its own table", "Useless"],
+          ["Cost of one guess", "Tiny; a GPU tries billions per second", "Tiny", "Deliberately large, and tunable"],
+          ["Weak passwords after a leak", "Cracked almost at once", "Cracked quickly, one user at a time", "Cracked slowly; strong ones effectively never"]
+        ], "verdict": "Store passwords with a slow, salted hash designed for passwords, such as argon2id or bcrypt. General-purpose hashes are built to be fast, which is exactly wrong here."},
+        {"t": "p", "text": "A **salt** is a random value generated for each user and stored next to the hash. It makes two users with the same password produce different hashes, and makes precomputed tables useless. A slow hash has a **work factor** you can raise as hardware gets faster. Argon2 is also memory-hard, so attackers cannot simply throw cheap parallel hardware at it."},
+        {"t": "code", "lang": "text", "title": "Two rows from Relay's users table", "code": "id          password_hash\nuser_48213  $argon2id$v=19$m=65536,t=3,p=4$Zm9yZXhhbXBsZW9ubHk$Yq2r...\nuser_10077  $2b$12$R9h/cIPz0gi.URNNX3kh2OPST9/PgBkqquzi.Ss7KIUgO2t0jWMUW", "notes": ["The prefix names the algorithm: `argon2id` or `2b` for bcrypt. A verifier reads it to know how to check the password.", "The cost settings live in the string: memory, iterations, and parallelism for argon2, and `12` for bcrypt, which means 2 to the 12th rounds.", "The salt is stored inline, in plain sight. It is not a secret; its job is to be unique.", "Mixed formats are normal after an upgrade. Users are rehashed with the new settings the next time they log in."]},
+        {"t": "p", "text": "Hashing protects stored passwords. It does nothing against **credential stuffing**, where attackers replay username and password pairs leaked from other sites, because many people reuse passwords. Defenses are per-account and per-IP rate limits on login, checking new passwords against known breached lists, and a second factor."},
+        {"t": "tradeoff", "title": "How Relay's customers prove who they are", "options": [
+          {"name": "Password plus one-time code", "gain": ["Familiar to everyone", "A stolen password alone is not enough"], "cost": ["Codes can be phished by a fake site in real time", "Password reset is an attack path", "Hashing costs CPU on every login"], "choose": "Choose this as a baseline when your users expect passwords."},
+          {"name": "Passkeys", "gain": ["Resistant to phishing, since the key only works on the real site", "Nothing reusable stored on the server", "No password to reuse or leak"], "cost": ["Account recovery needs its own design", "Some users are unfamiliar with them"], "choose": "Choose this as the preferred option for new sign-ups, with a recovery path."},
+          {"name": "Sign in with an identity provider", "gain": ["No passwords stored at all", "MFA and account security handled by the provider"], "cost": ["Depends on an outside service", "Users without that account are excluded"], "choose": "Choose this for staff logins, where every employee already has a company account."}
+        ]},
+        {"t": "p", "text": "**Multi-factor authentication** (MFA) asks for a second proof of a different kind, such as a code from an app or a hardware key. A **passkey** replaces the password with a key pair: the server stores only the public key, and the private key stays with the user's device or password manager. The key is bound to the site's domain, so a look-alike site cannot use it."},
+        {"t": "check", "q": "An attacker copies Relay's users table. Which storage would leave weak passwords hardest to recover?", "options": ["Passwords encrypted with a key stored in the app's config", "SHA-256 hashes with a unique salt per user", "Argon2id hashes with a unique salt per user"], "answer": 2, "explain": "Encryption is reversible by anyone who also gets the key, which often leaks with the database. A salted fast hash still allows billions of guesses per second. A slow salted hash makes each guess expensive."},
+        {"t": "callout", "kind": "pitfall", "title": "Encrypting passwords instead of hashing them", "text": "Encryption is designed to be reversed. If the key leaks along with the database, every password is exposed at once. Passwords need a one-way, slow hash. Day 16 covers the difference between hashing, encryption, and encoding in full."},
+        {"t": "callout", "kind": "debug", "title": "The login endpoint pins the CPU", "text": "Slow hashes cost real CPU by design, so a burst of login attempts can saturate workers and slow every other request. Check the login rate per IP and per account. A spike of failures across many accounts is credential stuffing, and the fix is rate limiting before the hash runs."}
+      ]
+    },
+    {
+      "id": "d15-l2",
+      "title": "Sessions vs JWTs",
+      "minutes": 15,
+      "blocks": [
+        {"t": "p", "text": "After a successful login, the server gives the client something to present on every later request, so the password is sent once. There are two families. A session keeps the state on the server and hands the client a reference to it. A token carries the state itself, signed so the server can trust it."},
+        {"t": "p", "text": "A **server-side session** is a random ID sent in a cookie. Relay stores the session record in Redis: user ID, creation time, expiry. Each request looks the ID up. Logging out deletes the record, and the ID becomes worthless at once."},
+        {"t": "p", "text": "A **JWT** (JSON Web Token) is three base64url-encoded parts separated by dots: a header, a payload of **claims**, and a signature. The server verifies the signature with a key and checks the claims, with no lookup. The token is signed, not encrypted, so anyone holding it can read the payload."},
+        {"t": "code", "lang": "json", "title": "A Relay access token, decoded", "code": "{\n  \"header\": {\n    \"alg\": \"RS256\",\n    \"typ\": \"JWT\",\n    \"kid\": \"relay-2026-10\"\n  },\n  \"payload\": {\n    \"iss\": \"https://auth.relay.example\",\n    \"sub\": \"user_48213\",\n    \"aud\": \"relay-api\",\n    \"iat\": 1795600800,\n    \"exp\": 1795604400,\n    \"scope\": \"tickets:read tickets:write\",\n    \"jti\": \"tok_9c41e2\"\n  }\n}", "notes": ["`exp` minus `iat` is 3,600 seconds. Every token from this issuer dies exactly one hour after it was issued.", "`aud` is the audience, the service the token is meant for. A different API must reject it.", "`iss` is the issuer. A token from the staging auth server carries a different `iss` and is signed with a different key.", "`kid` names the signing key, so the API can find the matching public key after a rotation.", "Nothing secret belongs in the payload. Decoding needs no key."]},
+        {"t": "compare", "caption": "Sessions and JWTs side by side", "columns": ["", "Server-side session", "JWT"], "rows": [
+          ["Where state lives", "In Redis or the database", "Inside the token"],
+          ["Per-request cost", "One lookup in the session store", "A signature check, no lookup"],
+          ["Logout and revocation", "Delete the record, effective at once", "Token stays valid until `exp` unless you add a denylist"],
+          ["If the store is down", "Nobody is logged in", "Tokens still verify"],
+          ["Size on every request", "A short ID", "Hundreds of bytes or more"],
+          ["Good fit", "A web app talking to its own backend", "Many services or third parties verifying the same identity"]
+        ], "verdict": "Relay's own web app is well served by sessions in Redis. JWTs earn their complexity when several independent services must verify identity without calling back to one store."},
+        {"t": "p", "text": "Because a JWT cannot easily be revoked, systems pair a short-lived **access token**, minutes to an hour, with a long-lived **refresh token** used to get new ones. The refresh is the moment the server checks whether the user is still allowed in. Rotating the refresh token on each use lets the server detect a stolen one when the old copy is replayed."},
+        {"t": "tradeoff", "title": "Short-lived or long-lived tokens", "options": [
+          {"name": "Short-lived access tokens", "gain": ["A stolen token expires soon", "Revocation takes effect within minutes"], "cost": ["Clients must refresh correctly", "Long jobs fail mid-run if refresh is missing"], "choose": "Choose this for anything that can act on a user's behalf, such as issuing refunds."},
+          {"name": "Long-lived tokens", "gain": ["Simple clients", "Fewer calls to the auth server"], "cost": ["A leaked token works for a long time", "Logout and password changes do not take effect"], "choose": "Choose this only for low-risk access, and prefer a revocable session or API key if you need long life."}
+        ]},
+        {"t": "compare", "caption": "Where a browser keeps the credential", "columns": ["", "HttpOnly cookie", "localStorage"], "rows": [
+          ["Readable by page JavaScript", "No", "Yes, by any script on the page"],
+          ["Sent automatically", "Yes, with every request to the site", "No, the app adds it to a header"],
+          ["Main attack", "Cross-site request forgery, since the browser attaches it", "Cross-site scripting reads and exfiltrates it"],
+          ["Main defense", "`SameSite` and CSRF tokens, plus `Secure`", "Preventing every XSS bug, which is hard"]
+        ], "verdict": "Prefer an HttpOnly, Secure, SameSite cookie for browser apps. One XSS bug should not hand an attacker a token they can use from anywhere."},
+        {"t": "check", "q": "Relay used one-hour JWTs. A customer logs out, but a copy of the token taken earlier still works. Why?", "options": ["The logout request failed to reach the server", "A JWT stays valid until its expiry unless the server checks a denylist", "The browser cached the API response"], "answer": 1, "explain": "The server verifies a JWT by its signature and claims alone, so deleting the client's copy changes nothing for other copies. Short expiry, revoking the refresh token, or a denylist by `jti` are the remedies."},
+        {"t": "callout", "kind": "pitfall", "title": "Logout that does not log out", "text": "With JWTs, logging out usually deletes the browser's copy and nothing else. If the refresh token is not revoked on the server too, a stolen refresh token keeps minting new access tokens. Logout must revoke server-side state, whatever the token format."},
+        {"t": "callout", "kind": "debug", "title": "Decode before you guess", "text": "When a token is rejected, decode it first and read `exp`, `iss`, and `aud`. Most rejections are explained there. Decode locally with a trusted tool, and never paste a production token into a website, since anyone who has it can use it."},
+        {"t": "callout", "kind": "ai", "title": "Keep credentials out of the prompt", "text": "When Relay's agent calls `issue_refund`, the harness attaches the credential to the outgoing request. The model never sees it. A token in the prompt can be echoed into a reply, logged with the transcript, or extracted by prompt injection."}
+      ]
+    },
+    {
+      "id": "d15-l3",
+      "title": "OAuth2 and OpenID Connect",
+      "minutes": 15,
+      "blocks": [
+        {"t": "p", "text": "**OAuth2** lets a user grant an application limited access to their data at another service without giving it their password. **OpenID Connect** (OIDC) adds a standard way to learn who the user is. 'Sign in with Google' for Relay's support staff uses both: OIDC to identify the staff member, built on OAuth2's flow."},
+        {"t": "compare", "caption": "The four OAuth2 roles, in Relay's staff sign-in", "columns": ["", "Who it is", "In 'Sign in with Google' for Relay staff"], "rows": [
+          ["Resource owner", "The person whose data or identity is at stake", "The support agent signing in"],
+          ["Client", "The application asking for access", "Relay's web app and its backend"],
+          ["Authorization server", "Authenticates the user and issues tokens", "Google's sign-in service"],
+          ["Resource server", "The API that accepts access tokens", "Google's APIs, if Relay asked for any data beyond identity"]
+        ], "verdict": "Name the four roles first whenever an OAuth problem is confusing. Most bugs are a token sent to the wrong role or a setting that two roles disagree on."},
+        {"t": "flow", "title": "Authorization code flow with PKCE", "steps": [
+          {"actor": "Relay web app", "label": "Creates a code verifier, a challenge, and a state", "detail": "The verifier is a long random secret. The challenge is its SHA-256 hash. The state is a random value tied to this browser session.", "fail": "If the verifier is lost, for example kept in memory across a page reload, the token exchange later fails with `invalid_grant`."},
+          {"actor": "Browser", "label": "Goes to the authorization endpoint", "detail": "The URL carries the client ID, the redirect URI, the scopes such as `openid email`, the state, and the challenge.", "fail": "If the redirect URI is not registered exactly, the provider shows a `redirect_uri_mismatch` error and never sends the user back."},
+          {"actor": "Google", "label": "Authenticates the user and asks for consent", "detail": "The password, MFA, and consent screen all happen here. Relay never sees the password.", "fail": "If the user declines, or the scope is not allowed for this client, the redirect comes back with `error=access_denied` instead of a code."},
+          {"actor": "Browser", "label": "Returns to the redirect URI with a code and the state", "detail": "The code is short-lived and single-use. Relay checks that the state matches the one it stored.", "fail": "A state mismatch must abort the login. It means a forged request or a lost session cookie."},
+          {"actor": "Relay API", "label": "Exchanges the code and verifier at the token endpoint", "detail": "This call goes server to server. Google hashes the verifier and checks it against the challenge from the first step.", "fail": "An expired or reused code, or a verifier that does not match, returns `invalid_grant`."},
+          {"actor": "Google", "label": "Returns an access token and an ID token", "detail": "A refresh token may come too, depending on the request and the provider.", "fail": "If the server clock is off, the ID token can look not yet valid or already expired when Relay checks it."},
+          {"actor": "Relay API", "label": "Validates the ID token and starts a session", "detail": "It checks the signature, `iss`, `aud` equal to Relay's client ID, `exp`, and the nonce, then creates its own session in Redis.", "fail": "If Relay expects a different client ID than the token's `aud`, every login fails right after a successful Google sign-in."}
+        ]},
+        {"t": "p", "text": "**PKCE** (Proof Key for Code Exchange) proves that whoever exchanges the code is whoever started the flow. An attacker who intercepts the code, from a log or a malicious app, cannot use it without the verifier, which never left Relay. It is now recommended for every client, including server-side apps."},
+        {"t": "compare", "caption": "Three tokens, three audiences", "columns": ["", "Who reads it", "What it is for"], "rows": [
+          ["ID token", "The client, Relay", "Proves who signed in. Its `aud` is Relay's client ID."],
+          ["Access token", "The resource server, an API", "Grants the listed scopes on that API"],
+          ["Refresh token", "The authorization server", "Obtains new access tokens without asking the user again"]
+        ], "verdict": "Send access tokens to APIs, keep ID tokens for learning who logged in, and send refresh tokens only to the authorization server."},
+        {"t": "p", "text": "Not every flow has a user. In the **client credentials** flow, a service authenticates as itself with its own client ID and secret and receives an access token. Relay's worker uses it to call the store's orders API during nightly jobs. There is no consent screen and no refresh token; the worker simply asks again."},
+        {"t": "check", "q": "Relay's backend wants to read a staff member's Google Calendar after sign-in. Which token goes in the request to the Calendar API?", "options": ["The access token", "The ID token", "The authorization code"], "answer": 0, "explain": "Access tokens are for resource servers. The ID token's audience is Relay itself, and the authorization code is only exchanged once at the token endpoint."},
+        {"t": "callout", "kind": "debug", "title": "redirect_uri_mismatch", "text": "Compare the redirect URI in the failing authorization URL with the registered list, character by character: scheme, host, port, path, and trailing slash. Matching is exact. A new domain, a proxy that rewrites the scheme to http, or a missing slash is the usual cause."},
+        {"t": "callout", "kind": "pitfall", "title": "Using the ID token as an API credential", "text": "An ID token is addressed to the client. An API that accepts it is skipping the audience check, which means any token issued to any app for that user would work. Each API should accept only access tokens whose `aud` names that API."},
+        {"t": "reveal", "prompt": "A staff member completes Google sign-in and lands on Relay with a valid code, but the token exchange returns `invalid_grant`. Name two causes before reading any logs.", "answer": "The code was already used or expired, for example after a double submit or a slow redirect, or the code verifier did not match the challenge, for example because the verifier was lost when the page reloaded. A redirect URI that differs from the one in the first step is a third."}
+      ]
+    },
+    {
+      "id": "d15-l4",
+      "title": "API keys, service-to-service auth, and debugging a 401",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "An **API key** is a long random secret that identifies an account or project. Relay uses one to call its LLM provider. It is simple to use and long-lived, and that long life is its main weakness: a leaked key works until someone revokes it."},
+        {"t": "tradeoff", "title": "API keys or OAuth2 tokens", "options": [
+          {"name": "API key", "gain": ["Trivial for clients to use", "No token exchange or refresh", "Fine for server-to-server calls you control"], "cost": ["Long-lived, so a leak lasts", "Usually all-or-nothing access", "Identifies an account, not a user"], "choose": "Choose this for your own servers calling a provider, such as Relay calling the LLM API, stored in a secret manager and rotated."},
+          {"name": "OAuth2 access token", "gain": ["Short-lived and scoped", "Can act for a specific user with consent", "Revocable through the auth server"], "cost": ["More moving parts", "Clients must handle expiry and refresh"], "choose": "Choose this when a third party acts on a user's behalf, or when you need scopes and short lifetimes."}
+        ]},
+        {"t": "p", "text": "Between internal services there are two more options. A **service account** is a non-human identity with its own credentials and permissions, so each service can be granted and audited separately. **Mutual TLS** (mTLS) has both sides present certificates during the TLS handshake, so the caller is identified before any HTTP is exchanged."},
+        {"t": "p", "text": "**Key rotation** replaces a credential without downtime: issue a new key, deploy it everywhere, keep both valid during an overlap, then revoke the old one. Rotation fails in a familiar way. One forgotten service is still on the old key, and it starts returning 401s the minute the old key is revoked."},
+        {"t": "code", "lang": "http", "title": "A rejected request to Relay's API", "code": "GET /v1/tickets/t_8812 HTTP/1.1\nHost: api.relay.example\nAuthorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6InJlbGF5LTIwMjYtMTAifQ.eyJ...\n\nHTTP/1.1 401 Unauthorized\nWWW-Authenticate: Bearer error=\"invalid_token\", error_description=\"token expired\"\nContent-Type: application/json\nX-Request-ID: req_7f31c9\n\n{\"error\": \"invalid_token\", \"detail\": \"token expired at 2026-11-25T11:00:00Z\"}", "notes": ["`WWW-Authenticate` is the server telling you which scheme it expects and what was wrong. Read it before anything else.", "`invalid_token` with 'expired' points at the token's `exp`, here 11:00 UTC, one hour after it was issued.", "A missing header usually gives a bare `WWW-Authenticate: Bearer` with no error code.", "The request ID is what you search for in the API's logs to see the validator's full reason."]},
+        {"t": "compare", "caption": "401 and 403 are different problems", "columns": ["", "401 Unauthorized", "403 Forbidden"], "rows": [
+          ["Means", "The server could not establish who you are", "It knows who you are and refuses this action"],
+          ["Points at", "The credential: missing, expired, wrong audience, bad signature", "Permissions, roles, or scopes"],
+          ["Fixed by a fresh token", "Often", "No, the same identity gets the same answer"]
+        ], "verdict": "On a 401, debug the credential. On a 403, debug the permission, which is Day 16."},
+        {"t": "list", "style": "number", "items": [
+          "Missing: is the `Authorization` header present at the API at all? Redirects to another host and some proxies drop it.",
+          "Malformed: is it `Bearer` followed by one token, with no quotes, spaces, or trailing newline from a secrets file?",
+          "Expired: decode it and compare `exp` with the current time.",
+          "Wrong audience: does `aud` name this API, or another service, or a client ID?",
+          "Wrong environment: does `iss` belong to staging while you call production, or the reverse? The signing keys differ.",
+          "Clock skew: is the validating server's clock off, so a fresh token looks not yet valid or already expired?",
+          "Unknown key: after a signing key rotation, does the API have the public key named by `kid`?"
+        ]},
+        {"t": "callout", "kind": "debug", "title": "Work the checklist from the outside in", "text": "Start with the response: status, `WWW-Authenticate`, and the request ID. Then decode the token. Then check the server's log for that request ID, which names the failed check. Most 401s are solved before you open any code."},
+        {"t": "callout", "kind": "pitfall", "title": "A staging token sent to production", "text": "Staging and production usually have separate auth servers with separate signing keys. A token from one fails the signature or issuer check on the other, even though it decodes fine and has not expired. Check `iss` before suspecting anything subtle."},
+        {"t": "callout", "kind": "ai", "title": "401s from the LLM provider", "text": "A 401 from the LLM API during an eval run almost always means the process loaded a different key than you think: an old environment variable, another project's key, or a key revoked after a leak. Print which key the process loaded, by its last few characters, before suspecting the provider."},
+        {"t": "reveal", "prompt": "A token works in staging and is rejected in production with `invalid_token`. It has not expired. Which two claims do you read first, and what are you looking for?", "answer": "`iss` and `aud`. If `iss` is the staging auth server, production cannot verify its signature with its own keys. If `aud` names the staging API, production must reject it even when the signature is valid. Either one means the client fetched its token from the wrong environment."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "401 after exactly one hour",
+      "causes": ["Access tokens live 3,600 seconds and the client never refreshes", "A long-running job fetched one token at startup and cached it"],
+      "look": "Decode a rejected token and compare `exp` with `iat`, then check when the client last fetched a token.",
+      "confirm": "Failures begin one hour after process start or login, and a restart clears them temporarily.",
+      "fix": "Refresh before `exp` with a margin, and refresh once on 401 then retry. Lengthening the token's life only hides it."
+    },
+    {
+      "symptom": "Token valid in staging, rejected in production",
+      "causes": ["Token issued by the staging auth server", "Audience names the staging API", "Production expects a different client ID"],
+      "look": "The decoded `iss` and `aud`, and the API's configured expected issuer and audience in each environment.",
+      "confirm": "`iss` or `aud` differs from what production is configured to accept.",
+      "fix": "Fetch tokens from the environment you are calling, and keep issuer and audience settings per environment."
+    },
+    {
+      "symptom": "Logout that does not log out",
+      "causes": ["Stateless JWTs remain valid until `exp`", "Refresh token not revoked on the server", "Only the browser's copy was deleted"],
+      "look": "What the logout handler changes on the server, and the lifetime of access and refresh tokens.",
+      "confirm": "A token copied before logout still works afterward.",
+      "fix": "Revoke server-side state on logout, keep access tokens short, and add a denylist by `jti` if logout must be instant."
+    },
+    {
+      "symptom": "redirect_uri_mismatch on the sign-in page",
+      "causes": ["Redirect URI not registered exactly: scheme, host, port, path, or trailing slash", "A proxy makes the app build an http URL"],
+      "look": "The `redirect_uri` parameter in the authorization URL versus the registered list for that client ID.",
+      "confirm": "The two strings differ by at least one character.",
+      "fix": "Register the exact URI, and make the app build it from configuration, not from the incoming request."
+    },
+    {
+      "symptom": "invalid_grant when exchanging the authorization code",
+      "causes": ["Code expired or already used", "Code verifier does not match the challenge", "Redirect URI differs between the two steps"],
+      "look": "Time between redirect and exchange, duplicate exchange attempts, and where the verifier is stored.",
+      "confirm": "The logs show two exchanges for one code, or a verifier created after a page reload.",
+      "fix": "Exchange each code once, promptly, and store the verifier where it survives the redirect."
+    },
+    {
+      "symptom": "Token not yet valid, or expired immediately after it was issued",
+      "causes": ["Clock skew between the issuing and validating servers"],
+      "look": "Compare `iat` and `nbf` with the validating host's clock, and check time sync on that host.",
+      "confirm": "The host's clock differs from real time by more than the validator's leeway.",
+      "fix": "Fix time synchronization. A small validation leeway helps, and a large one weakens expiry."
+    },
+    {
+      "symptom": "401s start right after a signing key rotation, on some instances only",
+      "causes": ["Instances cached the old public key set and do not know the new `kid`"],
+      "look": "The `kid` in rejected tokens and the key set each instance has loaded.",
+      "confirm": "Rejected tokens carry the new `kid`, and the failing instances' cached key set lacks it.",
+      "fix": "Refetch the key set on an unknown `kid`, and publish new keys before signing with them."
+    },
+    {
+      "symptom": "401 only when the request follows a redirect",
+      "causes": ["The HTTP client drops the Authorization header when redirected to another host"],
+      "look": "Whether the first response is a 3xx to a different host, and the headers on the second request.",
+      "confirm": "The final request has no `Authorization` header.",
+      "fix": "Call the final URL directly, or fix the redirect at the server."
+    },
+    {
+      "symptom": "Login endpoint slow and CPU high, with many failed logins",
+      "causes": ["Credential stuffing against a slow password hash"],
+      "look": "Failed logins per IP and per account, and how many distinct accounts are tried.",
+      "confirm": "Many accounts, few successes, traffic from many IPs with similar patterns.",
+      "fix": "Rate limit before the hash runs, add MFA, and check passwords against breach lists."
+    }
+  ],
+  "glossary": [
+    {"term": "Authentication", "def": "Establishing who is calling. Failure is reported as 401."},
+    {"term": "Authorization", "def": "Deciding what an identified caller may do. Failure is reported as 403."},
+    {"term": "Salt", "def": "A random value stored with each password hash, so identical passwords produce different hashes and precomputed tables fail."},
+    {"term": "Slow hash", "def": "A password hashing function, such as bcrypt or argon2, built to be expensive per guess, with a tunable work factor."},
+    {"term": "Credential stuffing", "def": "Replaying username and password pairs leaked from other sites, relying on password reuse."},
+    {"term": "Passkey", "def": "A per-site key pair that replaces a password. The server stores the public key, and the key only works on the site it was made for."},
+    {"term": "Session", "def": "Login state kept on the server, referenced by a random ID the client sends, usually in a cookie."},
+    {"term": "JWT", "def": "A signed token of three base64url parts: header, claims, and signature. Readable by anyone, verifiable without a lookup."},
+    {"term": "Refresh token", "def": "A long-lived token sent only to the authorization server to get new short-lived access tokens."},
+    {"term": "Audience (aud)", "def": "The claim naming who a token is for. A service must reject tokens addressed to someone else."},
+    {"term": "OAuth2", "def": "A framework that lets a user grant an application scoped access to a service without sharing their password."},
+    {"term": "OpenID Connect", "def": "A layer on OAuth2 that adds an ID token, a standard way for the client to learn who signed in."},
+    {"term": "PKCE", "def": "Proof Key for Code Exchange. The client proves at token exchange that it started the flow, so a stolen code is useless."},
+    {"term": "Clock skew", "def": "Disagreement between machines' clocks, which makes time-based claims like `exp` and `nbf` fail on valid tokens."}
+  ],
+  "apply": {
+    "title": "Read the credentials your own project uses",
+    "minutes": 15,
+    "steps": [
+      "List every credential your project uses: LLM API keys, database passwords, any OAuth tokens. For each, write where it is stored and how long it lives.",
+      "Make one LLM API call with a deliberately wrong key and read the full response: status, any `WWW-Authenticate` header, and the error body.",
+      "If any part of your project uses a JWT, decode one locally and read `iss`, `aud`, `exp`, and `iat`. Work out its lifetime in minutes.",
+      "Find any long-running job, such as an eval run, that fetches a token once. Write down what happens when the run lasts longer than the token's lifetime."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d15-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["jwt", "tokens"],
+      "diagnostic": true,
+      "q": "A JWT's payload is base64url-encoded and signed with the server's private key. What follows for the data you put in it?",
+      "options": [
+        "Only the server that signed it can read the payload",
+        "The payload is safe for secrets because the signature hides it",
+        "Clients cannot read the payload without the public key",
+        "Anyone who holds the token can read the payload"
+      ],
+      "answer": 3,
+      "explain": "Base64url is an encoding, not encryption, so decoding needs no key. The signature proves the payload was not changed. It does not hide it. Confusing signing with encryption is the common mistake.",
+      "why": ["Decoding needs no key at all, so anyone holding the token can read it.", "A signature detects tampering. It hides nothing.", "The public key is used to verify the signature, not to read the payload.", ""]
+    },
+    {
+      "id": "d15-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["jwt", "environments", "debugging-401"],
+      "context": "A developer's script works against staging and gets 401 `invalid_token` from production. The token has not expired.",
+      "artifact": {"lang": "json", "title": "The decoded payload", "code": "{\n  \"iss\": \"https://auth.staging.relay.example\",\n  \"sub\": \"user_48213\",\n  \"aud\": \"relay-api-staging\",\n  \"exp\": 1795604400\n}"},
+      "q": "What is the most likely cause?",
+      "options": [
+        "Production's clock is ahead, so the token looks expired",
+        "The token came from the staging auth server and is addressed to the staging API",
+        "The user lacks permission for this endpoint in production",
+        "Production rate-limited the script after too many calls"
+      ],
+      "answer": 1,
+      "explain": "Both `iss` and `aud` name staging. Production verifies signatures with its own keys and expects its own audience, so it rejects the token even though it is unexpired. A permission problem would return 403, and a rate limit 429.",
+      "why": ["The error would say expired, and the token has not expired. The claims point at staging instead.", "", "A missing permission returns 403 for an identified caller, not 401.", "A rate limit returns 429."]
+    },
+    {
+      "id": "d15-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["token-expiry", "refresh-tokens"],
+      "context": "Relay's nightly re-indexing worker calls an internal API with an OAuth access token. Every run succeeds for the first hour, then every call fails with 401 until the run ends. A rerun starts fine again.",
+      "q": "What is the most likely cause?",
+      "options": [
+        "The worker fetches one token at startup and never refreshes it before `exp`",
+        "The internal API rate-limits the worker after an hour of traffic",
+        "The worker's service account lacks permission for later batches",
+        "Clock skew grows during the run until tokens look expired"
+      ],
+      "answer": 0,
+      "explain": "Failures that start one hour after startup and clear on restart match a one-hour token that is never refreshed. A rate limit gives 429 and recovers on its own, a permission gap gives 403 from the first call, and clock skew does not grow by an hour in one run.",
+      "why": ["", "A rate limit returns 429 and would not depend on time since startup.", "A permission problem returns 403 and would fail from the first call, not after an hour.", "Clock skew is a fixed offset, not something that grows by an hour during one run."]
+    },
+    {
+      "id": "d15-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["clock-skew", "debugging-401"],
+      "context": "One of three Relay API instances rejects freshly issued tokens. The other two accept the same tokens.",
+      "artifact": {"lang": "http", "code": "HTTP/1.1 401 Unauthorized\nWWW-Authenticate: Bearer error=\"invalid_token\", error_description=\"token not yet valid (iat)\""},
+      "q": "What is the most likely cause?",
+      "options": [
+        "The tokens were issued for a different audience",
+        "The user's refresh token was revoked",
+        "That instance's clock is behind real time",
+        "The signing key was rotated and the token uses the old key"
+      ],
+      "answer": 2,
+      "explain": "A token that looks issued in the future to one instance, and is fine on the others, means that instance's clock is behind. Audience, revocation, and key problems would affect every instance the same way.",
+      "why": ["A wrong audience would be rejected by all three instances, with an audience error.", "Revoking a refresh token does not affect an already issued access token, and would not differ by instance.", "", "A key problem would show as a signature or unknown key error, not a time error."]
+    },
+    {
+      "id": "d15-q05",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["logout", "jwt", "refresh-tokens"],
+      "q": "Relay's customer app uses one-hour JWT access tokens and 30-day refresh tokens. Logout currently deletes both from the browser. Which change makes logout effective?",
+      "options": [
+        "Extend the access token lifetime so users log in less often",
+        "Encrypt the JWT payload so stolen copies cannot be read",
+        "Move the tokens from localStorage into sessionStorage",
+        "Revoke the refresh token on the server and keep access tokens short"
+      ],
+      "answer": 3,
+      "explain": "A copied refresh token keeps minting access tokens until the server revokes it. Revoking it on logout, with short access tokens, bounds a stolen copy's life to minutes. Encryption and storage location do not stop a copy that already exists from working.",
+      "why": ["A longer lifetime makes a stolen token useful for longer.", "Encryption hides the claims but a copied token still works.", "Changing browser storage does not invalidate copies taken earlier.", ""]
+    },
+    {
+      "id": "d15-q06",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["token-storage", "cookies"],
+      "q": "Why do many teams keep a browser app's credential in an HttpOnly cookie rather than in localStorage?",
+      "options": [
+        "Cookies are encrypted by the browser, while localStorage is not",
+        "Script injected by an XSS bug cannot read an HttpOnly cookie",
+        "Cookies cannot be sent by cross-site requests under any setting",
+        "localStorage is cleared whenever the browser tab is closed"
+      ],
+      "answer": 1,
+      "explain": "HttpOnly hides the cookie from page JavaScript, so an XSS bug cannot read and send it elsewhere. The cost is that the browser attaches it automatically, so CSRF defenses such as SameSite are needed.",
+      "why": ["Browsers do not encrypt cookies in a way that matters here. The point is that scripts cannot read them.", "", "Cookies can be sent cross-site depending on SameSite, which is why CSRF defenses exist.", "That describes sessionStorage. localStorage persists."]
+    },
+    {
+      "id": "d15-q07",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["oauth2", "pkce"],
+      "q": "What does PKCE protect against in the authorization code flow?",
+      "options": [
+        "An intercepted authorization code being exchanged by someone else",
+        "A user's password being phished on a fake sign-in page",
+        "An access token being read from the browser's storage",
+        "A refresh token being replayed after it was rotated"
+      ],
+      "answer": 0,
+      "explain": "The token endpoint only accepts the code together with the verifier whose hash was sent at the start. An attacker who steals the code does not have the verifier. PKCE does nothing for phishing, token storage, or refresh replay.",
+      "why": ["", "Phishing happens before any code exists. MFA and passkeys address it.", "Storage is a browser concern. PKCE protects the code exchange.", "Refresh token rotation and reuse detection handle replay."]
+    },
+    {
+      "id": "d15-q08",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["oauth2", "redirect-uri"],
+      "context": "Relay's staff sign-in moved from `https://relay.example/auth/callback` to `https://support.relay.example/auth/callback`. Now Google shows 'Error 400: redirect_uri_mismatch' and never returns to Relay. The client ID did not change.",
+      "q": "What is the fix?",
+      "options": [
+        "Create a new Google client ID for the new domain",
+        "Disable PKCE until the new domain is stable",
+        "Add the exact new callback URI to the client's registered redirect URIs",
+        "Change the requested scopes to include the new domain"
+      ],
+      "answer": 2,
+      "explain": "The authorization server only redirects to URIs registered for that client, compared exactly. The new callback is not registered. A new client ID would also need registering and would break the audience check, and PKCE and scopes are unrelated to this error.",
+      "why": ["A new client ID adds work and would change the ID token's audience. Registering the URI on the existing client is enough.", "PKCE is checked at the token exchange, after the redirect, so it cannot cause this error.", "", "Scopes describe access, not where the user is sent back."]
+    },
+    {
+      "id": "d15-q09",
+      "type": "multi",
+      "level": 2,
+      "tags": ["debugging-401", "status-codes"],
+      "q": "Which of these would cause Relay's API to return 401? Select all that apply.",
+      "options": [
+        "The access token's `exp` is in the past",
+        "The token's `aud` names a different service",
+        "The request has no `Authorization` header",
+        "The token's `kid` names a key the API does not have",
+        "A valid token for a user who may not issue refunds calls the refund endpoint",
+        "The caller exceeded its requests-per-minute limit"
+      ],
+      "answers": [0, 1, 2, 3],
+      "explain": "Expired, misaddressed, missing, and unverifiable credentials all mean the server cannot establish who is calling, which is 401. A known user without permission gets 403, and a caller over a rate limit gets 429."
+    },
+    {
+      "id": "d15-q10",
+      "type": "order",
+      "level": 2,
+      "tags": ["oauth2", "pkce"],
+      "q": "Put the steps of the authorization code flow with PKCE in order.",
+      "items": [
+        "The client creates a code verifier and sends its hash as the challenge in the authorization request",
+        "The user signs in and consents at the authorization server",
+        "The browser returns to the redirect URI with a code and the state",
+        "The client exchanges the code and the verifier at the token endpoint",
+        "The client validates the ID token and starts its own session"
+      ],
+      "explain": "The challenge goes out first so the authorization server can later check the verifier. The code travels through the browser, which is why it must be useless without the verifier, and the ID token is checked before any session exists."
+    },
+    {
+      "id": "d15-q11",
+      "type": "match",
+      "level": 1,
+      "tags": ["tokens", "oauth2"],
+      "q": "Match each credential to its job.",
+      "pairs": [
+        ["Access token", "Presented to an API to use the granted scopes"],
+        ["ID token", "Tells the client who signed in"],
+        ["Refresh token", "Sent to the authorization server to get new access tokens"],
+        ["API key", "A long-lived secret identifying an account or project"],
+        ["Session ID", "A random reference to login state stored on the server"]
+      ],
+      "explain": "Each credential has one audience. Most OAuth bugs come from sending one of them to the wrong party, such as an ID token to an API or a refresh token to a resource server."
+    },
+    {
+      "id": "d15-q12",
+      "type": "open",
+      "level": 3,
+      "tags": ["logout", "refresh-tokens", "jwt"],
+      "context": "After a customer's account was compromised, they changed their password. Relay's logs show the attacker's device kept making successful API calls for another 40 minutes, then started getting 401s.",
+      "q": "Explain why the attacker kept access after the password change, and what you would change.",
+      "rubric": [
+        "Identifies that the attacker held an access token that stayed valid until its expiry",
+        "Notes that the password change did not revoke existing refresh tokens or sessions",
+        "Connects the 40 minutes to the remaining lifetime of a one-hour access token",
+        "Proposes revoking all refresh tokens and sessions on password change",
+        "Mentions shorter access tokens, a denylist, or a per-user token version check as the tradeoff for faster cutoff"
+      ],
+      "model": "The attacker held an access token, which the API verifies by signature and expiry alone, so the password change did not affect it until it expired about 40 minutes later. The 401s started when it expired and the refresh failed or was revoked. On password change, revoke every refresh token and session for the user. For a faster cutoff, shorten access token life or have the API check a per-user token version or denylist, which costs a lookup per request."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d15-x1",
+      "title": "Refunds fail after an hour",
+      "brief": "Relay's agent started failing `issue_refund` calls with 401 from the store's orders API this afternoon. Restarting the worker pods fixes it for a while. Yesterday the platform team rotated the client secret the workers use to get tokens with the client credentials flow.",
+      "artifact": {"lang": "log", "title": "agent-worker, refund tool calls", "code": "13:02:10 pod=worker-7 uptime=58m tool=issue_refund status=200\n13:04:31 pod=worker-7 uptime=61m tool=issue_refund status=401\n13:04:33 pod=worker-2 uptime=12m tool=issue_refund status=200\n13:05:02 pod=worker-7 uptime=61m tool=issue_refund status=401"},
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Rotate the client secret again, since the last rotation is the recent change",
+            "Read the 401 response's `WWW-Authenticate` header and compare failures with pod uptime",
+            "Restart all worker pods every 30 minutes until the cause is found",
+            "Ask the orders API team whether they changed their permissions"
+          ],
+          "answer": 1,
+          "explain": "The log already hints that failures track uptime, and the response header says which check failed. Both are free. Rotating again acts on the obvious suspect without evidence, and a scheduled restart hides the cause.",
+          "reveal": "Every 401 carries `error=\"invalid_token\", error_description=\"token expired\"`. Every failing pod has been up more than 60 minutes; every pod under 60 minutes succeeds."
+        },
+        {
+          "q": "What do you check next?",
+          "options": [
+            "Whether the new client secret is loaded on every pod",
+            "How the worker caches its token, and the token's lifetime",
+            "The orders API's rate limit settings for the worker"
+          ],
+          "answer": 1,
+          "explain": "An 'expired' error that starts at 60 minutes of uptime points at a token fetched once and kept. A wrong secret would fail at startup, when the token is first requested, not an hour later. Rate limits give 429.",
+          "reveal": "The worker fetches a token when the pod starts and keeps it in memory. Decoded, `exp` minus `iat` is 3,600. The worker refreshes on a timer read from config, and yesterday's rotation change set that timer to 24 hours.",
+          "artifact": {"lang": "json", "code": "{\n  \"iss\": \"https://auth.store.example\",\n  \"aud\": \"orders-api\",\n  \"iat\": 1795600800,\n  \"exp\": 1795604400\n}"}
+        },
+        {
+          "q": "What is the right fix?",
+          "options": [
+            "Ask the auth server to issue 24-hour tokens to match the worker",
+            "Schedule pod restarts every 50 minutes",
+            "Refresh from the token's own `exp`, and once more on a 401",
+            "Catch 401 in the tool and report the refund as done"
+          ],
+          "answer": 2,
+          "explain": "Reading the lifetime from the token itself cannot drift from what the auth server issues. One refresh on 401 covers the edge cases. A retry after refresh is safe because a 401 means the orders API rejected the request before acting on it. Longer tokens and restarts hide the bug, and reporting success would be a lie.",
+          "reveal": "With refresh driven by `exp`, workers run for days without a 401."
+        }
+      ],
+      "debrief": "Root cause: during the secret rotation, a config change told the worker that tokens last 24 hours, while the auth server still issued one-hour tokens. The rotation was the change that preceded the failures, but the new secret worked fine. The evidence was in the `WWW-Authenticate` header and in pod uptime. Clients should read expiry from the token, refresh before it, and treat a 401 as a reason to refresh once. A test that fast-forwards the clock past one hour would have caught it."
+    },
+    {
+      "id": "d15-x2",
+      "title": "Staff sign-in broken on the new domain",
+      "brief": "Relay's support console moved to a new domain this morning. Staff report that 'Sign in with Google' fails. It worked in staging yesterday. The team suspects a Google outage because the error appears on a Google page.",
+      "artifact": {"lang": "text", "title": "What staff see", "code": "Access blocked: This app's request is invalid\nError 400: redirect_uri_mismatch"},
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Google's status page for an ongoing outage",
+            "The sent `redirect_uri` against the registered list",
+            "The claims in the ID token Relay received",
+            "Whether staff browsers block third-party cookies"
+          ],
+          "answer": 1,
+          "explain": "The error names the problem: the redirect URI does not match a registered one. The error page is Google's, but the misconfiguration is in Relay's client settings. There is no ID token yet, because the flow never got past the authorization step.",
+          "reveal": "Relay sends `http://support.relay.example/auth/callback`. Registered is `https://support.relay.example/auth/callback`. The scheme differs."
+        },
+        {
+          "q": "The domain was registered with https, yet the app builds an http URL. Why?",
+          "options": [
+            "The app sees plain http from the load balancer",
+            "Google rewrites https to http for new domains",
+            "The browser downgrades the redirect to http"
+          ],
+          "answer": 0,
+          "explain": "The app builds the URI from the incoming request. TLS ends at the load balancer, so the app sees http unless it trusts the forwarded scheme header. Building the redirect URI from configuration avoids the problem entirely.",
+          "reveal": "With the URI taken from configuration, Google sign-in completes. Now Relay's callback rejects every login right after the redirect.",
+          "artifact": {"lang": "log", "code": "11:02:14 path=/auth/callback status=401 err=id_token_rejected check=audience\n11:02:14 path=/auth/callback status=401 err=id_token_rejected check=audience"}
+        },
+        {
+          "q": "What do you compare to resolve the audience mismatch?",
+          "options": [
+            "The token's `aud` with production's expected client ID",
+            "The ID token's `exp` with the server's clock",
+            "The access token's scopes with the API's permissions"
+          ],
+          "answer": 0,
+          "explain": "An ID token's audience is the client ID it was issued to. The log says the audience check failed, so the API expected a different one. Expiry and scopes are separate checks with different error messages.",
+          "reveal": "The team created a new client ID for the new domain. Staging config was updated with it yesterday; production config still lists the old one."
+        }
+      ],
+      "debrief": "Two misconfigurations stacked: the app built an http redirect URI behind a TLS-terminating load balancer, and production still expected the old client ID as the ID token audience. A Google outage was the obvious story because the first error appeared on Google's page, but the message itself named the cause. Build redirect URIs from configuration, keep issuer and audience settings per environment, and check them in a post-deploy smoke test that signs in once."
+    }
+  ]
+}

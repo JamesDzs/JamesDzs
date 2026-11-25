@@ -1,0 +1,638 @@
+{
+  "id": "d05",
+  "day": 5,
+  "phase": "p1",
+  "title": "Beyond REST: GraphQL, gRPC, streaming, webhooks",
+  "tagline": "The other ways services talk, what each one breaks in its own way, and how to choose between them.",
+  "minutes": 55,
+  "why": "Every style moves the failure somewhere new. GraphQL hides errors inside a 200, gRPC reports a deadline instead of a status line, a token stream dies silently at a proxy, and a webhook arrives twice. You spend your time on LLM streams and third-party callbacks, so knowing where each style hides its failures saves hours.",
+  "objectives": [
+    "Read a GraphQL response that returned 200 and say which field failed and why monitoring missed it",
+    "Trace an LLM token stream from the model to the browser and name the hop that cut it off",
+    "Locate the call that consumed a gRPC deadline budget, which is often not the one that reported DEADLINE_EXCEEDED",
+    "Make a webhook receiver safe against duplicate and out-of-order deliveries",
+    "Choose between REST, GraphQL, gRPC, SSE, WebSockets, polling, and webhooks for a given need"
+  ],
+  "lessons": [
+    {
+      "id": "d05-l1",
+      "title": "GraphQL: the client chooses the shape",
+      "minutes": 14,
+      "blocks": [
+        {"t": "p", "text": "**GraphQL** is an API style where the server publishes a typed **schema** of objects and fields, and the client sends a query naming exactly the fields it wants. One endpoint, usually `POST /graphql`, serves every query. Reads are **queries**, writes are **mutations**."},
+        {"t": "p", "text": "Imagine Relay's ticket screen served by GraphQL. It needs the ticket, its last 20 messages, the customer's name, and the order's status. With REST that is several calls, each returning fields the screen ignores. With GraphQL it is one query, and the response has the same shape as the query."},
+        {"t": "compare",
+          "caption": "The ticket screen, two ways",
+          "columns": ["", "REST", "GraphQL"],
+          "rows": [
+            ["Round trips", "Several, one per resource, often in sequence", "One"],
+            ["Payload", "Whole resources, including unused fields", "Only the fields asked for"],
+            ["HTTP caching", "Works per URL with GET", "Hard, since every query is a POST to one URL"],
+            ["Error reporting", "Status code per call", "Usually 200, with an `errors` array in the body"],
+            ["Who decides the cost of a request", "The server, per endpoint", "The client, by how deep and wide it queries"],
+            ["Authorization", "Per endpoint", "Per object and field, since any query can reach any field"]
+          ],
+          "verdict": "GraphQL pays off when many different screens need different slices of a connected graph. For a small API with one or two clients, REST is simpler to cache, monitor, and secure."},
+        {"t": "h", "text": "Resolvers and the N+1 problem"},
+        {"t": "p", "text": "The server answers a query by running a **resolver**, a function that fetches one field, for every field in it. Resolvers run independently. A list of 50 tickets, each with a `customer` field, runs the customer resolver 50 times, and each run issues its own query. That is the **N+1 problem**: one query for the list, then N more."},
+        {"t": "code",
+          "lang": "log",
+          "title": "Postgres log for one GraphQL request",
+          "code": "LOG:  duration: 1.9 ms  statement: SELECT id, subject, customer_id FROM tickets\n      WHERE status = 'open' ORDER BY created_at DESC LIMIT 50\nLOG:  duration: 0.4 ms  statement: SELECT * FROM customers WHERE id = 7781\nLOG:  duration: 0.4 ms  statement: SELECT * FROM customers WHERE id = 7782\nLOG:  duration: 0.5 ms  statement: SELECT * FROM customers WHERE id = 7790\n... 47 more statements of the same form ...",
+          "notes": [
+            "Each query is fast. The cost is the count, plus a network round trip per query.",
+            "The number of customer queries tracks the list size, which is the fingerprint of N+1.",
+            "The usual fix is a batching loader that collects the 50 ids and issues one `WHERE id IN (...)` query."
+          ]},
+        {"t": "callout", "kind": "debug", "title": "A GraphQL screen that is slow only with long lists", "text": "Count SQL statements per GraphQL request, using the request id in the database log or a trace. If the count grows with the number of items on the page, a resolver is fetching one row at a time. Batch it, then check the count is constant."},
+        {"t": "h", "text": "Errors inside a 200"},
+        {"t": "code",
+          "lang": "http",
+          "title": "A partial failure",
+          "code": "HTTP/1.1 200 OK\nContent-Type: application/json\n\n{\n  \"data\": {\n    \"ticket\": {\"id\": \"451\", \"subject\": \"Where is my order?\", \"order\": null}\n  },\n  \"errors\": [\n    {\n      \"message\": \"Order lookup timed out\",\n      \"path\": [\"ticket\", \"order\"],\n      \"extensions\": {\"code\": \"UPSTREAM_TIMEOUT\"}\n    }\n  ]\n}",
+          "notes": [
+            "The status is 200 although part of the request failed.",
+            "`path` names the field that failed. That field is null, and the rest of the data is real.",
+            "If `order` were declared non-null in the schema, the null would spread up to `ticket`, and the whole ticket would vanish."
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "Status-code dashboards see nothing", "text": "A GraphQL server that is half broken can still return 100 percent 200s. Count responses with a non-empty `errors` array, broken down by `path` and error code, and alert on that. Otherwise the first report comes from a user."},
+        {"t": "p", "text": "Two other costs come with letting the client choose. A deeply nested query can ask for an enormous amount of work, so servers enforce depth or cost limits. And because one endpoint serves everything, authorization must be checked on each object and field, where a missed check exposes data through a path nobody tested."},
+        {"t": "check",
+          "q": "A GraphQL response is 200 with `data.ticket` present, `data.ticket.messages` null, and one entry in `errors` with path `[\"ticket\", \"messages\"]`. What happened?",
+          "options": ["The whole request failed and the server returned cached data", "The messages resolver failed while the ticket resolved normally", "The client asked for a field that does not exist"],
+          "answer": 1,
+          "explain": "GraphQL returns partial results: the failing field becomes null and the error names its path. A field missing from the schema is rejected during validation, before any resolver runs, and usually returns no data at all."}
+      ]
+    },
+    {
+      "id": "d05-l2",
+      "title": "gRPC and protobuf: contracts between services",
+      "minutes": 14,
+      "blocks": [
+        {"t": "p", "text": "**gRPC** is a framework for calling functions on another service as if they were local. The contract is a `.proto` file written in **protobuf**, a schema language and compact binary format. A code generator turns the file into client and server code for each language, and calls travel over HTTP/2."},
+        {"t": "p", "text": "Relay does not use gRPC, so picture a store's checkout service that calls separate inventory and pricing services. gRPC is common in exactly this place: many internal calls per user request, between services written by different teams, sometimes in different languages."},
+        {"t": "code",
+          "lang": "text",
+          "title": "Part of a protobuf contract",
+          "code": "message ReserveRequest {\n  string order_id = 1;\n  string sku = 2;\n  int32 quantity = 3;\n  reserved 4;              // was: string gift_message, removed in v12\n  string warehouse_hint = 5; // added in v13, old clients never send it\n}",
+          "notes": [
+            "The numbers are what travel on the wire. Field names do not, which is why the numbers must never change.",
+            "`reserved 4` stops anyone from reusing the number of a deleted field. An old client still sending field 4 would otherwise have its value read as the new field.",
+            "Adding field 5 is safe. Old servers skip fields they do not know, and a missing field reads as its default, such as an empty string."
+          ]},
+        {"t": "list", "items": [
+          "**Unary**: one request, one response, like a normal API call.",
+          "**Server streaming**: one request, a stream of responses, such as progress updates.",
+          "**Client streaming**: a stream of requests, one response, such as uploading chunks.",
+          "**Bidirectional streaming**: both sides send whenever they like over one call."
+        ]},
+        {"t": "compare",
+          "caption": "Internal calls: JSON over HTTP vs gRPC",
+          "columns": ["", "REST with JSON", "gRPC with protobuf"],
+          "rows": [
+            ["Contract", "Optional, often an OpenAPI file", "Required, the `.proto` is the source of generated code"],
+            ["Payload", "Text, readable, larger", "Binary, compact, unreadable without the schema"],
+            ["Debugging by hand", "curl and a browser", "Needs a gRPC-aware tool and the schema"],
+            ["Streaming", "Bolted on with SSE or WebSockets", "Built in, four call types"],
+            ["From a browser", "Native", "Needs a translating proxy such as gRPC-Web"],
+            ["Load balancing", "Any HTTP load balancer, per request", "Needs per-call balancing over long-lived connections"]
+          ],
+          "verdict": "Use gRPC between services you own when call volume, a strict contract, or streaming matters. Keep JSON over HTTP at the edge, for browsers and partners."},
+        {"t": "h", "text": "Deadlines and status codes"},
+        {"t": "p", "text": "A gRPC client sets a **deadline**, the point in time after which it stops waiting. The deadline travels with the call, so the server knows how long it has. Well-built services pass the remaining budget to the calls they make, so a 1-second deadline at the edge means less than a second for everything underneath."},
+        {"t": "p", "text": "gRPC reports outcomes with its own status codes, separate from HTTP statuses. `DEADLINE_EXCEEDED` means the deadline passed before a response arrived. `UNAVAILABLE` usually means the server could not be reached and a retry may help. `INVALID_ARGUMENT`, `NOT_FOUND`, and `RESOURCE_EXHAUSTED` play the roles of 400, 404, and 429."},
+        {"t": "callout", "kind": "debug", "title": "DEADLINE_EXCEEDED: whose time ran out?", "text": "The call that reports the error is often not the one that was slow. Line up each hop's start time, duration, and remaining budget from the trace. If an earlier call spent most of the budget, the reporting call is a victim. Also check the server's own log: it may have finished the work after the client gave up."},
+        {"t": "callout", "kind": "pitfall", "title": "All traffic on one backend", "text": "gRPC keeps one HTTP/2 connection open and sends every call over it. A load balancer that balances connections, not requests, pins each client to one backend forever. New replicas sit idle while one is overloaded. Balance per request at the proxy, or have the client spread calls across backends."},
+        {"t": "p", "text": "Browsers cannot speak native gRPC, because browser networking APIs do not expose the low-level HTTP/2 control gRPC depends on, such as response trailers. A browser-facing service either uses gRPC-Web through a translating proxy or exposes JSON over HTTP."},
+        {"t": "callout", "kind": "ai", "title": "Deadlines and long generations", "text": "Self-hosted model servers often offer a gRPC interface alongside HTTP. A deadline sized for short answers fails every long generation with DEADLINE_EXCEEDED, which looks like a model failure in an eval. Size deadlines from the longest output you allow, or stream so progress is visible."},
+        {"t": "check",
+          "q": "A team deletes field 4 (`string gift_message`) without reserving it and, a month later, adds `string coupon = 4`. Some old clients are still deployed. What happens?",
+          "options": ["Nothing, because the field names differ", "Old clients' gift messages are read as coupon codes", "The generator refuses to compile the new file"],
+          "answer": 1,
+          "explain": "Only the number identifies a field on the wire, so the new server reads an old client's gift message as a coupon code. Marking 4 as reserved when it was deleted prevents this."}
+      ]
+    },
+    {
+      "id": "d05-l3",
+      "title": "Real time: polling, SSE, WebSockets",
+      "minutes": 14,
+      "blocks": [
+        {"t": "p", "text": "HTTP is request and response: the client asks, the server answers once. To show something the moment it happens, such as each token of Relay's answer, the server needs a way to push. There are four common ways, and they differ in how long a connection stays open and who may speak on it."},
+        {"t": "list", "items": [
+          "**Short polling**: the client asks every few seconds. Simple, wasteful, and as slow as the interval.",
+          "**Long polling**: the client asks, and the server holds the request open until there is news or a timeout, then the client asks again.",
+          "**Server-sent events (SSE)**: one long HTTP response with content type `text/event-stream`, to which the server keeps appending events.",
+          "**WebSockets**: an HTTP request upgraded into a two-way connection where either side sends messages at any time."
+        ]},
+        {"t": "compare",
+          "caption": "Pushing updates to a browser",
+          "columns": ["", "Polling", "SSE", "WebSockets"],
+          "rows": [
+            ["Direction", "Client asks repeatedly", "Server to client", "Both ways"],
+            ["Protocol", "Plain HTTP requests", "Plain HTTP, one long response", "Upgraded from HTTP, then its own framing"],
+            ["Update delay", "Up to one interval", "Immediate", "Immediate"],
+            ["Through proxies", "No special setup", "Needs buffering off and long timeouts", "Needs upgrade support and long timeouts"],
+            ["Reconnect", "Every request is fresh", "Built into the browser's EventSource", "Your code must handle it"],
+            ["Typical use", "Job status every 10 seconds", "LLM tokens, notifications, progress", "Chat with typing, collaboration, games"]
+          ],
+          "verdict": "Use SSE when only the server talks during the update, which covers LLM streaming. Use WebSockets only when the client also needs to send mid-stream. Poll when updates are rare and a few seconds of delay is fine."},
+        {"t": "code",
+          "lang": "http",
+          "title": "A short SSE stream from Relay to the browser",
+          "code": "HTTP/1.1 200 OK\nContent-Type: text/event-stream\nCache-Control: no-cache\n\nevent: start\ndata: {\"message_id\": \"m_5521\"}\n\nevent: delta\ndata: {\"text\": \"Your order shipped\"}\n\nevent: delta\ndata: {\"text\": \" on March 3.\"}\n\n: keep-alive\n\nevent: done\ndata: {\"stop_reason\": \"end_turn\"}\n",
+          "notes": [
+            "Each event is a few `field: value` lines ended by a blank line. The browser processes it as soon as the blank line arrives.",
+            "A line starting with a colon is a comment. Servers send one as a heartbeat so idle connections are not closed by a proxy.",
+            "The final `done` event is how you tell a finished answer from a cut connection. A stream that ends without it was interrupted.",
+            "The status line was sent before the first token, so a failure after that cannot change it to an error code."
+          ]},
+        {"t": "flow",
+          "title": "One answer, token by token, from model to screen",
+          "steps": [
+            {"actor": "Browser", "label": "Posts the question and starts reading", "detail": "It reads the response body as a stream. EventSource only supports GET without a body, so chat UIs usually parse SSE from a fetch call.", "fail": "A client that waits for the whole body shows nothing until the end."},
+            {"actor": "API", "label": "Calls the LLM API with streaming on", "detail": "The provider answers with its own SSE stream of small deltas.", "fail": "If the API buffers the upstream stream before replying, the user sees one burst at the end."},
+            {"actor": "API", "label": "Forwards each delta and flushes", "detail": "FastAPI writes each event as it arrives. During a tool call no tokens flow, so it sends heartbeat comments.", "fail": "Without heartbeats, a long tool call is silence, and silence trips idle timeouts."},
+            {"actor": "nginx", "label": "Passes bytes through unbuffered", "detail": "Buffering must be off for this route, either in config or with an `X-Accel-Buffering: no` response header.", "fail": "With buffering on, tokens arrive in large clumps or all at once."},
+            {"actor": "Load balancer", "label": "Keeps the connection open", "detail": "It closes connections idle longer than its idle timeout.", "fail": "A stream cut at a round number of seconds after the last byte."},
+            {"actor": "Browser", "label": "Renders deltas, stops on the final event", "detail": "It appends each `delta` and marks the answer complete on `done`.", "fail": "If the connection drops with no `done`, the answer stops mid-sentence."}
+          ]},
+        {"t": "callout", "kind": "debug", "title": "Streams cut off at exactly 60 seconds", "text": "A round-number cutoff is a timeout, never the model. nginx's default proxy read timeout is 60 seconds, and 60 seconds is a common load balancer idle timeout. Both measure silence between bytes. Check whether cut streams had a long gap, then find the hop whose error log names the timeout."},
+        {"t": "tradeoff",
+          "title": "How Relay's chat should receive answers",
+          "options": [
+            {"name": "SSE", "gain": ["Plain HTTP, easy to log and debug", "Matches how LLM APIs already stream"], "cost": ["One direction only", "Proxies must not buffer or time out"], "choose": "Choose this when the client only listens while the answer is generated."},
+            {"name": "WebSockets", "gain": ["Client can send mid-answer, such as stop or typing", "One connection for many exchanges"], "cost": ["Proxies need upgrade support", "Reconnects, heartbeats, and ordering are your code"], "choose": "Choose this when both sides must talk during the same exchange."},
+            {"name": "Polling", "gain": ["Works everywhere with no special config", "Stateless and easy to scale"], "cost": ["Delay of up to one interval", "Many empty requests"], "choose": "Choose this for slow updates such as a nightly eval's progress."}
+          ]},
+        {"t": "callout", "kind": "ai", "title": "A reconnect is a new generation", "text": "An LLM stream usually cannot resume where it stopped. If the client reconnects automatically, it may start a second generation, paying again and possibly re-running tools. Make the reconnect fetch the stored answer, or make tool calls idempotent."},
+        {"t": "reveal", "prompt": "Tokens stream smoothly when you call FastAPI directly, but through the public URL the answer appears all at once after 20 seconds. What do you suspect, and what one header confirms it?", "answer": "A proxy is buffering the response. Compare the two paths: since the app streams correctly on its own, the buffering hop is in front of it. Check whether the response carries `X-Accel-Buffering: no` and whether nginx has buffering on for that route; compression on the stream can also cause it."}
+      ]
+    },
+    {
+      "id": "d05-l4",
+      "title": "Webhooks, and choosing a style",
+      "minutes": 13,
+      "blocks": [
+        {"t": "p", "text": "A **webhook** is an HTTP POST that another company's system sends to you when something happens. It is an API in reverse: you publish the endpoint, they call it. Relay's payment provider sends `refund.succeeded` to Relay instead of Relay asking every few seconds whether the refund is done."},
+        {"t": "compare",
+          "caption": "Learning that a refund finished",
+          "columns": ["", "Polling the provider", "Receiving a webhook"],
+          "rows": [
+            ["Delay", "Up to one interval", "Seconds"],
+            ["Load", "Constant, mostly empty answers", "Only when something happens"],
+            ["What you must run", "A scheduled job", "A public endpoint that verifies signatures"],
+            ["Missed events", "Impossible, the next poll sees the state", "Possible if all retries fail while you are down"],
+            ["Duplicates and order", "Not an issue, you read current state", "Expected, you must handle both"]
+          ],
+          "verdict": "Use webhooks for timeliness and a periodic reconciliation poll as a backstop. The poll catches anything the webhooks missed."},
+        {"t": "code",
+          "lang": "http",
+          "title": "A webhook delivery as Relay receives it",
+          "code": "POST /webhooks/payments HTTP/1.1\nContent-Type: application/json\nWebhook-Id: evt_3QxA81\nWebhook-Timestamp: 1741003204\nWebhook-Signature: v1,5f2b9c0e...\n\n{\"id\": \"evt_3QxA81\", \"type\": \"refund.succeeded\",\n \"created\": 1741003204,\n \"data\": {\"refund_id\": \"rf_19A\", \"order_id\": \"8812\", \"amount\": 4200}}",
+          "notes": [
+            "The signature is typically a keyed hash of the timestamp and the raw body, computed with a secret you share with the provider. Header names vary by provider.",
+            "Rejecting old timestamps stops an attacker from replaying a captured delivery later.",
+            "The event id is your deduplication key. A retry carries the same id."
+          ]},
+        {"t": "flow",
+          "title": "Receiving a webhook safely",
+          "steps": [
+            {"actor": "API", "label": "Verifies the signature on the raw body", "detail": "It recomputes the hash over the exact bytes received and compares it with the header.", "fail": "Parsing and re-serializing JSON first changes the bytes, so every signature fails."},
+            {"actor": "API", "label": "Records the event id", "detail": "An insert under a unique constraint tells it whether this event was seen before.", "fail": "Without it, a retried delivery is processed twice."},
+            {"actor": "API", "label": "Enqueues the work and returns 200", "detail": "The response goes back within a second or two.", "fail": "Slow work before responding trips the provider's timeout, and it retries an event you already handled."},
+            {"actor": "Worker", "label": "Applies the event", "detail": "It updates the refund only if this event is newer than the state already stored, or it fetches current state from the provider.", "fail": "An older event processed late overwrites newer state."}
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "Assuming order", "text": "Providers deliver at least once and do not promise order. Retries, parallel senders, and your own parallel workers all reorder events. A late `refund.pending` processed after `refund.succeeded` flips a finished refund back to pending unless the handler checks which is newer."},
+        {"t": "callout", "kind": "debug", "title": "Webhook delivered twice or out of order", "text": "Log every delivery with event id, type, provider timestamp, and arrival time. Duplicates share an id; reordering shows as arrival order differing from provider timestamps. The provider's dashboard usually lists each delivery attempt and the status your endpoint returned."},
+        {"t": "h", "text": "Choosing a style"},
+        {"t": "compare",
+          "caption": "Request and response styles side by side",
+          "columns": ["", "REST", "GraphQL", "gRPC"],
+          "rows": [
+            ["Best fit", "Public and partner APIs, simple CRUD", "Many client screens over a connected graph", "High-volume calls between internal services"],
+            ["Contract", "OpenAPI, optional", "Schema, required", "Protobuf, required"],
+            ["Errors visible in", "HTTP status", "The `errors` array, usually under 200", "gRPC status codes"],
+            ["Caching", "HTTP caches work", "Needs app-level or persisted queries", "App-level only"],
+            ["Typical failure", "Contract drift, retried POSTs", "N+1 resolvers, hidden errors", "Deadline budgets, sticky connections"]
+          ],
+          "verdict": "Default to REST at the edge. Add GraphQL when client data needs vary widely, gRPC when internal call volume or streaming demands it, and use SSE or webhooks for pushing events."},
+        {"t": "callout", "kind": "ai", "title": "Long jobs: poll or be called", "text": "Batch jobs, fine-tuning runs, and long evals finish minutes or hours later. A script can poll a status endpoint every minute with no infrastructure. A server that must react, such as one that kicks off grading, is better served by a webhook plus a reconciliation poll."},
+        {"t": "check",
+          "q": "After a framework upgrade, every incoming webhook fails signature verification. The secret has not changed. What is the most likely cause?",
+          "options": ["The provider rotated its signing algorithm without notice", "The handler now hashes a re-serialized body, not the raw bytes", "Events are now arriving out of order, so checks fail"],
+          "answer": 1,
+          "explain": "The signature covers exact bytes. If the new framework hands the handler a parsed object that is serialized again, key order and spacing can change and every hash differs. A change on your side that coincides with total failure points at your side."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "GraphQL returns 200 but the screen is missing data, and an errors array is in the body",
+      "causes": ["One resolver failed or timed out", "Authorization rejected one field"],
+      "look": "The `errors` entries: their `path` and error code, and that resolver's logs.",
+      "confirm": "The field at `path` is null in `data` and the matching resolver logged a failure.",
+      "fix": "Fix the failing resolver, and alert on the rate of responses with errors, not only on status codes."
+    },
+    {
+      "symptom": "GraphQL list page is slow, and slower the more items it shows",
+      "causes": ["N+1 resolvers fetching one row per item"],
+      "look": "SQL statements per GraphQL request in the database log or a trace.",
+      "confirm": "The statement count grows with the list size.",
+      "fix": "Batch the resolver with a loader so it issues one query per field, not per item."
+    },
+    {
+      "symptom": "Streamed answer stops mid-sentence at exactly 60 seconds",
+      "causes": ["Proxy read timeout or load balancer idle timeout during a silent gap", "No heartbeats while a tool call runs"],
+      "look": "Duration and last-byte gap of cut streams, and the proxy's error log for a timeout.",
+      "confirm": "Cut streams have no final event and end about 60 seconds after their last byte.",
+      "fix": "Send heartbeat comments every 15 seconds or so, and raise the timeout only for the streaming route."
+    },
+    {
+      "symptom": "Tokens arrive all at once at the end instead of streaming",
+      "causes": ["Proxy buffering the response", "Compression applied to the stream", "The API reads the whole upstream response before replying"],
+      "look": "The same request against the app directly and through each proxy in turn.",
+      "confirm": "Streaming works up to one hop and clumps after it.",
+      "fix": "Turn off buffering and compression for the streaming route."
+    },
+    {
+      "symptom": "Webhook processed twice, or a status flips back to an older value",
+      "causes": ["At-least-once delivery with no deduplication", "Older event processed after a newer one"],
+      "look": "The webhook log by event id, provider timestamp, and processing time.",
+      "confirm": "Two deliveries share an event id, or processing order differs from provider timestamps.",
+      "fix": "Deduplicate on event id with a unique constraint and ignore events older than stored state."
+    },
+    {
+      "symptom": "Every webhook fails signature verification after a deploy",
+      "causes": ["Verifying a re-serialized body instead of the raw bytes", "Wrong secret for this environment"],
+      "look": "What the handler hashes, and which secret it loads.",
+      "confirm": "Hashing the raw body with the correct secret matches the header.",
+      "fix": "Verify against raw bytes before parsing, and keep secrets per environment."
+    },
+    {
+      "symptom": "gRPC DEADLINE_EXCEEDED on a call whose server looks healthy",
+      "causes": ["An earlier call consumed most of the deadline budget", "Deadline too short for the work"],
+      "look": "A trace of the whole request: each hop's start, duration, and remaining deadline.",
+      "confirm": "The reporting call received only a small remainder, or the server logged completion after the deadline.",
+      "fix": "Speed up or parallelize the call that spent the budget, or size the deadline from real latency."
+    },
+    {
+      "symptom": "One gRPC backend overloaded while new replicas get no traffic",
+      "causes": ["Connection-level load balancing over long-lived HTTP/2 connections"],
+      "look": "Requests per backend and connections per client.",
+      "confirm": "Each client holds one connection and all its calls land on one backend.",
+      "fix": "Balance per request at a proxy, or use client-side balancing across backends."
+    },
+    {
+      "symptom": "WebSocket connection failed in the browser console, behind nginx only",
+      "causes": ["Proxy does not forward the Upgrade and Connection headers"],
+      "look": "The handshake response status through the proxy and directly.",
+      "confirm": "Direct gets `101 Switching Protocols`; through the proxy it does not.",
+      "fix": "Configure the proxy to pass the upgrade headers and allow long idle times for that route."
+    }
+  ],
+  "glossary": [
+    {"term": "GraphQL", "def": "An API style with a typed schema in which the client's query names exactly the fields it wants, usually served from one endpoint."},
+    {"term": "Resolver", "def": "The server function that fetches one field of a GraphQL query. Every field in a query runs its resolver."},
+    {"term": "N+1 problem", "def": "One query for a list followed by one more query per item, usually from code that fetches related data row by row."},
+    {"term": "gRPC", "def": "A framework for calling functions on another service, with a protobuf contract, generated code, and HTTP/2 transport."},
+    {"term": "Protobuf", "def": "A schema language and compact binary format in which each field is identified on the wire by its number, not its name."},
+    {"term": "Deadline", "def": "The point in time after which a gRPC client stops waiting. It travels with the call so servers can stop early and pass on the remainder."},
+    {"term": "Long polling", "def": "A request the server holds open until it has news or a timeout passes, after which the client immediately asks again."},
+    {"term": "Server-sent events (SSE)", "def": "A one-way stream of text events over a single long HTTP response, with content type text/event-stream. LLM APIs use it to stream tokens."},
+    {"term": "WebSocket", "def": "A two-way connection created by upgrading an HTTP request, after which either side may send messages at any time."},
+    {"term": "Heartbeat", "def": "A small message sent on an otherwise idle connection so that proxies and load balancers do not close it."},
+    {"term": "Webhook", "def": "An HTTP POST that another system sends to your endpoint when an event happens."},
+    {"term": "Webhook signature", "def": "A keyed hash of the raw body and a timestamp, sent in a header, that proves the delivery came from the sender and was not altered."}
+  ],
+  "apply": {
+    "title": "Watch your own LLM stream, byte by byte",
+    "minutes": 15,
+    "steps": [
+      "Make one streaming call to the LLM API your project uses and print each raw event with the time it arrived.",
+      "Note the time to the first token, the longest gap between events, and what the final event looks like.",
+      "Run a request that triggers a slow tool or a long answer and check the longest gap again. Compare it with 60 seconds.",
+      "Find where your code decides the stream is finished. Check that it requires the final event rather than treating a closed connection as success."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d05-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["sse", "streaming"],
+      "diagnostic": true,
+      "q": "A web app must show an LLM's answer token by token as it is generated. The browser sends nothing while the answer streams. Which transport is the simplest good fit?",
+      "options": [
+        "WebSockets, so the connection is two-way",
+        "Short polling every 500 milliseconds",
+        "Server-sent events over one long HTTP response",
+        "A webhook from the server to the browser"
+      ],
+      "answer": 2,
+      "explain": "Traffic flows one way during the answer, and SSE is plain HTTP with built-in event framing, which is also how LLM APIs stream. WebSockets work but add upgrade handling, reconnect logic, and proxy setup for a capability this case does not use.",
+      "why": ["Two-way capability is unused here, and it costs proxy configuration and custom reconnect logic.", "Polling adds up to half a second of delay per update and many empty requests.", "", "A browser has no public endpoint for a server to POST to."]
+    },
+    {
+      "id": "d05-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["graphql", "errors"],
+      "context": "Users say the order panel on the ticket screen is blank. The API dashboard shows 100 percent 200 responses for `/graphql`.",
+      "artifact": {"lang": "json", "code": "{\n  \"data\": {\"ticket\": {\"id\": \"451\", \"order\": null}},\n  \"errors\": [{\"message\": \"Order lookup timed out\",\n              \"path\": [\"ticket\", \"order\"],\n              \"extensions\": {\"code\": \"UPSTREAM_TIMEOUT\"}}]\n}"},
+      "q": "What best explains the blank panel and the clean dashboard?",
+      "options": [
+        "The order resolver timed out, and GraphQL reports field errors inside a 200",
+        "The client asked for a field the schema does not define",
+        "The dashboard is sampling and missed the failed requests",
+        "The ticket has no order, so null is the correct value"
+      ],
+      "answer": 0,
+      "explain": "The `errors` entry names `ticket.order` with a timeout code, and that field is null. GraphQL keeps the status at 200 for partial failures, so status-based monitoring sees nothing. The tempting reading is that null means no data, but the error entry says the lookup failed.",
+      "why": ["", "An undefined field is rejected at validation with no resolver running, and the error would say so.", "Every response is 200, so sampling would still show 200s; the failure is in the body.", "A legitimately absent order produces null with no entry in `errors`."]
+    },
+    {
+      "id": "d05-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["graphql", "n-plus-one"],
+      "context": "A GraphQL query listing 50 open tickets with each customer's name takes 400 ms; with 10 tickets it takes 90 ms.",
+      "artifact": {"lang": "log", "code": "LOG:  duration: 1.9 ms  statement: SELECT id, subject, customer_id FROM tickets ... LIMIT 50\nLOG:  duration: 0.4 ms  statement: SELECT * FROM customers WHERE id = 7781\nLOG:  duration: 0.4 ms  statement: SELECT * FROM customers WHERE id = 7782\n... 48 more of the same form"},
+      "q": "What is the right fix?",
+      "options": [
+        "Add an index on `customers.id`",
+        "Cache the whole GraphQL response in Redis",
+        "Raise the database connection pool size",
+        "Batch customer lookups into one query per request"
+      ],
+      "answer": 3,
+      "explain": "Each customer query is already fast at 0.4 ms, so the cost is the number of round trips, which grows with the list. Batching makes it one query regardless of size. An index would not help, since lookups by primary key are already indexed.",
+      "why": ["The primary key is already indexed; each query is fast and the problem is how many there are.", "A response cache hides the cost for repeated identical queries but leaves every new or changed query slow.", "More connections do not reduce the number of sequential round trips in one request.", ""]
+    },
+    {
+      "id": "d05-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["sse", "timeouts"],
+      "context": "Since a slow `check_carrier_status` tool was added, some of Relay's streamed answers stop mid-sentence. Short answers are fine.",
+      "artifact": {"lang": "log", "title": "Cut streams", "code": "req=r_81 tool=check_carrier_status last_byte=+12.4s closed=+72.4s final_event=no\nreq=r_93 tool=check_carrier_status last_byte=+9.1s  closed=+69.1s final_event=no\nreq=r_97 tool=none                 last_byte=+31.0s closed=+31.0s final_event=yes"},
+      "q": "What is the most likely cause?",
+      "options": [
+        "The model hit its maximum output length",
+        "A proxy closed connections that were silent for 60 seconds",
+        "The carrier API returned an error that crashed the stream",
+        "The browser's EventSource gave up after 60 seconds"
+      ],
+      "answer": 1,
+      "explain": "Each cut stream closed exactly 60 seconds after its last byte, during a slow tool call when no tokens flowed. That is an idle timeout. Hitting the output limit ends with a final event carrying that stop reason, which these streams lack.",
+      "why": ["Running out of output tokens ends the stream cleanly with a final event and a stop reason.", "", "A crash would end the stream at an arbitrary time, not 60.0 seconds after the last byte every time.", "The cut is measured from the last byte, which points at an idle timer in a proxy, not a total limit in the browser."]
+    },
+    {
+      "id": "d05-q05",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["webhooks", "retries"],
+      "q": "Relay's webhook handler updates the order, emails the customer, and writes an audit row before returning 200, which takes about 15 seconds. The provider waits 10 seconds for a response. What happens?",
+      "options": [
+        "The provider queues events until the handler speeds up",
+        "Each event is processed once, just slowly",
+        "The provider retries, so events are processed more than once",
+        "The provider drops the event after the first timeout"
+      ],
+      "answer": 2,
+      "explain": "To the provider, a timeout looks like a failed delivery, so it retries an event the handler is still processing, and the customer may get two emails. Returning 200 right after recording and enqueuing the event, then working in the background, avoids it.",
+      "why": ["Providers retry individual deliveries on their own schedule; they do not adapt to your speed.", "Processing once would require the provider to know the first attempt succeeded, which a timeout hides.", "", "Providers retry failed deliveries, usually several times with backoff, before giving up."]
+    },
+    {
+      "id": "d05-q06",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["grpc", "schema-evolution"],
+      "q": "Which change to a protobuf message is safe while old clients and servers are still running?",
+      "options": [
+        "Adding a new field with a new, never-used number",
+        "Changing the number of an existing field",
+        "Reusing the number of a field deleted last month",
+        "Changing a field's type from `int32` to `string`"
+      ],
+      "answer": 0,
+      "explain": "A new number is unknown to old code, which skips it, and new code reads a default when old clients omit it. Numbers identify fields on the wire, so changing or reusing one makes old and new code disagree about what bytes mean. The tempting belief is that names identify fields, which makes reusing a number look harmless.",
+      "why": ["", "Old code still sends and expects the old number, so the field is effectively deleted and replaced.", "Old clients still sending the deleted field have their data read as the new field.", "The bytes on the wire are encoded differently, so old readers misparse or reject the field."]
+    },
+    {
+      "id": "d05-q07",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["grpc", "deadlines"],
+      "context": "A store's checkout returns errors at peak. The gateway gives each checkout call a 1,000 ms deadline, which checkout passes on to the calls it makes.",
+      "artifact": {"lang": "trace", "code": "checkout.PlaceOrder     deadline=1000ms\n  inventory.Reserve     start=+5ms    took=905ms  status=OK\n  pricing.Quote         start=+912ms  remaining=88ms\n                        status=DEADLINE_EXCEEDED after 88ms\npricing server log:     Quote handled in 112ms (p50 over last hour: 110ms)"},
+      "q": "Where should the fix start?",
+      "options": [
+        "Raise the pricing call's deadline to 500 ms",
+        "Add retries to the pricing call",
+        "Scale up the pricing service",
+        "Find why inventory.Reserve took 905 ms"
+      ],
+      "answer": 3,
+      "explain": "Pricing behaved normally at 112 ms; it simply received 88 ms because inventory spent 905 ms of the shared budget. The call that reports DEADLINE_EXCEEDED is the victim here. Changing pricing's deadline breaks the budget the gateway set, and scaling pricing fixes nothing.",
+      "why": ["Pricing gets what remains of the caller's deadline; a larger local value would exceed the budget the gateway set.", "Retrying with even less budget left fails again and adds load.", "Pricing's latency is at its normal median, so more capacity would not change the outcome.", ""]
+    },
+    {
+      "id": "d05-q08",
+      "type": "mcq",
+      "level": 1,
+      "tags": ["grpc", "browsers"],
+      "q": "Why can't a browser call a gRPC service directly?",
+      "options": [
+        "Browsers do not support HTTP/2 at all",
+        "Browser APIs do not expose the HTTP/2 control gRPC needs, such as trailers",
+        "gRPC requires a client certificate that browsers cannot hold",
+        "Protobuf cannot be decoded in JavaScript"
+      ],
+      "answer": 1,
+      "explain": "Browsers speak HTTP/2, but their networking APIs hide the low-level features gRPC uses, notably response trailers carrying the status. gRPC-Web with a translating proxy fills the gap. Protobuf itself decodes fine in JavaScript.",
+      "why": ["Modern browsers use HTTP/2 routinely; the limit is what their APIs expose to page code.", "", "gRPC does not require client certificates.", "Protobuf libraries exist for JavaScript; encoding is not the obstacle."]
+    },
+    {
+      "id": "d05-q09",
+      "type": "multi",
+      "level": 2,
+      "tags": ["webhooks"],
+      "q": "Which of these belong in a safe webhook receiver? Select all that apply.",
+      "options": [
+        "Verifying the signature against the raw request bytes",
+        "Recording each event id under a unique constraint and skipping repeats",
+        "Returning 200 quickly and doing the slow work in a background job",
+        "Applying events in the order they arrive, since the provider sends them in order",
+        "Skipping signature checks because the endpoint URL is secret"
+      ],
+      "answers": [0, 1, 2],
+      "explain": "Raw-byte verification proves the sender, event-id deduplication absorbs retries, and a fast 200 prevents timeout-driven retries. Arrival order is not event order, so handlers must compare timestamps or fetch current state. A secret URL leaks through logs and is no substitute for a signature."
+    },
+    {
+      "id": "d05-q10",
+      "type": "order",
+      "level": 2,
+      "tags": ["sse", "streaming"],
+      "q": "Put the steps of one streamed Relay answer in order.",
+      "items": [
+        "The browser posts the customer's question and starts reading the response",
+        "FastAPI calls the LLM API with streaming enabled",
+        "The LLM API sends a delta event for the first tokens",
+        "FastAPI writes the event to its response and flushes it",
+        "nginx passes the bytes through without buffering",
+        "The browser appends the text and later stops on the final event"
+      ],
+      "explain": "Every hop must pass each event on as it arrives. If any one waits for the whole response, the user sees the answer in a single burst, so a clumped stream is diagnosed by testing hop by hop along this path."
+    },
+    {
+      "id": "d05-q11",
+      "type": "match",
+      "level": 2,
+      "tags": ["choosing-a-style"],
+      "q": "Match each need to the style that fits it best.",
+      "pairs": [
+        ["Partners integrating with Relay's public API", "REST with an OpenAPI contract"],
+        ["Web and mobile screens needing different slices of data", "GraphQL"],
+        ["High-volume calls between internal services in three languages", "gRPC"],
+        ["Pushing LLM tokens to the browser", "Server-sent events"],
+        ["Payment provider reporting a finished refund", "Webhook"]
+      ],
+      "explain": "Each style answers a different question: who the client is, who decides the shape of the data, how much internal traffic there is, and which side starts the conversation. Matching the need first prevents choosing a style for fashion."
+    },
+    {
+      "id": "d05-q12",
+      "type": "open",
+      "level": 3,
+      "tags": ["webhooks", "ordering"],
+      "context": "Relay's refund table shows `pending` for a refund that the provider's dashboard shows as succeeded. Relay's log shows `refund.succeeded` processed at 10:00:04.3 and `refund.pending` processed at 10:00:04.9, though the provider created the pending event three seconds earlier.",
+      "q": "Explain what went wrong and how you would change the receiver so it cannot happen again.",
+      "rubric": [
+        "Identifies that an older event was processed after a newer one",
+        "Notes that webhooks are delivered at least once and without guaranteed order, and parallel workers reorder further",
+        "Proposes ignoring events older than the stored state, or fetching current state from the provider",
+        "Proposes deduplicating on event id",
+        "Mentions a periodic reconciliation against the provider as a backstop"
+      ],
+      "model": "The pending event was processed after the succeeded event and overwrote it. Webhooks are at least once and unordered, and parallel workers can reorder them further. Store the provider timestamp with the refund and skip any event older than it, or re-fetch the refund's current state on every event. Deduplicate on event id, and run a periodic reconciliation against the provider to catch anything missed."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d05-x1",
+      "title": "Answers that stop mid-sentence",
+      "brief": "Since Tuesday, customers report that some of Relay's answers stop mid-sentence and never finish. On Tuesday the team shipped a `check_carrier_status` tool that calls a shipping carrier's slow API. A teammate thinks the model is running out of output tokens on longer answers.",
+      "artifact": {"lang": "text", "title": "Support ticket excerpt", "code": "Customer: where is my parcel??\nRelay: Let me check with the carrier. Your parcel left the depot and is\n[no more text, 4 minutes later]"},
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Raise `max_tokens` and watch whether the reports stop",
+            "Switch the chat from SSE over to WebSockets",
+            "Check how the cut streams ended and their silence before closing",
+            "Restart nginx on every node to clear stale connections"
+          ],
+          "answer": 2,
+          "explain": "How a stream ended splits the causes cleanly: an output limit ends with a final event naming the stop reason, while a cut connection has no final event at all. Raising `max_tokens` tests one theory slowly and at a cost. Switching transports and restarting change things before anything is known.",
+          "reveal": "None of the cut streams has a `done` event. All involve `check_carrier_status`, and each closed 60 seconds after its last byte, while the tool was still waiting on the carrier.",
+          "artifact": {"lang": "log", "code": "req=r_81 tool=check_carrier_status last_byte=+12.4s closed=+72.4s final_event=no\nreq=r_93 tool=check_carrier_status last_byte=+9.1s  closed=+69.1s final_event=no\nreq=r_97 tool=none                 last_byte=+31.0s closed=+31.0s final_event=yes"}
+        },
+        {
+          "q": "Which hop do you check next?",
+          "options": [
+            "The LLM provider's status page",
+            "nginx's error log for request r_81",
+            "Postgres for slow queries during the tool call",
+            "The browser console of the customer who reported it"
+          ],
+          "answer": 1,
+          "explain": "A cut at a fixed interval of silence is a proxy timer, and nginx sits between FastAPI and the browser with a 60-second default read timeout. The model was not streaming during the gap, so the provider is cleared, and Postgres has nothing to do with an idle connection.",
+          "reveal": "nginx logged a timeout for r_81 at +72.4s. Its access log still records status 200, because the status line went out before the first token.",
+          "artifact": {"lang": "log", "code": "[error] upstream timed out (110: Connection timed out) while reading upstream,\n  request: \"POST /chat/stream HTTP/1.1\", upstream: \"http://10.0.3.14:8000/chat/stream\""}
+        },
+        {
+          "q": "What is the best fix?",
+          "options": [
+            "Send an SSE heartbeat comment every 15 seconds while a tool runs",
+            "Raise nginx's read timeout to one hour for every route",
+            "Have the browser reconnect automatically and request the answer again",
+            "Shorten the carrier call's timeout to 50 seconds"
+          ],
+          "answer": 0,
+          "explain": "Heartbeats keep every hop's idle timer from firing, including load balancers you do not control, without changing the timeout for other routes. A global one-hour timeout keeps dead connections open everywhere. Auto-reconnect restarts the generation and re-runs tools. A shorter carrier timeout hides the slowness by failing the tool.",
+          "reveal": "With heartbeats, slow carrier lookups now finish. The longest silence in the stream drops to 15 seconds."
+        },
+        {
+          "q": "Why did the 5xx alert not fire on Tuesday, and what would have caught this?",
+          "options": [
+            "The alert threshold was too high; lower it",
+            "nginx sampled out the failing requests; log all of them",
+            "The failures were 4xx; alert on 4xx as well",
+            "The status was already 200; alert on streams that end without a final event"
+          ],
+          "answer": 3,
+          "explain": "A stream's status is sent before its content, so a mid-stream failure cannot become a 5xx. The reliable signal is the share of streams that close without their final event, broken down by tool.",
+          "reveal": "The team adds a counter for streams closed without a `done` event. It shows the problem started within minutes of Tuesday's deploy."
+        }
+      ],
+      "debrief": "Root cause: the new tool made the stream silent for over 60 seconds, and nginx's read timeout closed the connection. The model never ran out of tokens. The fix is heartbeats during tool calls. It would have been caught by an eval case with a slow tool and by a metric on streams ending without a final event. The general lesson: a cutoff at a round number of seconds is a timer, so find the hop that owns it."
+    },
+    {
+      "id": "d05-x2",
+      "title": "The refund that flips back to pending",
+      "brief": "Support reports that some refunds show `pending` in Relay although the customer has the money. Last week the team moved webhook processing into the worker queue and raised worker concurrency from 1 to 8. The support lead believes the payment provider is 'sending the wrong status'.",
+      "artifact": {"lang": "text", "title": "Two views of refund rf_19A", "code": "Relay refunds table:      rf_19A  status=pending    updated=10:00:04.9\nProvider dashboard:       rf_19A  status=succeeded  at 10:00:04"},
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Open a ticket with the provider about wrong statuses",
+            "Read Relay's webhook log for every event about rf_19A",
+            "Replay all of today's webhooks from the provider dashboard",
+            "Set worker concurrency back to 1"
+          ],
+          "answer": 1,
+          "explain": "The webhook log shows which events arrived, when the provider created them, and when Relay processed them. That decides between the provider sending a wrong status and Relay applying the right statuses in the wrong order. Replaying and reverting change things before you know which.",
+          "reveal": "Both events arrived in the right order. The pending event was processed after the succeeded one.",
+          "artifact": {"lang": "log", "code": "10:00:01.2 recv evt_A1 refund.pending   created=10:00:01 -> enqueued\n10:00:04.1 recv evt_A2 refund.succeeded created=10:00:04 -> enqueued\n10:00:04.3 worker-2 evt_A2 set rf_19A status=succeeded\n10:00:04.9 worker-1 evt_A1 set rf_19A status=pending   (attempt 2, db timeout on 1)"}
+        },
+        {
+          "q": "What does the log tell you?",
+          "options": [
+            "The provider sent the events in the wrong order",
+            "The provider sent the same event twice",
+            "Parallel workers and a retry applied an older event last",
+            "Postgres lost the succeeded write"
+          ],
+          "answer": 2,
+          "explain": "Arrival order and provider timestamps are correct, so the provider is cleared. Worker-1's first attempt on evt_A1 failed and its retry ran after worker-2 had applied evt_A2. With eight workers, queue order no longer means processing order.",
+          "reveal": "Twelve other refunds show the same pattern since concurrency was raised."
+        },
+        {
+          "q": "What is the best fix?",
+          "options": [
+            "Store each refund's latest provider timestamp and skip older events",
+            "Go back to one worker so events are processed in order",
+            "Ask the provider to guarantee ordered delivery",
+            "Wait 30 seconds before processing each event"
+          ],
+          "answer": 0,
+          "explain": "Comparing event time with stored state makes the outcome correct whatever the order, including provider retries. One worker still reorders on retries and caps throughput. Providers do not guarantee order, and a fixed delay only narrows the window.",
+          "reveal": "The handler now updates a refund only when the event's `created` time is newer than the stored one."
+        },
+        {
+          "q": "The provider also retries deliveries it thinks failed. What makes a repeated evt_A2 harmless?",
+          "options": [
+            "Verify the signature a second time",
+            "Return 500 for duplicates so the provider stops",
+            "Process it again, since the status is the same",
+            "Record event ids under a unique constraint and skip repeats"
+          ],
+          "answer": 3,
+          "explain": "Deduplicating on event id stops a retry from repeating side effects such as a second customer email. The signature proves who sent it, not that it is new, and a 500 makes the provider retry more.",
+          "reveal": "Event ids now go into a table with a unique constraint, and a repeated id is acknowledged with 200 and skipped."
+        }
+      ],
+      "debrief": "Root cause: raising worker concurrency turned a queue into an unordered processor, and a retried older event overwrote a newer status. The provider was correct throughout. Fixes: skip events older than stored state, deduplicate on event id, and run a nightly reconciliation against the provider. A test that delivers two events in reverse order would have caught it. The general lesson: never let arrival or processing order stand in for event order."
+    }
+  ]
+}

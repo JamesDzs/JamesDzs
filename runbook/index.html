@@ -1,0 +1,2052 @@
+<title>Thirty-Day Backend Runbook</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..700&amp;family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap">
+<style>
+/* Layout: one calm reading column (about 65ch) inside a 1120px frame; the 30-day path is drawn as a trace waterfall on a 30-unit axis. */
+:root {
+  --bg: #f4f6fa;
+  --surface: #ffffff;
+  --sunk: #eaeef5;
+  --ink: #131c2b;
+  --ink-2: #3b4759;
+  --muted: #5d6a7e;
+  --line: #d8dfea;
+  --line-2: #c3ccda;
+  --accent: #1d4ed8;
+  --accent-ink: #ffffff;
+  --accent-soft: #e4ebfc;
+  --code-bg: #eef2f8;
+  --ok: #17784a;
+  --ok-soft: #e1f3e9;
+  --bad: #b8322a;
+  --bad-soft: #fbe7e5;
+  --warn: #9a5b00;
+  --warn-soft: #fbf0dc;
+  --p1: #0c7b95;
+  --p2: #6a4fd6;
+  --p3: #c0561f;
+  --p4: #b23c7c;
+  --p5: #8f7400;
+  --p6: #4a5970;
+  --shadow: 0 1px 2px rgba(19, 28, 43, .06), 0 4px 16px rgba(19, 28, 43, .06);
+  --f-display: "Bricolage Grotesque", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --f-text: "IBM Plex Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --s-xs: 12px; --s-sm: 13px; --s-ui: 15px; --s-read: 17px; --s-lg: 19px; --s-xl: 24px; --s-2xl: 32px; --s-3xl: 44px;
+  --r: 8px;
+  --measure: 66ch;
+  --gut-l: max(16px, env(safe-area-inset-left, 0px));
+  --gut-r: max(16px, env(safe-area-inset-right, 0px));
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1625; --surface: #152035; --sunk: #111b2d; --ink: #e2e8f2; --ink-2: #c3cddc; --muted: #8e9db4;
+    --line: #263552; --line-2: #34466a; --accent: #7fa2ff; --accent-ink: #0b1322; --accent-soft: #1d2b4d;
+    --code-bg: #101a2c; --ok: #4fca8b; --ok-soft: #133628; --bad: #ff8278; --bad-soft: #3d1c22; --warn: #e9b45c; --warn-soft: #3a2c14;
+    --p1: #3fc1da; --p2: #a28fff; --p3: #f08b4e; --p4: #ea79b8; --p5: #d8b73e; --p6: #a9b7cc;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 20px rgba(0, 0, 0, .25);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1625; --surface: #152035; --sunk: #111b2d; --ink: #e2e8f2; --ink-2: #c3cddc; --muted: #8e9db4;
+  --line: #263552; --line-2: #34466a; --accent: #7fa2ff; --accent-ink: #0b1322; --accent-soft: #1d2b4d;
+  --code-bg: #101a2c; --ok: #4fca8b; --ok-soft: #133628; --bad: #ff8278; --bad-soft: #3d1c22; --warn: #e9b45c; --warn-soft: #3a2c14;
+  --p1: #3fc1da; --p2: #a28fff; --p3: #f08b4e; --p4: #ea79b8; --p5: #d8b73e; --p6: #a9b7cc;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 6px 20px rgba(0, 0, 0, .25);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 var(--s-ui)/1.5 var(--f-text);
+  margin: 0;
+  overflow-x: hidden;
+}
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 30; background: var(--surface); }
+a { color: var(--accent); text-underline-offset: 2px; }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+h1, h2, h3, h4 { text-wrap: balance; margin: 0; }
+p { margin: 0; }
+code, kbd, .mono { font-family: var(--f-mono); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.skip { position: absolute; left: -999px; top: 8px; z-index: 50; background: var(--surface); padding: 8px 12px; }
+.skip:focus { left: 16px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
+
+/* ---------- header ---------- */
+.top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--surface); border-bottom: 1px solid var(--line); }
+.top-in { max-width: 1120px; margin: 0 auto; padding-left: var(--gut-l); padding-right: var(--gut-r); display: flex; align-items: center; gap: 20px; min-height: 52px; }
+.brand { display: flex; align-items: center; gap: 9px; text-decoration: none; color: var(--ink); flex: none; }
+.brand-name { font: 650 18px/1 var(--f-display); letter-spacing: -.01em; }
+.brand-mark { display: grid; gap: 2px; width: 18px; }
+.brand-mark i { display: block; height: 4px; border-radius: 1px; background: var(--accent); }
+.brand-mark i:nth-child(1) { width: 100%; }
+.brand-mark i:nth-child(2) { width: 60%; margin-left: 20%; background: var(--p1); }
+.brand-mark i:nth-child(3) { width: 40%; margin-left: 55%; background: var(--p3); }
+.nav { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; }
+.nav::-webkit-scrollbar { display: none; }
+.nav a { color: var(--ink-2); text-decoration: none; padding: 7px 10px; border-radius: 6px; white-space: nowrap; font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.nav a:hover { background: var(--sunk); color: var(--ink); }
+.nav a[aria-current="page"] { color: var(--accent); background: var(--accent-soft); }
+.nav-count { font: 500 11px/1 var(--f-mono); background: var(--accent); color: var(--accent-ink); border-radius: 9px; padding: 3px 6px; }
+.sync-pill { display: flex; align-items: center; gap: 7px; font: 500 12px/1 var(--f-mono); color: var(--muted); text-decoration: none; white-space: nowrap; flex: none; }
+.sync-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-2); flex: none; }
+.sync-pill[data-state="synced"] .sync-dot { background: var(--ok); }
+.sync-pill[data-state="paused"] .sync-dot { background: var(--warn); }
+.sync-pill[data-state="working"] .sync-dot { background: var(--accent); }
+@media (max-width: 860px) {
+  .top-in { flex-wrap: wrap; gap: 0 12px; padding-top: 8px; }
+  .brand { order: 1; }
+  .sync-pill { order: 2; margin-left: auto; }
+  .nav { order: 3; flex-basis: 100%; margin: 4px -6px 0; padding-bottom: 6px; }
+}
+@media (max-width: 520px) { .sync-pill span:last-child { max-width: 150px; overflow: hidden; text-overflow: ellipsis; } }
+
+/* ---------- page frame ---------- */
+main { max-width: 1120px; margin: 0 auto; padding-left: var(--gut-l); padding-right: var(--gut-r); padding-block: 28px 72px; display: block; outline: none; }
+.view { display: flex; flex-direction: column; gap: 28px; min-width: 0; }
+.eyebrow { font: 500 var(--s-xs)/1.2 var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.view-title { font: 650 var(--s-2xl)/1.1 var(--f-display); letter-spacing: -.02em; }
+.view-head { display: flex; flex-direction: column; gap: 8px; }
+.view-head .sub { color: var(--ink-2); max-width: var(--measure); font-size: var(--s-read); line-height: 1.55; }
+.sec-title { font: 600 var(--s-lg)/1.25 var(--f-display); letter-spacing: -.01em; }
+.sec { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.muted { color: var(--muted); }
+.small { font-size: var(--s-sm); }
+.num { font-variant-numeric: tabular-nums; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 18px; min-width: 0; }
+.panel-tight { padding: 14px; }
+.rule-top { border-top: 1px solid var(--line); padding-top: 18px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: var(--s-sm); }
+.kv dt { color: var(--muted); font-family: var(--f-mono); font-size: var(--s-xs); text-transform: uppercase; letter-spacing: .06em; padding-top: 2px; }
+.kv dd { margin: 0; }
+
+/* ---------- buttons, chips ---------- */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--line-2); background: var(--surface); color: var(--ink); padding: 9px 15px; border-radius: 7px; font-weight: 500; font-size: 14px; line-height: 1.2; cursor: pointer; text-decoration: none; min-height: 40px; }
+.btn:hover { border-color: var(--ink-2); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn-primary:hover { filter: brightness(1.08); border-color: var(--accent); }
+.btn-quiet { border-color: transparent; background: transparent; color: var(--accent); padding-inline: 8px; }
+.btn-quiet:hover { background: var(--accent-soft); border-color: transparent; }
+.btn-danger { border-color: var(--bad); color: var(--bad); }
+.btn-danger.solid { background: var(--bad); color: #fff; }
+.btn-sm { min-height: 32px; padding: 5px 11px; font-size: 13px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 500 var(--s-xs)/1 var(--f-mono); padding: 4px 7px; border-radius: 4px; background: var(--sunk); color: var(--ink-2); white-space: nowrap; }
+.chip-ok { background: var(--ok-soft); color: var(--ok); }
+.chip-bad { background: var(--bad-soft); color: var(--bad); }
+.chip-warn { background: var(--warn-soft); color: var(--warn); }
+.chip-accent { background: var(--accent-soft); color: var(--accent); }
+.ptag { display: inline-flex; align-items: center; gap: 6px; font: 500 var(--s-xs)/1 var(--f-mono); color: var(--ink-2); white-space: nowrap; }
+.ptag::before { content: ""; width: 8px; height: 8px; border-radius: 2px; background: var(--ph, var(--muted)); }
+.dayid { font: 500 var(--s-sm)/1 var(--f-mono); color: var(--muted); }
+.toggle-group { display: flex; flex-wrap: wrap; gap: 6px; }
+.toggle-group button, .toggle-group label { border: 1px solid var(--line-2); background: var(--surface); border-radius: 6px; padding: 6px 10px; font-size: 13px; cursor: pointer; display: inline-flex; gap: 6px; align-items: center; }
+.toggle-group [aria-pressed="true"], .toggle-group label:has(input:checked) { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.toggle-group input { accent-color: var(--accent); margin: 0; }
+
+input[type="text"], input[type="search"], input[type="date"], textarea, select {
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: 7px; padding: 9px 11px; min-height: 40px; max-width: 100%;
+}
+textarea { width: 100%; min-height: 110px; resize: vertical; line-height: 1.5; }
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.field label, .field .lbl { font-weight: 500; font-size: 14px; }
+.field .hint { font-size: var(--s-sm); color: var(--muted); }
+
+/* ---------- meters ---------- */
+.meter { height: 6px; background: var(--sunk); border-radius: 3px; overflow: hidden; min-width: 60px; }
+.meter > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+.stat { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.stat b { font: 600 var(--s-xl)/1.1 var(--f-display); font-variant-numeric: tabular-nums; }
+.stat span { font-size: var(--s-sm); color: var(--muted); }
+
+/* ---------- trace waterfall ---------- */
+.trace { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.trace-head, .tr { display: grid; grid-template-columns: 52px minmax(0, 1fr) 76px minmax(260px, 46%); align-items: center; column-gap: 12px; padding: 0 14px; }
+.trace-head { font: 500 var(--s-xs)/1 var(--f-mono); color: var(--muted); border-bottom: 1px solid var(--line); padding-block: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.axis { position: relative; height: 26px; }
+.axis span { position: absolute; top: 0; transform: translateX(-50%); font: 500 11px/1 var(--f-mono); color: var(--muted); text-transform: none; letter-spacing: 0; }
+.axis span.cp { top: 14px; color: var(--accent); }
+.tr { text-decoration: none; color: inherit; min-height: 38px; border-bottom: 1px solid var(--line); position: relative; }
+.tr:last-child { border-bottom: 0; }
+a.tr:hover { background: var(--sunk); }
+.tr.is-phase { background: var(--sunk); min-height: 34px; }
+.tr.is-current { box-shadow: inset 3px 0 0 var(--accent); }
+.tr .tid { font: 500 var(--s-sm)/1 var(--f-mono); color: var(--muted); }
+.tr.is-phase .tid { color: var(--ph); }
+.tr .tname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.tr.is-phase .tname { font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-2); }
+.tr.is-missing .tname { color: var(--muted); }
+.tr .tstat { font: 500 var(--s-xs)/1.2 var(--f-mono); color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.tr .tstat.done { color: var(--ok); }
+.track { position: relative; height: 26px; }
+.track .grid { position: absolute; inset: 0; background-image: linear-gradient(to right, var(--line) 1px, transparent 1px); background-size: calc(100% / 6) 100%; opacity: .7; }
+.track .cpl { position: absolute; top: -8px; bottom: -8px; width: 0; border-left: 1px dashed var(--accent); opacity: .45; }
+.span { position: absolute; top: 7px; height: 12px; border-radius: 2px; background: color-mix(in srgb, var(--ph) 22%, transparent); border: 1px solid color-mix(in srgb, var(--ph) 70%, transparent); overflow: hidden; min-width: 6px; }
+.span > i { position: absolute; inset: 0 auto 0 0; background: var(--ph); }
+.tr.is-phase .span { top: 9px; height: 8px; border-radius: 1px; }
+.tr.is-missing .span { background: transparent; border-style: dashed; border-color: var(--line-2); }
+.span-label { position: absolute; top: 6px; font: 500 11px/14px var(--f-mono); color: var(--muted); white-space: nowrap; padding-left: 6px; }
+.tr .famil { font: 500 10px/1 var(--f-mono); color: var(--ok); margin-left: 6px; }
+@media (max-width: 760px) {
+  .trace-head, .tr { grid-template-columns: 38px minmax(0, 1fr) 112px; column-gap: 10px; padding: 0 12px; }
+  .trace-head .th-stat, .tr .tstat { display: none; }
+  .tr { min-height: 44px; }
+  .tr .tname { white-space: normal; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; padding-block: 6px; }
+  .span-label { display: none; }
+  .axis span:not(.cp):not(.edge) { display: none; }
+}
+.trace-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: var(--s-sm); color: var(--muted); }
+.trace-legend .sw { display: inline-block; width: 18px; height: 8px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+
+/* compact strip on Today */
+.strip { display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); gap: 2px; align-items: end; }
+.strip a { position: relative; display: block; height: 30px; border-radius: 2px; background: color-mix(in srgb, var(--ph) 16%, transparent); overflow: hidden; }
+.strip a > i { position: absolute; left: 0; right: 0; bottom: 0; background: var(--ph); }
+.strip a.missing { background: transparent; outline: 1px dashed var(--line-2); outline-offset: -1px; }
+.strip a.current { outline: 2px solid var(--accent); outline-offset: 1px; }
+.strip a.cp-after::after { content: ""; position: absolute; right: 0; top: 0; bottom: 0; width: 2px; background: var(--accent); opacity: .7; }
+.strip-scale { display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); gap: 2px; font: 500 10px/1 var(--f-mono); color: var(--muted); margin-top: 6px; }
+.strip-scale span { text-align: center; }
+
+/* ---------- today ---------- */
+.today-hero { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 26px; align-items: end; }
+.daynum { font: 700 clamp(56px, 11vw, 96px)/.85 var(--f-display); letter-spacing: -.04em; font-variant-numeric: tabular-nums; }
+.daynum small { font-size: .32em; letter-spacing: 0; color: var(--muted); font-weight: 500; margin-left: 4px; }
+.today-hero .t-meta { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding-bottom: 6px; }
+.today-hero h1 { font: 650 var(--s-xl)/1.15 var(--f-display); letter-spacing: -.015em; }
+@media (max-width: 560px) { .today-hero { grid-template-columns: minmax(0, 1fr); } }
+.pace { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; font-size: 14px; color: var(--ink-2); }
+.lesson-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); overflow: hidden; }
+.lesson-list li + li { border-top: 1px solid var(--line); }
+.lesson-list a { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 14px; color: inherit; text-decoration: none; }
+.lesson-list a:hover { background: var(--sunk); }
+.lesson-list .tick { width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--line-2); display: grid; place-items: center; font: 600 11px/1 var(--f-mono); color: var(--muted); }
+.lesson-list .done .tick { background: var(--ok); border-color: var(--ok); color: var(--surface); }
+.lesson-list .next .tick { border-color: var(--accent); color: var(--accent); }
+.lesson-list .lt { min-width: 0; }
+.lesson-list .lt span { display: block; font-size: var(--s-sm); color: var(--muted); }
+.lesson-list .lm { font: 500 var(--s-xs)/1 var(--f-mono); color: var(--muted); white-space: nowrap; }
+.setup { border: 1px solid var(--accent); background: var(--surface); border-radius: var(--r); padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+.setup-grid { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 16px; }
+@media (max-width: 620px) { .setup-grid { grid-template-columns: minmax(0, 1fr); } }
+.weak { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.weak li { display: grid; grid-template-columns: minmax(0, 1fr) 60px auto; gap: 10px; align-items: center; font-size: 14px; }
+.weak li .meter > i { background: var(--warn); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px; }
+
+/* ---------- day ---------- */
+.day-head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 22px; align-items: start; }
+.day-head .daynum { font-size: clamp(48px, 9vw, 80px); color: var(--ph); }
+.day-head h1 { font: 650 var(--s-2xl)/1.1 var(--f-display); letter-spacing: -.02em; }
+.day-head .tagline { font-size: var(--s-lg); color: var(--ink-2); max-width: var(--measure); line-height: 1.45; }
+@media (max-width: 560px) { .day-head { grid-template-columns: minmax(0, 1fr); } .day-head h1 { font-size: 26px; } }
+.why { font-size: var(--s-read); line-height: 1.65; max-width: var(--measure); color: var(--ink); }
+.objectives { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; max-width: var(--measure); }
+.objectives li::marker { color: var(--muted); font-family: var(--f-mono); font-size: 13px; }
+.entry-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.entry { display: flex; flex-direction: column; gap: 8px; padding: 16px; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); color: inherit; text-decoration: none; min-width: 0; }
+a.entry:hover { border-color: var(--accent); }
+.entry .et { font: 600 16px/1.25 var(--f-display); }
+.entry .em { font-size: var(--s-sm); color: var(--muted); }
+.apply-steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; max-width: var(--measure); line-height: 1.55; }
+.missing-day { border: 1px dashed var(--line-2); border-radius: var(--r); padding: 22px; display: flex; flex-direction: column; gap: 14px; background: repeating-linear-gradient(135deg, transparent 0 10px, color-mix(in srgb, var(--line) 35%, transparent) 10px 11px); }
+.missing-day ol { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; }
+.missing-day ol span { display: block; color: var(--muted); font-size: var(--s-sm); }
+
+/* field guide rows (shared by day and guide view) */
+.fg { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); overflow: hidden; }
+.fg details + details { border-top: 1px solid var(--line); }
+.fg summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 10px; padding: 12px 14px; align-items: start; }
+.fg summary::-webkit-details-marker { display: none; }
+.fg summary::before { content: ""; width: 7px; height: 7px; margin-top: 7px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; }
+.fg details[open] summary::before { transform: rotate(45deg); }
+.fg summary:hover { background: var(--sunk); }
+.fg .sym { font-family: var(--f-mono); font-size: 14px; line-height: 1.45; min-width: 0; overflow-wrap: anywhere; }
+.fg .body { padding: 2px 14px 16px 38px; display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px 16px; font-size: 14.5px; line-height: 1.55; }
+.fg .body dt { font: 500 var(--s-xs)/1.6 var(--f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.fg .body dd { margin: 0; min-width: 0; }
+.fg .body ul { margin: 0; padding-left: 18px; }
+.fg .body .fix { color: var(--ink); }
+@media (max-width: 600px) { .fg .body { grid-template-columns: minmax(0, 1fr); padding-left: 14px; gap: 2px 0; } .fg .body dd { margin-bottom: 8px; } }
+.gloss { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; border-top: 1px solid var(--line); }
+.gloss > div { display: grid; grid-template-columns: 200px minmax(0, 1fr) auto; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+.gloss dt { font-weight: 600; }
+.gloss dd { margin: 0; color: var(--ink-2); line-height: 1.55; max-width: var(--measure); }
+@media (max-width: 640px) { .gloss > div { grid-template-columns: minmax(0, 1fr) auto; } .gloss dd { grid-column: 1 / -1; } }
+.searchbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.searchbar input[type="search"] { flex: 1 1 260px; min-width: 0; }
+.loadnote { font: 500 var(--s-xs)/1.3 var(--f-mono); color: var(--muted); }
+
+/* ---------- lesson reader ---------- */
+.reader { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 40px; align-items: start; }
+@media (max-width: 1020px) { .reader { grid-template-columns: minmax(0, 1fr); } }
+.reader aside { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 72px); display: flex; flex-direction: column; gap: 18px; max-height: calc(100vh - 96px); overflow: auto; }
+@media (max-width: 1020px) { .reader aside { position: static; max-height: none; overflow: visible; } }
+.article { max-width: var(--measure); display: flex; flex-direction: column; gap: 20px; min-width: 0; font-size: var(--s-read); line-height: 1.65; }
+.article h1 { font: 650 var(--s-2xl)/1.12 var(--f-display); letter-spacing: -.02em; }
+.article h2 { font: 600 var(--s-lg)/1.3 var(--f-display); margin-top: 10px; }
+.article code, .inline code, .q code, .fg code, .gloss code, .tutor-msg code { font-size: .86em; background: var(--code-bg); border: 1px solid var(--line); padding: .05em .3em; border-radius: 4px; overflow-wrap: anywhere; }
+.article strong { font-weight: 600; }
+.article ul, .article ol { margin: 0; padding-left: 24px; display: flex; flex-direction: column; gap: 6px; }
+.article ol li::marker { font-family: var(--f-mono); font-size: .82em; color: var(--muted); }
+.blk { min-width: 0; }
+.blk-cap { font: 500 var(--s-xs)/1.3 var(--f-mono); text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 8px; }
+.analogy { border-left: 0; padding: 14px 16px; background: var(--sunk); border-radius: var(--r); font-size: 16px; }
+.analogy .blk-cap { margin-bottom: 4px; }
+
+/* compare */
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); -webkit-overflow-scrolling: touch; }
+table.cmp { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 14.5px; line-height: 1.45; min-width: 560px; }
+table.cmp th, table.cmp td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+table.cmp tr:last-child td { border-bottom: 0; }
+table.cmp thead th { font: 600 13px/1.3 var(--f-text); background: var(--sunk); color: var(--ink); }
+table.cmp tbody th { font-weight: 600; color: var(--ink); font-size: 13.5px; }
+table.cmp th:first-child, table.cmp td:first-child { position: sticky; left: 0; background: var(--surface); z-index: 1; border-right: 1px solid var(--line); min-width: 120px; max-width: 170px; }
+table.cmp thead th:first-child { background: var(--sunk); }
+.verdict { font-size: 15px; margin-top: 10px; color: var(--ink-2); }
+.verdict b { font: 500 var(--s-xs)/1 var(--f-mono); text-transform: uppercase; letter-spacing: .07em; color: var(--accent); margin-right: 8px; }
+
+/* tradeoff */
+.tradeoff-opts { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.topt { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 14px; display: flex; flex-direction: column; gap: 10px; font-size: 14.5px; line-height: 1.5; min-width: 0; }
+.topt h3 { font: 600 16px/1.25 var(--f-display); }
+.topt ul { list-style: none; padding: 0; margin: 0; gap: 4px; display: flex; flex-direction: column; }
+.topt li { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 4px; }
+.topt .gain li::before { content: "+"; color: var(--ok); font: 600 14px/1.5 var(--f-mono); }
+.topt .cost li::before { content: "\2212"; color: var(--bad); font: 600 14px/1.5 var(--f-mono); }
+.topt .lbl { font: 500 11px/1 var(--f-mono); text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+.topt .choose { border-top: 1px solid var(--line); padding-top: 10px; color: var(--ink); }
+
+/* flow */
+.flow { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.flow-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.flow-head h3 { font: 600 16px/1.3 var(--f-display); }
+.flow-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; position: relative; }
+.flow-steps::before { content: ""; position: absolute; left: 13px; top: 14px; bottom: 14px; border-left: 1.5px solid var(--line-2); }
+.flow-steps button { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 28px 92px minmax(0, 1fr) auto; gap: 10px; align-items: center; width: 100%; padding: 7px 8px 7px 0; cursor: pointer; border-radius: 6px; font-size: 15px; line-height: 1.4; }
+.flow-steps button:hover { background: var(--sunk); }
+.flow-steps button:focus-visible { outline: 2px solid var(--accent); }
+.flow-steps .n { width: 27px; height: 27px; border-radius: 50%; display: grid; place-items: center; background: var(--surface); border: 1.5px solid var(--line-2); font: 500 12px/1 var(--f-mono); color: var(--muted); position: relative; }
+.flow-steps .actor { font: 500 12.5px/1.2 var(--f-mono); color: var(--ink-2); overflow-wrap: anywhere; }
+.flow-steps .fmark { font: 500 10.5px/1 var(--f-mono); color: var(--bad); text-transform: uppercase; letter-spacing: .05em; }
+.flow-steps button[aria-current="step"] .n { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.flow-steps button[aria-current="step"] { background: var(--accent-soft); }
+.flow-detail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; font-size: 15px; line-height: 1.55; }
+.flow-detail > div { padding: 12px 14px; border-radius: 6px; min-width: 0; }
+.flow-detail .fd { background: var(--sunk); }
+.flow-detail .ff { background: var(--bad-soft); border: 1px dashed color-mix(in srgb, var(--bad) 60%, transparent); }
+.flow-detail .ff .blk-cap { color: var(--bad); }
+.flow-detail .ff.none { background: transparent; border-color: var(--line-2); color: var(--muted); }
+.flow-detail .ff.none .blk-cap { color: var(--muted); }
+@media (max-width: 600px) {
+  .flow-steps button { grid-template-columns: 28px minmax(0, 1fr) auto; grid-template-areas: "n a m" "n l l"; row-gap: 2px; }
+  .flow-steps .n { grid-area: n; align-self: start; }
+  .flow-steps .actor { grid-area: a; }
+  .flow-steps .lab { grid-area: l; }
+  .flow-steps .fmark { grid-area: m; }
+  .flow-detail { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* layers */
+.layers { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.layers h3 { font: 600 16px/1.3 var(--f-display); }
+.layer-stack { display: flex; flex-direction: column; gap: 4px; }
+.layer { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 4px 16px; padding: 11px 14px; border: 1px solid var(--line); background: var(--sunk); border-radius: 4px; font-size: 14.5px; line-height: 1.5; }
+.layer:first-child { border-radius: 8px 8px 4px 4px; }
+.layer:last-child { border-radius: 4px 4px 8px 8px; }
+.layer .ln { font: 600 14px/1.4 var(--f-text); }
+.layer .lb { grid-column: 2; color: var(--bad); font-size: 14px; }
+.layer .lb b { font: 500 10.5px/1 var(--f-mono); text-transform: uppercase; letter-spacing: .06em; margin-right: 6px; }
+@media (max-width: 600px) { .layer { grid-template-columns: minmax(0, 1fr); } .layer .lb { grid-column: 1; } }
+
+/* code */
+.code { border: 1px solid var(--line); border-radius: var(--r); background: var(--code-bg); overflow: hidden; min-width: 0; }
+.code-head { display: flex; gap: 10px; align-items: center; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.code-head .ct { font-size: 13px; font-weight: 500; color: var(--ink-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.code-head .cl { font: 500 11px/1 var(--f-mono); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); border: 1px solid var(--line-2); border-radius: 3px; padding: 3px 5px; flex: none; }
+.code pre { margin: 0; padding: 10px 0; overflow-x: auto; font: 400 13px/1.6 var(--f-mono); tab-size: 4; }
+.code pre code { background: none; border: 0; padding: 0; font-size: inherit; display: block; min-width: max-content; }
+.code .ln { display: block; padding: 0 14px 0 0; white-space: pre; }
+.code .ln::before { content: attr(data-n); display: inline-block; width: 34px; padding-right: 12px; text-align: right; color: var(--muted); opacity: .6; user-select: none; }
+.code .ln.cm { color: var(--muted); }
+.code .ln.add { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.code .ln.del { background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.code .ln.hd { font-weight: 500; color: var(--ink); }
+.code .ln.er { color: var(--bad); }
+.code-notes { list-style: none; margin: 0; padding: 10px 14px 12px; border-top: 1px solid var(--line); background: var(--surface); display: flex; flex-direction: column; gap: 6px; font-size: 14.5px; line-height: 1.5; counter-reset: note; }
+.code-notes li { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 6px; }
+.code-notes li::before { counter-increment: note; content: counter(note); font: 500 11px/1 var(--f-mono); color: var(--accent); border: 1px solid var(--accent); border-radius: 50%; width: 18px; height: 18px; display: grid; place-items: center; margin-top: 2px; }
+
+/* callouts: label + form */
+.callout { padding: 14px 16px; border-radius: var(--r); font-size: 16px; line-height: 1.6; display: flex; flex-direction: column; gap: 6px; }
+.callout .co-lbl { font: 500 11px/1 var(--f-mono); text-transform: uppercase; letter-spacing: .09em; }
+.callout .co-title { font-weight: 600; font-size: 16px; }
+.callout.insight { background: var(--accent-soft); }
+.callout.insight .co-lbl { color: var(--accent); }
+.callout.pitfall { background: var(--warn-soft); border-top: 3px solid var(--warn); border-radius: 2px 2px var(--r) var(--r); }
+.callout.pitfall .co-lbl { color: var(--warn); }
+.callout.debug { background: var(--surface); border: 1px solid var(--line-2); padding-top: 0; overflow: hidden; }
+.callout.debug .co-lbl { margin: 0 -16px 6px; padding: 7px 16px; background: var(--ink); color: var(--bg); }
+.callout.rule { border-top: 2px solid var(--ink); border-bottom: 2px solid var(--ink); border-radius: 0; padding-inline: 2px; }
+.callout.rule .co-lbl { color: var(--ink-2); }
+.callout.ai { border: 1.5px dashed var(--p5); background: color-mix(in srgb, var(--p5) 7%, transparent); }
+.callout.ai .co-lbl { color: var(--p5); }
+
+/* check & reveal */
+.inline-q { border: 1px solid var(--line); border-radius: var(--r); padding: 16px; background: var(--surface); display: flex; flex-direction: column; gap: 12px; font-size: 16px; }
+.inline-q .q { font-weight: 500; line-height: 1.5; }
+.opts { display: flex; flex-direction: column; gap: 8px; }
+.opt { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 7px; cursor: pointer; font-size: 15.5px; line-height: 1.45; background: var(--surface); width: 100%; }
+.opt:hover { border-color: var(--ink-2); }
+.opt:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.opt .k { width: 22px; height: 22px; border-radius: 5px; border: 1px solid var(--line-2); display: grid; place-items: center; font: 500 12px/1 var(--f-mono); color: var(--muted); margin-top: 1px; }
+.opt.sel { border-color: var(--accent); background: var(--accent-soft); }
+.opt.sel .k { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.opt.right { border-color: var(--ok); background: var(--ok-soft); }
+.opt.right .k { background: var(--ok); border-color: var(--ok); color: var(--surface); }
+.opt.wrong { border-color: var(--bad); background: var(--bad-soft); }
+.opt.wrong .k { background: var(--bad); border-color: var(--bad); color: var(--surface); }
+.opt.missed { border-style: dashed; border-color: var(--ok); }
+.opt.dim { opacity: .55; }
+.opt[aria-disabled="true"] { cursor: default; }
+.opt .why { grid-column: 2; font-size: 14px; color: var(--ink-2); }
+.opt .tag { grid-column: 2; font: 500 11px/1 var(--f-mono); text-transform: uppercase; letter-spacing: .06em; }
+.opt.right .tag { color: var(--ok); }
+.opt.wrong .tag, .opt.missed .tag { color: var(--bad); }
+.opt.missed .tag { color: var(--ok); }
+.fb { border-radius: 7px; padding: 12px 14px; font-size: 15px; line-height: 1.55; display: flex; flex-direction: column; gap: 6px; }
+.fb.ok { background: var(--ok-soft); }
+.fb.bad { background: var(--bad-soft); }
+.fb .fb-h { font: 600 14px/1.2 var(--f-text); display: flex; gap: 8px; align-items: center; }
+.fb.ok .fb-h { color: var(--ok); }
+.fb.bad .fb-h { color: var(--bad); }
+.mark { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; font: 700 11px/1 var(--f-mono); color: var(--surface); }
+.fb.ok .mark { background: var(--ok); }
+.fb.bad .mark { background: var(--bad); }
+.reveal { border: 1px dashed var(--line-2); border-radius: var(--r); padding: 16px; display: flex; flex-direction: column; gap: 12px; font-size: 16px; }
+.reveal .ans { background: var(--sunk); padding: 12px 14px; border-radius: 6px; }
+
+/* lesson footer & aside */
+.lesson-foot { border-top: 1px solid var(--line); padding-top: 20px; display: flex; flex-direction: column; gap: 14px; }
+.pager { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.pager a { display: flex; flex-direction: column; gap: 2px; text-decoration: none; padding: 8px 0; max-width: 48%; min-width: 0; }
+.pager a span { font: 500 var(--s-xs)/1 var(--f-mono); color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.pager a b { font-weight: 500; font-size: 15px; }
+.pager a.nx { text-align: right; margin-left: auto; }
+.outline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 14px; }
+.outline a { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; padding: 6px 8px; border-radius: 5px; color: var(--ink-2); text-decoration: none; line-height: 1.35; }
+.outline a:hover { background: var(--sunk); }
+.outline a[aria-current="page"] { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+.outline .o-tick { font: 500 11px/1.35 var(--f-mono); color: var(--muted); }
+.outline .done .o-tick { color: var(--ok); }
+
+/* tutor */
+html:not(.has-tutor) .tutor-only { display: none !important; }
+.tutor { border: 1px solid var(--line); border-radius: var(--r); background: var(--surface); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.tutor h3 { font: 600 15px/1.3 var(--f-display); }
+.tutor .quick { display: flex; flex-wrap: wrap; gap: 6px; }
+.tutor .quick button { border: 1px solid var(--line-2); background: var(--surface); border-radius: 14px; padding: 5px 10px; font-size: 12.5px; cursor: pointer; text-align: left; }
+.tutor .quick button:hover { border-color: var(--accent); color: var(--accent); }
+.tutor form { display: flex; gap: 6px; }
+.tutor form input { flex: 1; min-width: 0; }
+.tutor-log { display: flex; flex-direction: column; gap: 10px; font-size: 14.5px; line-height: 1.55; max-height: 460px; overflow: auto; }
+.tutor-log:empty { display: none; }
+.tutor-msg { display: flex; flex-direction: column; gap: 6px; }
+.tutor-msg.me { align-self: flex-end; background: var(--accent-soft); padding: 8px 11px; border-radius: 10px 10px 2px 10px; max-width: 92%; }
+.tutor-msg.ai { padding-left: 10px; border-left: 2px solid var(--line-2); }
+.tutor-msg ul { margin: 0; padding-left: 18px; }
+.tutor-note { font-size: 12.5px; color: var(--muted); }
+
+/* ---------- quiz ---------- */
+.quiz { display: flex; flex-direction: column; gap: 20px; max-width: 760px; }
+.qprog { display: flex; align-items: center; gap: 12px; font: 500 var(--s-xs)/1 var(--f-mono); color: var(--muted); }
+.qprog .meter { flex: 1; }
+.qcard { display: flex; flex-direction: column; gap: 16px; }
+.qmeta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.qcontext { font-size: 16px; line-height: 1.6; color: var(--ink-2); max-width: var(--measure); padding-left: 14px; border-left: 2px solid var(--line-2); }
+.q { font: 500 var(--s-lg)/1.45 var(--f-text); max-width: var(--measure); }
+.qactions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.kbd-hint { font-size: 12px; color: var(--muted); }
+.kbd-hint kbd { font-size: 11px; border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 3px; padding: 1px 4px; }
+.order-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.order-list li { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 8px 8px 8px 12px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--surface); font-size: 15.5px; line-height: 1.4; }
+.order-list li.right { border-color: var(--ok); background: var(--ok-soft); }
+.order-list li.wrong { border-color: var(--bad); background: var(--bad-soft); }
+.order-list .pos { font: 500 12px/1 var(--f-mono); color: var(--muted); }
+.order-list .mv { display: flex; gap: 4px; }
+.order-list .mv button { width: 36px; height: 36px; border: 1px solid var(--line-2); background: var(--surface); border-radius: 6px; cursor: pointer; display: grid; place-items: center; font: 500 13px/1 var(--f-mono); }
+.order-list .mv button:disabled { opacity: .35; cursor: default; }
+.order-list li.flash { outline: 2px solid var(--accent); }
+.match-list { display: flex; flex-direction: column; gap: 10px; }
+.match-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--surface); }
+.match-row .ml { font-weight: 500; font-size: 15px; line-height: 1.4; }
+.match-row select { width: 100%; font-size: 14px; }
+.match-row.right { border-color: var(--ok); background: var(--ok-soft); }
+.match-row.wrong { border-color: var(--bad); background: var(--bad-soft); }
+.match-row .mfix { grid-column: 1 / -1; font-size: 13.5px; color: var(--ok); }
+@media (max-width: 600px) { .match-row { grid-template-columns: minmax(0, 1fr); } }
+.rubric { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rubric label { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 8px; align-items: start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font-size: 15px; line-height: 1.45; }
+.rubric input { width: 18px; height: 18px; margin: 2px 0 0; accent-color: var(--ok); }
+.rubric label:has(input:checked) { border-color: var(--ok); background: var(--ok-soft); }
+.model-ans { background: var(--sunk); padding: 12px 14px; border-radius: 6px; font-size: 15.5px; line-height: 1.6; }
+.results { display: flex; flex-direction: column; gap: 22px; }
+.score-big { font: 700 64px/1 var(--f-display); letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.score-big small { font-size: 20px; color: var(--muted); font-weight: 500; letter-spacing: 0; margin-left: 6px; }
+.breakdown { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 18px; }
+.bk-rows { display: flex; flex-direction: column; gap: 8px; }
+.bk-row { display: grid; grid-template-columns: minmax(0, 1fr) 70px 48px; gap: 10px; align-items: center; font-size: 14px; }
+.bk-row .num { text-align: right; font-family: var(--f-mono); font-size: 12.5px; color: var(--ink-2); }
+.missed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.missed li { border: 1px solid var(--line); border-radius: var(--r); padding: 14px; background: var(--surface); display: flex; flex-direction: column; gap: 6px; font-size: 15px; line-height: 1.5; }
+.missed .mq { font-weight: 500; }
+.missed .ma { color: var(--ok); font-size: 14px; }
+
+/* drills */
+.drill { display: flex; flex-direction: column; gap: 18px; max-width: 800px; }
+.brief { font-size: var(--s-read); line-height: 1.65; max-width: var(--measure); }
+.evidence { display: flex; flex-direction: column; gap: 12px; }
+.ev-item { display: flex; flex-direction: column; gap: 8px; padding-left: 14px; border-left: 2px solid var(--p1); }
+.ev-item .blk-cap { margin: 0; }
+.step-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.step-log li { display: flex; flex-direction: column; gap: 6px; font-size: 15px; line-height: 1.55; }
+.step-log .sq { color: var(--muted); font-size: 14px; }
+.debrief { background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--ink); border-radius: 2px 2px var(--r) var(--r); padding: 16px; display: flex; flex-direction: column; gap: 8px; font-size: 16px; line-height: 1.6; }
+
+/* tests hub */
+.test-table { width: 100%; border-collapse: collapse; font-size: 14px; min-width: 520px; }
+.test-table th, .test-table td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.test-table th { font: 500 var(--s-xs)/1 var(--f-mono); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); background: var(--sunk); }
+.test-table td.num { font-family: var(--f-mono); font-size: 13px; }
+.test-table tr:last-child td { border-bottom: 0; }
+.test-table a { text-decoration: none; }
+.cards3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.confirm-box { border: 1px solid var(--bad); border-radius: var(--r); padding: 14px; display: flex; flex-direction: column; gap: 10px; background: var(--bad-soft); }
+.empty { padding: 22px; border: 1px dashed var(--line-2); border-radius: var(--r); color: var(--ink-2); display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.notice { font-size: 14px; padding: 10px 12px; border-radius: 6px; background: var(--warn-soft); color: var(--ink); }
+.phase-res { display: flex; flex-direction: column; gap: 8px; }
+
+</style>
+<a class="skip" href="#main">Skip to content</a>
+<header class="top">
+  <div class="top-in">
+    <a class="brand" href="#today" aria-label="Thirty-Day Backend Runbook, today">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-name">Runbook</span>
+    </a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#today" data-nav="today">Today</a>
+      <a href="#path" data-nav="path">Path</a>
+      <a href="#tests" data-nav="tests">Tests</a>
+      <a href="#review" data-nav="review">Review<span class="nav-count" id="nav-due" hidden></span></a>
+      <a href="#guide" data-nav="guide">Field guide</a>
+      <a href="#glossary" data-nav="glossary">Glossary</a>
+      <a href="#prefs" data-nav="prefs">Prefs</a>
+    </nav>
+    <a class="sync-pill" href="#prefs" id="sync-pill" title="Where your progress is saved"><span class="sync-dot"></span><span id="sync-text">Saved in this browser only</span></a>
+  </div>
+</header>
+<main id="main" tabindex="-1"></main>
+<div class="sr-only" aria-live="polite" id="live"></div>
+<script type="application/json" id="curriculum">{"title":"Thirty-Day Backend Runbook","built":"2026-11-25T15:32:04.467Z","dev":true,"phases":[{"id":"p1","name":"The request path","from":1,"to":5,"blurb":"Follow one request from the browser to the database and back."},{"id":"p2","name":"Seeing and debugging","from":6,"to":7,"blurb":"A method for finding faults, and the signals that make it possible."},{"id":"p3","name":"Data and speed","from":8,"to":13,"blurb":"How state is stored, kept correct, and served fast."},{"id":"p4","name":"Trust, scale, ship","from":14,"to":21,"blurb":"Tests, security, queues, failure, design, and getting code to production."},{"id":"p5","name":"AI systems","from":22,"to":29,"blurb":"Models, LLM backends, retrieval, agents, evals, RL, and training infrastructure."},{"id":"p6","name":"Capstone","from":30,"to":30,"blurb":"Cross-domain incidents and the final exam."}],"checkpoints":[{"id":"c1","afterDay":7,"title":"Checkpoint 1","covers":"Days 1 to 7","from":1,"to":7,"count":20},{"id":"c2","afterDay":13,"title":"Checkpoint 2","covers":"Days 8 to 13","from":8,"to":13,"count":20},{"id":"c3","afterDay":21,"title":"Checkpoint 3","covers":"Days 14 to 21","from":14,"to":21,"count":20},{"id":"c4","afterDay":29,"title":"Checkpoint 4","covers":"Days 22 to 29","from":22,"to":29,"count":20},{"id":"final","afterDay":30,"title":"Final exam","covers":"All thirty days","from":1,"to":30,"count":40}],"days":[{"id":"d00","day":0,"phase":"p1","title":"Worked example: rate limiting","tagline":"A short sample day that uses every block and question type. Not part of the thirty days.","available":true,"minutes":20,"lessons":[{"id":"d00-l1","title":"How a rate limit decides","minutes":7},{"id":"d00-l2","title":"Reading a 429 and reacting to it","minutes":6}],"quizCount":6,"drillCount":1,"fieldGuideCount":3,"glossaryCount":4,"drills":[{"id":"d00-x1","title":"The eval that failed at 2 a.m."}],"example":true},{"id":"d01","day":1,"phase":"p1","title":"The life of a request","tagline":"What happens between pressing Enter and seeing a response, hop by hop, and what each hop's failure looks like from outside.","available":true,"minutes":55,"lessons":[{"id":"d01-l1","title":"Clients, servers, and the contract between them","minutes":12},{"id":"d01-l2","title":"From URL to bytes: DNS, TCP, TLS","minutes":13},{"id":"d01-l3","title":"Inside the datacenter: proxy, app, database","minutes":13},{"id":"d01-l4","title":"Which hop is lying? A map for debugging","minutes":12}],"quizCount":12,"drillCount":2,"fieldGuideCount":10,"glossaryCount":14,"drills":[{"id":"d01-x1","title":"The chat widget spins, then fails"},{"id":"d01-x2","title":"Some customers cannot reach Relay after the migration"}]},{"id":"d02","day":2,"phase":"p1","title":"HTTP, read fluently","tagline":"Methods, status codes, and headers as a diagnostic language you can read line by line.","available":true,"minutes":55,"lessons":[{"id":"d02-l1","title":"Anatomy of a request and a response","minutes":12},{"id":"d02-l2","title":"Methods, safety, and idempotency","minutes":13},{"id":"d02-l3","title":"Status codes tell you where the fault is","minutes":15},{"id":"d02-l4","title":"Headers, cookies, CORS, and HTTP versions","minutes":14}],"quizCount":12,"drillCount":2,"fieldGuideCount":9,"glossaryCount":14,"drills":[{"id":"d02-x1","title":"Six customers were refunded twice"},{"id":"d02-x2","title":"The widget works on one site and fails on another"}]},{"id":"d03","day":3,"phase":"p1","title":"Inside the server: concurrency and runtimes","tagline":"How one machine serves thousands of requests, and what each language trades to do it.","available":false,"lessons":[{"id":"d03-l1","title":"What a server process does all day","scope":"Listening socket, accept loop, worker models (process per worker, thread pool, event loop), ASGI/WSGI in Python terms, what 'a worker is busy' means."},{"id":"d03-l2","title":"Threads, event loops, and coroutines","scope":"Concurrency vs parallelism; blocking vs non-blocking I/O; async/await as cooperative scheduling; the Python GIL; what blocks an event loop and how it shows up."},{"id":"d03-l3","title":"CPU-bound vs I/O-bound, pools, and backpressure","scope":"Classifying work; connection pools and pool exhaustion; queues inside the server; backpressure; memory growth and garbage collection pauses."},{"id":"d03-l4","title":"Languages and runtimes: Python, Node, Go, Java, PHP","scope":"What each runtime optimizes: concurrency model, raw speed, ecosystem, deployment shape, typical failure modes. How to reason about a choice, and why most teams should not switch languages to fix a slow endpoint."}],"drills":[]},{"id":"d04","day":4,"phase":"p1","title":"API design: REST done properly","tagline":"Resources, pagination, errors, idempotency, and changing an API without breaking the clients that depend on it.","available":true,"minutes":55,"lessons":[{"id":"d04-l1","title":"Resources, verbs, and statelessness","minutes":13},{"id":"d04-l2","title":"Pagination, filtering, and error shapes","minutes":14},{"id":"d04-l3","title":"Idempotency keys, retries, and rate limits","minutes":14},{"id":"d04-l4","title":"Contracts and versioning","minutes":14}],"quizCount":12,"drillCount":2,"fieldGuideCount":9,"glossaryCount":12,"drills":[{"id":"d04-x1","title":"One tool call, two refunds"},{"id":"d04-x2","title":"The eval set that will not hold still"}]},{"id":"d05","day":5,"phase":"p1","title":"Beyond REST: GraphQL, gRPC, streaming, webhooks","tagline":"The other ways services talk, what each one breaks in its own way, and how to choose between them.","available":true,"minutes":55,"lessons":[{"id":"d05-l1","title":"GraphQL: the client chooses the shape","minutes":14},{"id":"d05-l2","title":"gRPC and protobuf: contracts between services","minutes":14},{"id":"d05-l3","title":"Real time: polling, SSE, WebSockets","minutes":14},{"id":"d05-l4","title":"Webhooks, and choosing a style","minutes":13}],"quizCount":12,"drillCount":2,"fieldGuideCount":9,"glossaryCount":12,"drills":[{"id":"d05-x1","title":"Answers that stop mid-sentence"},{"id":"d05-x2","title":"The refund that flips back to pending"}]},{"id":"d06","day":6,"phase":"p2","title":"Debugging as a method","tagline":"A repeatable loop for going from 'it is broken' to the line, config, or row that broke it.","available":false,"lessons":[{"id":"d06-l1","title":"The loop: observe, hypothesize, test, narrow","scope":"Debugging as experiments; stating the expected vs the actual precisely; one change at a time; keeping a log of what was ruled out; the first question, 'what changed?'."},{"id":"d06-l2","title":"Reproduce and reduce","scope":"Getting a reliable reproduction, minimal reproductions, capturing inputs, differences between local, staging, and production, intermittent failures and how to raise their rate."},{"id":"d06-l3","title":"Bisecting everything","scope":"Binary search over commits (git bisect), over layers of the request path, over config, over data, over time. Why halving beats guessing."},{"id":"d06-l4","title":"Reading errors and stack traces, and the traps","scope":"Reading a Python traceback bottom up, root cause vs symptom, chained exceptions, swallowed errors; cognitive traps: confirmation bias, fixing the symptom, assuming the newest code is at fault, trusting a stale log."}],"drills":[]},{"id":"d07","day":7,"phase":"p2","title":"Observability: logs, metrics, traces","tagline":"The three signals, what question each answers, and how to connect them when something breaks.","available":true,"minutes":56,"lessons":[{"id":"d07-l1","title":"Logs worth reading","minutes":11},{"id":"d07-l2","title":"Metrics and percentiles","minutes":11},{"id":"d07-l3","title":"Traces and spans","minutes":12},{"id":"d07-l4","title":"SLOs, alerts, and what to instrument first","minutes":12}],"quizCount":12,"drillCount":2,"fieldGuideCount":9,"glossaryCount":14,"drills":[{"id":"d07-x1","title":"Replies are slow, and the dashboard is green"},{"id":"d07-x2","title":"The refund email that never arrived"}]},{"id":"d08","day":8,"phase":"p3","title":"Data modeling and SQL","tagline":"Tables, keys, joins, and constraints: the shape of the data decides which bugs are possible.","available":false,"lessons":[{"id":"d08-l1","title":"Tables, keys, and relationships","scope":"Rows and columns, primary and foreign keys, one-to-many and many-to-many, natural vs surrogate keys, UUID vs integer IDs."},{"id":"d08-l2","title":"Joins and aggregations, conceptually","scope":"What inner, left, and cross joins return; GROUP BY; how a wrong join silently multiplies or drops rows; NULL and three-valued logic."},{"id":"d08-l3","title":"Normalize or denormalize, and constraints","scope":"Normal forms as 'store each fact once'; when duplication is a deliberate performance choice; NOT NULL, UNIQUE, CHECK, and foreign keys as tests that run on every write."},{"id":"d08-l4","title":"Migrations and ORMs","scope":"Schema migrations, expand and contract for zero-downtime changes, backfills; what an ORM hides (queries, lazy loading) and how to see the SQL it emits."}],"drills":[]},{"id":"d09","day":9,"phase":"p3","title":"Indexes and the query planner","tagline":"Why a query is slow, and how to read the database's own explanation.","available":false,"lessons":[{"id":"d09-l1","title":"Why a query is slow: scans","scope":"Sequential scan vs index scan, how row count changes everything, selectivity, why the same query is fast in development and slow in production."},{"id":"d09-l2","title":"Indexes: B-tree, composite, covering","scope":"A B-tree as a sorted lookup structure, column order in composite indexes, covering indexes, partial and unique indexes, the write and storage cost of each index."},{"id":"d09-l3","title":"Reading a query plan","scope":"EXPLAIN and EXPLAIN ANALYZE output read line by line: estimated vs actual rows, node types, where time goes, stale statistics."},{"id":"d09-l4","title":"The usual suspects: N+1, pools, long queries","scope":"N+1 queries from ORMs, missing index on a foreign key, SELECT *, unbounded result sets, connection pooling and PgBouncer, slow query logs, table bloat in one paragraph."}],"drills":[]},{"id":"d10","day":10,"phase":"p3","title":"Transactions and concurrency","tagline":"What the database promises when two things happen at once, what it does not, and how the gap shows up as wrong numbers.","available":true,"minutes":55,"lessons":[{"id":"d10-l1","title":"ACID and what a transaction promises","minutes":9},{"id":"d10-l2","title":"Isolation levels and their anomalies","minutes":11},{"id":"d10-l3","title":"Locks, MVCC, and deadlocks","minutes":11},{"id":"d10-l4","title":"Race conditions in application code","minutes":10}],"quizCount":12,"drillCount":2,"fieldGuideCount":8,"glossaryCount":14,"drills":[{"id":"d10-x1","title":"Store credit goes missing"},{"id":"d10-x2","title":"Refunds hang every afternoon"}]},{"id":"d11","day":11,"phase":"p3","title":"Beyond one database: NoSQL, replication, partitioning","tagline":"The other datastore families, and what changes once your data lives on more than one machine.","available":true,"minutes":55,"lessons":[{"id":"d11-l1","title":"The NoSQL families and what each optimizes","minutes":11},{"id":"d11-l2","title":"Replication and replica lag","minutes":11},{"id":"d11-l3","title":"Partitioning and sharding","minutes":10},{"id":"d11-l4","title":"Consistency models and choosing a store","minutes":10}],"quizCount":12,"drillCount":2,"fieldGuideCount":8,"glossaryCount":14,"drills":[{"id":"d11-x1","title":"The agent quotes the old address"},{"id":"d11-x2","title":"Two refunds vanished after the failover"}]},{"id":"d12","day":12,"phase":"p3","title":"Caching","tagline":"The fastest query is the one you do not run, and the hardest bug is the one a cache hides.","available":false,"lessons":[{"id":"d12-l1","title":"Layers of cache","scope":"Browser, CDN, reverse proxy, application memory, Redis, database buffer cache; HTTP caching headers (Cache-Control, ETag); what is safe to cache."},{"id":"d12-l2","title":"Patterns: cache-aside, read-through, write-through, write-behind","scope":"How each pattern reads and writes, consistency consequences, where the source of truth lives."},{"id":"d12-l3","title":"Invalidation, TTLs, and stampedes","scope":"TTL choice, explicit invalidation, stale data windows, cache stampede and thundering herd, cold starts, negative caching, eviction policies (LRU, LFU)."},{"id":"d12-l4","title":"Redis vs Memcached, and when the cache is the bug","scope":"What Redis offers beyond a cache (data structures, persistence, pub/sub), Memcached's simplicity; hit ratio; debugging by bypassing the cache; caching LLM responses and prompt caching."}],"drills":[]},{"id":"d13","day":13,"phase":"p3","title":"Performance: finding the bottleneck","tagline":"Measure first: latency, throughput, saturation, and the one resource that is holding everything back.","available":true,"minutes":60,"lessons":[{"id":"d13-l1","title":"Latency, throughput, and percentiles","minutes":13},{"id":"d13-l2","title":"Saturation and queues","minutes":14},{"id":"d13-l3","title":"Profiling and flame graphs","minutes":13},{"id":"d13-l4","title":"Load testing and capacity","minutes":12}],"quizCount":12,"drillCount":2,"fieldGuideCount":8,"glossaryCount":14,"drills":[{"id":"d13-x1","title":"Slow replies, idle CPU"},{"id":"d13-x2","title":"Some customers wait twenty seconds"}]},{"id":"d14","day":14,"phase":"p4","title":"Testing strategy","tagline":"What each kind of test can and cannot tell you, and why some tests lie.","available":true,"minutes":60,"lessons":[{"id":"d14-l1","title":"What each level of test buys you","minutes":14},{"id":"d14-l2","title":"Mocks, fakes, and the over-mocking trap","minutes":14},{"id":"d14-l3","title":"Flaky tests","minutes":15},{"id":"d14-l4","title":"Test data, coverage, and what to test first","minutes":12}],"quizCount":12,"drillCount":2,"fieldGuideCount":8,"glossaryCount":14,"drills":[{"id":"d14-x1","title":"The refund test that only fails sometimes"},{"id":"d14-x2","title":"Green suite, empty answers"}]},{"id":"d15","day":15,"phase":"p4","title":"Authentication","tagline":"How a server becomes confident about who is calling.","available":false,"lessons":[{"id":"d15-l1","title":"Proving identity: passwords and hashing","scope":"Authentication vs authorization; password hashing with salts and slow hashes (bcrypt, argon2); credential stuffing, MFA, passkeys in brief."},{"id":"d15-l2","title":"Sessions vs JWTs","scope":"Server-side sessions with cookies, stateless JWTs (header, payload, signature, expiry), refresh tokens, revocation, where tokens are stored and the risks of each place."},{"id":"d15-l3","title":"OAuth2 and OpenID Connect","scope":"Roles (resource owner, client, authorization server, resource server), authorization code flow with PKCE, client credentials, scopes, access vs ID tokens, 'Sign in with Google' walked through."},{"id":"d15-l4","title":"API keys, service-to-service auth, and debugging a 401","scope":"API keys vs OAuth tokens, mTLS and service accounts in brief, key rotation, a checklist for a 401: missing, malformed, expired, wrong audience, wrong environment, clock skew."}],"drills":[]},{"id":"d16","day":16,"phase":"p4","title":"Authorization and security","tagline":"Deciding what a caller may do, why the classic attacks work, and what to check when a review or a test turns one up.","available":true,"minutes":58,"lessons":[{"id":"d16-l1","title":"Authorization models and broken access control","minutes":12},{"id":"d16-l2","title":"The classic web attacks","minutes":13},{"id":"d16-l3","title":"Encryption, hashing, encoding, and TLS","minutes":12},{"id":"d16-l4","title":"Secrets, least privilege, and threat modeling","minutes":11}],"quizCount":12,"drillCount":2,"fieldGuideCount":9,"glossaryCount":14,"drills":[{"id":"d16-x1","title":"The chat showed someone else's order"},{"id":"d16-x2","title":"The LLM bill tripled overnight"}]},{"id":"d17","day":17,"phase":"p4","title":"Asynchronous processing: queues and streams","tagline":"Moving work out of the request, choosing between a job queue, RabbitMQ, and Kafka, and the failure modes that come with each.","available":true,"minutes":60,"lessons":[{"id":"d17-l1","title":"Why move work off the request","minutes":11},{"id":"d17-l2","title":"Job queues, brokers, and logs: RabbitMQ vs Kafka","minutes":14},{"id":"d17-l3","title":"Delivery guarantees, retries, and dead letters","minutes":14},{"id":"d17-l4","title":"Ordering, the outbox, and watching lag","minutes":12}],"quizCount":12,"drillCount":2,"fieldGuideCount":8,"glossaryCount":14,"drills":[{"id":"d17-x1","title":"Two refund confirmations, every afternoon"},{"id":"d17-x2","title":"Triage has stalled and the queue keeps growing"}]},{"id":"d18","day":18,"phase":"p4","title":"Distributed systems: how things fail","tagline":"Partial failure, and the small set of patterns that keep one slow service from taking everything down.","available":false,"lessons":[{"id":"d18-l1","title":"Partial failure and the fallacies","scope":"The network is not reliable, latency is not zero; a call can succeed, fail, or time out without telling you which; slow is worse than down."},{"id":"d18-l2","title":"Timeouts, retries, backoff, and jitter","scope":"Every remote call needs a timeout, timeout budgets across a call chain, retries with exponential backoff and jitter, retry storms, idempotency as the precondition."},{"id":"d18-l3","title":"Circuit breakers, bulkheads, and load shedding","scope":"Failing fast, isolating resources, shedding load, graceful degradation, cascading failure walked through step by step."},{"id":"d18-l4","title":"Consistency across services","scope":"Why distributed transactions are hard, two-phase commit vs sagas with compensation, clocks and ordering, consensus and leader election at concept level."}],"drills":[]},{"id":"d19","day":19,"phase":"p4","title":"System design: scaling and architecture","tagline":"Scaling up and out, balancing load, drawing service boundaries, and checking a design with numbers before it is built.","available":true,"minutes":55,"lessons":[{"id":"d19-l1","title":"Scaling up vs scaling out, and statelessness","minutes":12},{"id":"d19-l2","title":"Load balancing","minutes":13},{"id":"d19-l3","title":"Monolith, modular monolith, microservices","minutes":12},{"id":"d19-l4","title":"Walking through a design","minutes":15}],"quizCount":12,"drillCount":2,"fieldGuideCount":8,"glossaryCount":14,"drills":[{"id":"d19-x1","title":"Logged out at random after the scale-out"},{"id":"d19-x2","title":"One copy fails while its health check stays green"}]},{"id":"d20","day":20,"phase":"p4","title":"Shipping: Git, CI/CD, containers","tagline":"How a change travels from a laptop to a running service, and how to trace it back.","available":false,"lessons":[{"id":"d20-l1","title":"Git as a debugging tool","scope":"Commits, branches, merge vs rebase, revert vs reset; log, blame, diff, and bisect as investigation tools; trunk-based vs long-lived branches; pull requests."},{"id":"d20-l2","title":"CI/CD pipelines","scope":"Stages (lint, test, build, scan, deploy), build artifacts, caching, gates, continuous delivery vs continuous deployment, why a pipeline fails when local runs pass."},{"id":"d20-l3","title":"Containers and images","scope":"Image vs container, layers and caching, registries and tags, what a Dockerfile describes, containers vs virtual machines, 'works on my machine' explained."},{"id":"d20-l4","title":"Config, environments, and reproducibility","scope":"Twelve-factor config, environment variables and secrets, dev/staging/production parity, lockfiles and pinned dependencies, immutable artifacts."}],"drills":[]},{"id":"d21","day":21,"phase":"p4","title":"Running in production: cloud, Kubernetes, releases","tagline":"Where the code runs, how new versions roll out safely, and what to do when one does not.","available":false,"lessons":[{"id":"d21-l1","title":"Cloud building blocks","scope":"Compute, storage, networking, managed databases; virtual machines vs containers vs serverless; regions and zones; infrastructure as code; cost as an engineering signal."},{"id":"d21-l2","title":"Kubernetes in concepts","scope":"Pods, deployments, services, ingress; liveness and readiness probes; requests and limits; reading OOMKilled, CrashLoopBackOff, and Pending; autoscaling."},{"id":"d21-l3","title":"Releases: rolling, blue-green, canary, flags","scope":"How each strategy limits blast radius, feature flags to separate deploy from release, database migrations during a rollout, backward compatibility between versions."},{"id":"d21-l4","title":"Incidents, rollbacks, and postmortems","scope":"Mitigate first, then diagnose; rollback vs fix forward; incident roles and timeline; blameless postmortems and action items."}],"drills":[]},{"id":"d22","day":22,"phase":"p5","title":"Machine learning fundamentals for engineers","tagline":"What a model is, how training works, and why ML bugs run without errors and still give wrong answers.","available":true,"minutes":55,"lessons":[{"id":"d22-l1","title":"Models, parameters, training vs inference","minutes":13},{"id":"d22-l2","title":"Loss, gradients, and optimization","minutes":13},{"id":"d22-l3","title":"Generalization: splits, overfitting, leakage","minutes":14},{"id":"d22-l4","title":"Metrics, and why ML bugs are silent","minutes":13}],"quizCount":12,"drillCount":2,"fieldGuideCount":9,"glossaryCount":14,"drills":[{"id":"d22-x1","title":"Refund tickets landing in the shipping queue"},{"id":"d22-x2","title":"The urgent flag that worked offline"}]},{"id":"d23","day":23,"phase":"p5","title":"Neural networks, transformers, and LLMs","tagline":"From layers and embeddings to why a language model answers the way it does, and why it sometimes answers wrong.","available":true,"minutes":55,"lessons":[{"id":"d23-l1","title":"From neurons to embeddings","minutes":13},{"id":"d23-l2","title":"Transformers and attention, conceptually","minutes":14},{"id":"d23-l3","title":"How an LLM is made","minutes":13},{"id":"d23-l4","title":"Generation: sampling, context, and hallucination","minutes":14}],"quizCount":12,"drillCount":2,"fieldGuideCount":8,"glossaryCount":14,"drills":[{"id":"d23-x1","title":"Relay gives two answers to the same refund question"},{"id":"d23-x2","title":"The rule Relay stopped following"}]},{"id":"d24","day":24,"phase":"p5","title":"The LLM application backend","tagline":"An LLM call is a slow, expensive, rate-limited, non-deterministic dependency. Build accordingly.","available":true,"minutes":58,"lessons":[{"id":"d24-l1","title":"Anatomy of an LLM call","minutes":14},{"id":"d24-l2","title":"Latency, streaming, and cost","minutes":15},{"id":"d24-l3","title":"Reliability: rate limits, retries, fallbacks, structured output","minutes":15},{"id":"d24-l4","title":"Prompt vs retrieval vs fine-tuning, and prompt management","minutes":14}],"quizCount":12,"drillCount":2,"fieldGuideCount":10,"glossaryCount":14,"drills":[{"id":"d24-x1","title":"The LLM bill tripled overnight"},{"id":"d24-x2","title":"Chat hangs, then fails, during a provider incident"}]},{"id":"d25","day":25,"phase":"p5","title":"Retrieval and RAG","tagline":"Giving a model the right documents, and telling a retrieval failure from a generation failure.","available":true,"minutes":55,"lessons":[{"id":"d25-l1","title":"Embeddings and vector search","minutes":12},{"id":"d25-l2","title":"The RAG pipeline","minutes":13},{"id":"d25-l3","title":"Debugging RAG: retrieval or generation?","minutes":14},{"id":"d25-l4","title":"Evaluating retrieval, and the alternatives","minutes":12}],"quizCount":12,"drillCount":2,"fieldGuideCount":9,"glossaryCount":14,"drills":[{"id":"d25-x1","title":"Relay quotes a return window that ended weeks ago"},{"id":"d25-x2","title":"More chunks, worse answers"}]},{"id":"d26","day":26,"phase":"p5","title":"Agents","tagline":"A model, tools, and a loop: how agents work and the specific ways they go wrong.","available":true,"minutes":58,"lessons":[{"id":"d26-l1","title":"The agent loop and tool calling","minutes":14},{"id":"d26-l2","title":"Context, memory, and state","minutes":14},{"id":"d26-l3","title":"Orchestration: workflows vs agents, multi-agent, MCP","minutes":14},{"id":"d26-l4","title":"Failure modes, safety, and reading a trajectory","minutes":15}],"quizCount":12,"drillCount":2,"fieldGuideCount":9,"glossaryCount":14,"drills":[{"id":"d26-x1","title":"Relay says orders do not exist"},{"id":"d26-x2","title":"One ticket cost forty times the median"}]},{"id":"d27","day":27,"phase":"p5","title":"Evaluating LLM and agent systems","tagline":"Evals are the tests of a non-deterministic system. Building them well is most of the job.","available":false,"lessons":[{"id":"d27-l1","title":"Evals vs tests","scope":"Why exact-match assertions fail for model output, pass rates instead of pass or fail, capability evals vs regression evals, what an eval result does and does not prove."},{"id":"d27-l2","title":"Datasets and graders","scope":"Building an eval set from real failures and realistic tasks, held-out data, code-based graders, LLM-as-judge and its calibration, human review, grader bugs."},{"id":"d27-l3","title":"Statistics for evals","scope":"Variance across runs, sample size, confidence intervals, comparing two versions, multiple trials per task, why a two-point change on fifty samples means little."},{"id":"d27-l4","title":"Agent evals, online evals, and debugging an eval","scope":"Outcome grading vs trajectory grading, checking environment state, resetting sandboxes, infrastructure failures counted as model failures; A/B tests and production signals; Goodhart's law, contamination, and overfitting to the eval."}],"drills":[]},{"id":"d28","day":28,"phase":"p5","title":"Reinforcement learning","tagline":"Learning from reward: the loop, the algorithm families, and why the agent optimizes what you measured, bugs included.","available":true,"minutes":55,"lessons":[{"id":"d28-l1","title":"The RL loop: states, actions, rewards","minutes":13},{"id":"d28-l2","title":"Value, policy, and the algorithm families","minutes":13},{"id":"d28-l3","title":"Reward design and reward hacking","minutes":13},{"id":"d28-l4","title":"RL for LLMs and agents, and why runs are hard to debug","minutes":12}],"quizCount":12,"drillCount":2,"fieldGuideCount":9,"glossaryCount":14,"drills":[{"id":"d28-x1","title":"Reward went up, refunds went wrong"},{"id":"d28-x2","title":"The new shaping won by eleven points"}]},{"id":"d29","day":29,"phase":"p5","title":"Training and serving infrastructure","tagline":"Data pipelines, GPUs, checkpoints, and the signals that tell you a training run or a model server is healthy.","available":true,"minutes":55,"lessons":[{"id":"d29-l1","title":"The training pipeline end to end","minutes":13},{"id":"d29-l2","title":"Reading a training run","minutes":14},{"id":"d29-l3","title":"Serving models","minutes":13},{"id":"d29-l4","title":"MLOps: versioning, drift, and reproducibility","minutes":12}],"quizCount":12,"drillCount":2,"fieldGuideCount":10,"glossaryCount":14,"drills":[{"id":"d29-x1","title":"The fine-tune that recovered from NaN"},{"id":"d29-x2","title":"The summarizer is slow every morning at ten"}]},{"id":"d30","day":30,"phase":"p6","title":"Capstone: incidents across the whole stack","tagline":"Six incidents that cross layers, then the final exam.","available":false,"lessons":[{"id":"d30-l1","title":"The master map: from symptom to layer","scope":"A synthesis lesson. One decision procedure that starts from the symptom (error, slow, wrong, intermittent, costly) and narrows to a layer: network, HTTP, app runtime, database, cache, queue, dependency, deploy, model, retrieval, agent harness, eval."},{"id":"d30-l2","title":"The tradeoff ledger","scope":"A synthesis lesson. The recurring tradeoffs of the month side by side: consistency vs availability, latency vs throughput, simplicity vs flexibility, speed of change vs safety, cost vs quality, determinism vs capability."},{"id":"d30-l3","title":"Keeping the skill","scope":"A short lesson on practice after day 30: write postmortems for your own bugs, keep a debugging journal, read one incident report a week, turn each failure into a regression test or eval case."}],"drills":[]}]}</script>
+<script>
+(function () {
+"use strict";
+/* ===== util.js ===== */
+/* ---------- util.js: escaping, inline marks, DOM helpers, dates ---------- */
+const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ESC[c]); }
+
+/* Inline marks: **bold**, *italic*, `code`. Everything else is escaped first. */
+function md(s) {
+  const parts = String(s == null ? '' : s).split(/(`[^`\n]+`)/);
+  return parts.map((p) => {
+    if (p.length > 1 && p[0] === '`' && p[p.length - 1] === '`') return '<code>' + esc(p.slice(1, -1)) + '</code>';
+    return esc(p)
+      .replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?![*\w])/g, '$1<em>$2</em>');
+  }).join('');
+}
+/* Plain text answer from Claude: escape, inline marks, paragraphs and simple lists. */
+function mdBlocks(s) {
+  const lines = String(s || '').replace(/\r/g, '').split('\n');
+  let out = '', list = null, para = [];
+  const flushP = () => { if (para.length) { out += '<p>' + md(para.join(' ')) + '</p>'; para = []; } };
+  const flushL = () => { if (list) { out += '<' + list.t + '>' + list.items.map((i) => '<li>' + md(i) + '</li>').join('') + '</' + list.t + '>'; list = null; } };
+  for (const raw of lines) {
+    const line = raw.trim();
+    const b = line.match(/^[-*•]\s+(.*)$/), n = line.match(/^\d+[.)]\s+(.*)$/);
+    if (b || n) {
+      flushP();
+      const t = b ? 'ul' : 'ol';
+      if (!list || list.t !== t) { flushL(); list = { t, items: [] }; }
+      list.items.push((b || n)[1]);
+    } else if (!line) { flushP(); flushL(); }
+    else { flushL(); para.push(line.replace(/^#+\s*/, '')); }
+  }
+  flushP(); flushL();
+  return out;
+}
+function plain(s) { return String(s || '').replace(/\*\*|`/g, '').replace(/\*([^*]+)\*/g, '$1'); }
+
+function $(sel, root) { return (root || document).querySelector(sel); }
+function $$(sel, root) { return Array.from((root || document).querySelectorAll(sel)); }
+function h(html) { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; }
+function announce(msg) { const l = $('#live'); if (!l) return; l.textContent = ''; setTimeout(() => { l.textContent = msg; }, 30); }
+
+function pad2(n) { return (n < 10 ? '0' : '') + n; }
+function dayId(n) { return 'd' + pad2(n); }
+function isoDate(d) { d = d || new Date(); return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+function parseDate(s) { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || ''); return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null; }
+function addDays(s, n) { const d = parseDate(s) || new Date(); d.setDate(d.getDate() + n); return isoDate(d); }
+function daysBetween(a, b) { const da = parseDate(a), db = parseDate(b); if (!da || !db) return 0; return Math.round((db - da) / 86400000); }
+function fmtDate(s) { const d = parseDate(s); if (!d) return ''; return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }); }
+function pct(x) { return Math.round((x || 0) * 100); }
+function plural(n, one, many) { return n + ' ' + (n === 1 ? one : (many || one + 's')); }
+
+function shuffle(arr) { const a = arr.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+function range(n) { return Array.from({ length: n }, (_, i) => i); }
+function shuffledPerm(n, avoidIdentity) {
+  let p = shuffle(range(n));
+  if (avoidIdentity && n > 1) { let tries = 0; while (p.every((v, i) => v === i) && tries++ < 10) p = shuffle(range(n)); }
+  return p;
+}
+function debounce(fn, ms) { let t; return function () { clearTimeout(t); const a = arguments; t = setTimeout(() => fn.apply(null, a), ms); }; }
+function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } }
+function lsDel(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } }
+function withTimeout(p, ms) { return Promise.race([p, new Promise((res) => setTimeout(() => res(undefined), ms))]); }
+
+/* ===== store.js ===== */
+/* ---------- store.js: one versioned state object, localStorage, merge, account sync ---------- */
+const LS_KEY = 'rb_state_v1';
+const BOXES = [1, 2, 4, 7, 14];
+
+function freshState(resetAt) {
+  return {
+    v: 1, resetAt: resetAt || 0,
+    settings: { start: null, note: '', setup: false, ts: 0 },
+    lessons: {},   // lessonId -> ts completed
+    apply: {},     // dayId -> {done, ts}
+    quiz: {},      // dayId -> {best, last, attempts, ts}
+    tests: {},     // c1..final, custom -> {best, last, attempts, ts}
+    drills: {},    // drillId -> {best, last, attempts, ts}
+    placement: null, // {ts, score, total, byDay: {d01: 1|0}}
+    activity: {},  // 'YYYY-MM-DD' -> ts
+    review: {}     // questionId -> {box, due, seen, right, last}
+  };
+}
+function normalize(o) {
+  const f = freshState();
+  if (!o || typeof o !== 'object' || o.v !== 1) return f;
+  for (const k of Object.keys(f)) if (o[k] == null || typeof o[k] !== typeof f[k]) o[k] = f[k];
+  if (o.placement !== null && typeof o.placement !== 'object') o.placement = null;
+  o.settings = Object.assign({}, f.settings, o.settings);
+  return o;
+}
+let S = (function () { try { return normalize(JSON.parse(lsGet(LS_KEY) || 'null')); } catch (e) { return freshState(); } })();
+
+function saveLocal() { lsSet(LS_KEY, JSON.stringify(S)); }
+const listeners = [];
+function onState(fn) { listeners.push(fn); }
+function commit(opts) {
+  saveLocal();
+  Sync.schedule();
+  if (!(opts && opts.quiet)) listeners.forEach((fn) => { try { fn(); } catch (e) { console.warn(e); } });
+}
+function touchActivity() { S.activity[isoDate()] = Date.now(); }
+
+/* ----- mutations ----- */
+function setSettings(patch) { S.settings = Object.assign({}, S.settings, patch, { ts: Date.now() }); commit(); }
+function completeLesson(id) { if (!S.lessons[id]) { S.lessons[id] = Date.now(); touchActivity(); commit({ quiet: true }); } }
+function setApply(day, done) { S.apply[day] = { done: !!done, ts: Date.now() }; if (done) touchActivity(); commit({ quiet: true }); }
+function recordResult(bucket, key, score) {
+  const prev = S[bucket][key] || { best: 0, last: 0, attempts: 0 };
+  S[bucket][key] = { best: Math.max(prev.best || 0, score), last: score, attempts: (prev.attempts || 0) + 1, ts: Date.now() };
+  touchActivity(); commit({ quiet: true });
+}
+function recordPlacement(p) { S.placement = Object.assign({ ts: Date.now() }, p); touchActivity(); commit({ quiet: true }); }
+/* Leitner boxes: first answer wrong -> 1, right -> 2; right moves up, wrong returns to 1. */
+function reviewAnswer(qid, right) {
+  const today = isoDate();
+  const c = S.review[qid];
+  let box;
+  if (!c) box = right ? 2 : 1;
+  else box = right ? Math.min(5, (c.box || 1) + 1) : 1;
+  S.review[qid] = { box, due: addDays(today, BOXES[box - 1]), seen: ((c && c.seen) || 0) + 1, right: ((c && c.right) || 0) + (right ? 1 : 0), last: Date.now() };
+  touchActivity();
+  commit({ quiet: true });
+}
+function resetAll() {
+  const now = Date.now();
+  const note = S.settings.note;
+  S = freshState(now);
+  S.settings = { start: null, note: note, setup: false, ts: now };
+  commit();
+}
+
+/* ----- merge: union of completed items, newest wins per key, reset tombstone ----- */
+function tsOf(v) { if (typeof v === 'number') return v; if (v && typeof v === 'object') return v.ts || v.last || 0; return 0; }
+function mergeMap(a, b, R, pick) {
+  const out = {};
+  const keys = new Set(Object.keys(a || {}).concat(Object.keys(b || {})));
+  keys.forEach((k) => {
+    const x = a && a[k], y = b && b[k];
+    let v = x == null ? y : y == null ? x : pick(x, y);
+    if (v != null && tsOf(v) >= R) out[k] = v;
+  });
+  return out;
+}
+const newer = (x, y) => (tsOf(y) > tsOf(x) ? y : x);
+const pickResult = (x, y) => { const n = newer(x, y); return Object.assign({}, n, { best: Math.max(x.best || 0, y.best || 0), attempts: Math.max(x.attempts || 0, y.attempts || 0) }); };
+function mergeState(a, b) {
+  const R = Math.max(a.resetAt || 0, b.resetAt || 0);
+  const r = freshState(R);
+  const sa = a.settings, sb = b.settings;
+  r.settings = Object.assign({}, freshState().settings, sb && tsOf(sb) > tsOf(sa) ? sb : sa);
+  r.lessons = mergeMap(a.lessons, b.lessons, R, (x, y) => Math.min(x, y));
+  r.apply = mergeMap(a.apply, b.apply, R, newer);
+  r.quiz = mergeMap(a.quiz, b.quiz, R, pickResult);
+  r.tests = mergeMap(a.tests, b.tests, R, pickResult);
+  r.drills = mergeMap(a.drills, b.drills, R, pickResult);
+  r.activity = mergeMap(a.activity, b.activity, R, (x, y) => Math.max(x, y));
+  r.review = mergeMap(a.review, b.review, R, newer);
+  const pa = a.placement, pb = b.placement;
+  const p = pa && pb ? newer(pa, pb) : pa || pb || null;
+  r.placement = p && tsOf(p) >= R ? p : null;
+  return r;
+}
+function stableStr(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v === undefined ? null : v);
+  if (Array.isArray(v)) return '[' + v.map(stableStr).join(',') + ']';
+  return '{' + Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => JSON.stringify(k) + ':' + stableStr(v[k])).join(',') + '}';
+}
+
+/* ----- account sync through the db + user capabilities ----- */
+const DOCS = ['progress', 'review'];
+function docPart(name, st) {
+  if (name === 'review') return { v: 1, resetAt: st.resetAt, review: st.review };
+  const o = Object.assign({}, st); delete o.review; return o;
+}
+function partIsEmpty(name, st) { return stableStr(docPart(name, st)) === stableStr(docPart(name, freshState(st.resetAt))) && !st.settings.ts; }
+
+const Sync = {
+  kind: 'local', text: 'Saved in this browser only', detail: 'Progress is kept in this browser. Account sync is not available in this view.',
+  refs: null, loaded: {}, last: {}, writing: {}, dirty: {}, halted: false, retried: {},
+  schedule: function () { /* replaced once sync starts */ },
+  set: function (kind, text, detail) {
+    this.kind = kind; this.text = text; this.detail = detail || '';
+    const pill = $('#sync-pill');
+    if (pill) { pill.dataset.state = kind; $('#sync-text').textContent = text; pill.title = detail || text; }
+    const ps = $('#prefs-sync'); if (ps) renderSyncBox(ps);
+  }
+};
+
+function startSync() {
+  Sync.set('local', 'Saved in this browser only', 'Progress is kept in this browser. Account sync is not available in this view.');
+  const C = window.claude;
+  if (!C || typeof C.use !== 'function') return;
+  Sync.set('working', 'Connecting', 'Looking for your Claude account.');
+  withTimeout(Promise.all([C.use('db'), C.use('user')]), 10000).then(async (pair) => {
+    const db = pair && pair[0], user = pair && pair[1];
+    if (!db || !user) { Sync.set('local', 'Saved in this browser only', 'This view cannot reach your Claude account, so progress stays in this browser.'); return; }
+    let uid = null;
+    try { uid = await withTimeout(user.id(), 10000); } catch (e) { uid = null; }
+    if (!uid) { Sync.set('local', 'Saved in this browser only', 'Sign in to Claude to keep progress in sync between devices.'); return; }
+    try {
+      Sync.refs = {};
+      DOCS.forEach((n) => { Sync.refs[n] = db.collection('data/users/' + uid).doc(n); });
+    } catch (e) { Sync.set('paused', 'Sync paused', 'The account store rejected the path. Progress is saved in this browser.'); return; }
+    Sync.schedule = debounce(flushSync, 1500);
+    const timer = setTimeout(() => {
+      if (!(Sync.loaded.progress && Sync.loaded.review)) Sync.set('paused', 'Sync paused', 'Your Claude account did not answer within 10 seconds. Progress is saved in this browser and will sync when it answers.');
+    }, 10000);
+    DOCS.forEach((n) => {
+      Sync.refs[n].onSnapshot((snap) => {
+        if (snap.metadata && snap.metadata.hasPendingWrites) return;
+        const data = snap.exists ? snap.data() : null;
+        if (!(snap.metadata && snap.metadata.fromCache)) {
+          Sync.loaded[n] = true;
+          Sync.last[n] = data ? stableStr(data) : null;
+          if (Sync.loaded.progress && Sync.loaded.review) { clearTimeout(timer); if (!Sync.halted) Sync.set('synced', 'Synced to your Claude account', 'Progress follows you between devices signed in to this Claude account.'); }
+        }
+        if (data) {
+          const before = stableStr(S);
+          const merged = mergeState(S, normalizePart(n, data));
+          if (stableStr(merged) !== before) { S = merged; saveLocal(); listeners.forEach((fn) => { try { fn({ remote: true }); } catch (e) { console.warn(e); } }); }
+        }
+        if (Sync.loaded[n]) Sync.schedule();
+      }, (err) => {
+        clearTimeout(timer);
+        syncError(err, n);
+      });
+    });
+  }).catch(() => Sync.set('local', 'Saved in this browser only', 'This view cannot reach your Claude account, so progress stays in this browser.'));
+}
+function normalizePart(name, data) {
+  const f = freshState(data.resetAt || 0);
+  if (name === 'review') { f.review = data.review && typeof data.review === 'object' ? data.review : {}; f.settings.ts = -1; return f; }
+  const o = Object.assign(f, data); o.review = {};
+  return normalize(o);
+}
+function syncError(err, name) {
+  const code = (err && err.code) || 'unavailable';
+  if (code === 'invalid_argument') { Sync.halted = true; Sync.set('paused', 'Sync paused', 'Your Claude account would not accept this save, so progress stays in this browser.'); }
+  else if (code === 'quota_exceeded') { Sync.halted = true; Sync.set('paused', 'Sync paused', 'The account store is full. Progress is saved in this browser.'); }
+  else if (code === 'resource_exhausted') { Sync.set('paused', 'Sync paused', 'Too many saves in a short time. The next change will try again.'); }
+  else if (code === 'revoked' || code === 'not_granted' || code === 'capability_disabled' || code === 'capability_removed') { Sync.halted = true; Sync.set('local', 'Saved in this browser only', 'Account sync was switched off for this page. Progress is saved in this browser.'); }
+  else { Sync.set('paused', 'Sync paused', 'Your Claude account is not reachable right now. Progress is saved in this browser.'); }
+}
+async function flushSync() {
+  if (Sync.halted || !Sync.refs) return;
+  for (const n of DOCS) {
+    if (!Sync.loaded[n]) continue;
+    if (Sync.writing[n]) { Sync.dirty[n] = true; continue; }
+    const body = docPart(n, S), ser = stableStr(body);
+    if (ser === Sync.last[n]) continue;
+    if (Sync.last[n] == null && partIsEmpty(n, S)) continue;
+    Sync.writing[n] = true;
+    try {
+      await Sync.refs[n].set(JSON.parse(JSON.stringify(body)));
+      Sync.last[n] = ser; Sync.retried[n] = false;
+      if (!Sync.halted) Sync.set('synced', 'Synced to your Claude account', 'Progress follows you between devices signed in to this Claude account.');
+    } catch (e) {
+      const code = (e && e.code) || 'unavailable';
+      if ((code === 'unavailable' || !e || !e.code) && !Sync.retried[n]) {
+        Sync.retried[n] = true; Sync.dirty[n] = true;
+        setTimeout(() => Sync.schedule(), 1500 + Math.random() * 2500);
+      } else syncError(e, n);
+    } finally {
+      Sync.writing[n] = false;
+      if (Sync.dirty[n]) { Sync.dirty[n] = false; Sync.schedule(); }
+    }
+  }
+}
+function renderSyncBox(el) {
+  el.innerHTML = '<div class="row"><span class="chip ' + (Sync.kind === 'synced' ? 'chip-ok' : Sync.kind === 'paused' ? 'chip-warn' : '') + '">' + esc(Sync.text) + '</span></div><p class="small muted">' + esc(Sync.detail) + '</p>';
+}
+
+/* ===== content.js ===== */
+/* ---------- content.js: curriculum index, day files, derived progress ---------- */
+const CUR = JSON.parse(document.getElementById('curriculum').textContent);
+const PHASES = CUR.phases;
+const PHASE = {}; PHASES.forEach((p, i) => { PHASE[p.id] = Object.assign({ n: i + 1 }, p); });
+const ALL_DAYS = CUR.days.slice().sort((a, b) => a.day - b.day);
+const DAYS = ALL_DAYS.filter((d) => d.day >= 1);
+const DAY = {}; ALL_DAYS.forEach((d) => { DAY[d.id] = d; });
+const CHECKS = CUR.checkpoints;
+function phaseVar(pid) { return 'var(--' + (PHASE[pid] ? pid : 'p6') + ')'; }
+function phaseOfDay(id) { return PHASE[(DAY[id] || {}).phase] || null; }
+
+/* ----- day files: fetched on demand, cached in memory ----- */
+const dayCache = new Map();
+const dayLoads = new Map();
+const QINDEX = {}; // qid -> {q, day}
+const dayLoadListeners = [];
+function loadDay(id) {
+  if (dayCache.has(id)) return Promise.resolve(dayCache.get(id));
+  if (dayLoads.has(id)) return dayLoads.get(id);
+  const meta = DAY[id];
+  if (!meta || !meta.available) return Promise.resolve(null);
+  const p = fetch('data/' + id + '.json', { cache: 'no-cache' }).then((r) => {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then((d) => {
+    if (!d || !Array.isArray(d.lessons) || !Array.isArray(d.quiz)) throw new Error('This day file is not in the expected shape.');
+    d.lessons = d.lessons || []; d.quiz = d.quiz || []; d.drills = d.drills || []; d.fieldGuide = d.fieldGuide || []; d.glossary = d.glossary || [];
+    d.quiz.forEach((q) => { QINDEX[q.id] = { q: q, day: id }; });
+    dayCache.set(id, d);
+    dayLoads.delete(id);
+    dayLoadListeners.forEach((fn) => { try { fn(id); } catch (e) { console.warn(e); } });
+    return d;
+  }).catch((e) => { dayLoads.delete(id); throw e; });
+  dayLoads.set(id, p);
+  return p;
+}
+const BG = { started: false, done: 0, total: 0, failed: 0 };
+function loadAllDays() {
+  if (BG.started) return;
+  BG.started = true;
+  const ids = ALL_DAYS.filter((d) => d.available).map((d) => d.id);
+  BG.total = ids.length;
+  let i = 0;
+  const worker = () => {
+    if (i >= ids.length) return Promise.resolve();
+    const id = ids[i++];
+    return loadDay(id).then(() => { BG.done++; }, () => { BG.failed++; }).then(() => { refreshLoadNotes(); return worker(); });
+  };
+  Promise.all([worker(), worker(), worker()]).then(() => refreshLoadNotes());
+}
+function loadedCountText() {
+  const n = ALL_DAYS.filter((d) => d.available && dayCache.has(d.id)).length;
+  const avail = ALL_DAYS.filter((d) => d.available).length;
+  let t = 'Loaded ' + n + ' of ' + avail + ' written days';
+  const unwritten = DAYS.filter((d) => !d.available).length;
+  if (unwritten) t += ' (' + unwritten + ' not written yet)';
+  if (BG.failed) t += ', ' + BG.failed + ' failed to load';
+  return t;
+}
+function refreshLoadNotes() { $$('[data-loadnote]').forEach((el) => { el.textContent = loadedCountText(); }); }
+function ensureDays(ids) { return Promise.all(ids.filter((id) => DAY[id] && DAY[id].available).map((id) => loadDay(id).catch(() => null))); }
+
+/* ----- derived progress ----- */
+function lessonIds(meta) { return (meta.lessons || []).map((l, i) => l.id || meta.id + '-l' + (i + 1)); }
+function lessonsDoneFrac(meta) { const ids = lessonIds(meta); if (!ids.length) return 0; return ids.filter((x) => S.lessons[x]).length / ids.length; }
+function quizBest(id) { const r = S.quiz[id]; return r ? r.best || 0 : 0; }
+function drillIds(meta) { return (meta.drills || []).map((d) => d.id); }
+function drillsDoneFrac(meta) { const ids = drillIds(meta); if (!ids.length) return 0; return ids.filter((x) => S.drills[x] && S.drills[x].attempts).length / ids.length; }
+function mastery(meta) { return 0.4 * lessonsDoneFrac(meta) + 0.4 * quizBest(meta.id) + 0.2 * drillsDoneFrac(meta); }
+function isDayDone(meta) { const ids = lessonIds(meta); return ids.length > 0 && ids.every((x) => S.lessons[x]) && quizBest(meta.id) >= 0.7; }
+function dayStatus(meta) {
+  if (!meta.available) return 'unwritten';
+  if (isDayDone(meta)) return 'done';
+  if (mastery(meta) > 0 || (S.apply[meta.id] && S.apply[meta.id].done)) return 'started';
+  return 'new';
+}
+const STATUS_TEXT = { unwritten: 'not written', done: 'done', started: 'in progress', new: 'not started' };
+function currentDay() { return DAYS.find((d) => !isDayDone(d)) || DAYS[DAYS.length - 1]; }
+function doneCount() { return DAYS.filter(isDayDone).length; }
+function calendarDay() { if (!S.settings.start) return 1; return daysBetween(S.settings.start, isoDate()) + 1; }
+function paceInfo() {
+  const cal = calendarDay(), done = doneCount();
+  if (!S.settings.start) return { text: 'No start date set', diff: 0, cal: cal };
+  if (cal < 1) return { text: 'Starts ' + fmtDate(S.settings.start), diff: 0, cal: cal };
+  const target = Math.min(cal, 30);
+  const ahead = done - target, behind = (target - 1) - done;
+  if (ahead > 0) return { text: plural(ahead, 'day') + ' ahead', diff: ahead, cal: cal };
+  if (behind > 0) return { text: plural(behind, 'day') + ' behind', diff: -behind, cal: cal };
+  return { text: 'On pace', diff: 0, cal: cal };
+}
+function streak() {
+  let n = 0; let d = isoDate();
+  if (!S.activity[d]) d = addDays(d, -1);
+  while (S.activity[d]) { n++; d = addDays(d, -1); }
+  return n;
+}
+function dueCards() { const t = isoDate(); return Object.keys(S.review).filter((k) => S.review[k].due <= t).sort((a, b) => (S.review[a].due < S.review[b].due ? -1 : 1)); }
+function nextDueDate() { const t = isoDate(); let m = null; Object.values(S.review).forEach((c) => { if (c.due > t && (!m || c.due < m)) m = c.due; }); return m; }
+function weakSpots() {
+  const byDay = {}, byTag = {};
+  Object.keys(S.review).forEach((qid) => {
+    const c = S.review[qid]; const d = qid.slice(0, 3);
+    if (!DAY[d]) return;
+    (byDay[d] = byDay[d] || { seen: 0, right: 0 }); byDay[d].seen += c.seen || 0; byDay[d].right += c.right || 0;
+    const qi = QINDEX[qid];
+    if (qi && qi.q.tags) qi.q.tags.forEach((t) => { (byTag[t] = byTag[t] || { seen: 0, right: 0, days: new Set() }); byTag[t].seen += c.seen || 0; byTag[t].right += c.right || 0; byTag[t].days.add(d); });
+  });
+  const out = [];
+  Object.keys(byDay).forEach((d) => { const v = byDay[d]; if (v.seen >= 3) out.push({ kind: 'day', key: d, label: 'Day ' + DAY[d].day + ': ' + DAY[d].title, acc: v.right / v.seen, seen: v.seen }); });
+  Object.keys(byTag).forEach((t) => { const v = byTag[t]; if (v.seen >= 2) out.push({ kind: 'tag', key: t, label: t, acc: v.right / v.seen, seen: v.seen }); });
+  return out.filter((x) => x.acc < 0.8).sort((a, b) => a.acc - b.acc || b.seen - a.seen).slice(0, 5);
+}
+
+/* ===== blocks.js ===== */
+/* ---------- blocks.js: lesson content blocks ---------- */
+const REG = { flows: {}, checks: {}, n: 0 };
+const LANG_LABEL = { http: 'HTTP', sql: 'SQL', log: 'Log', json: 'JSON', python: 'Python', shell: 'Shell', text: 'Text', yaml: 'YAML', trace: 'Trace', plan: 'Query plan', diff: 'Diff' };
+const CALLOUT_LABEL = { insight: 'Key idea', pitfall: 'Pitfall', debug: 'When it breaks, check', rule: 'Rule of thumb', ai: 'In AI systems' };
+
+function lineClass(lang, line, i) {
+  if (lang === 'diff') { if (/^\+(?!\+\+)/.test(line)) return 'add'; if (/^-(?!--)/.test(line)) return 'del'; if (/^@@/.test(line)) return 'hd'; }
+  if (lang === 'http' && /^(HTTP\/\d|(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \S)/.test(line)) return 'hd';
+  if (/^\s*(#|--|\/\/)/.test(line) && lang !== 'json' && lang !== 'http' && lang !== 'diff' && lang !== 'plan') return 'cm';
+  if ((lang === 'log' || lang === 'text' || lang === 'trace' || lang === 'python' || lang === 'shell') && /\b(ERROR|FATAL|CRITICAL|Traceback|PANIC)\b|level=error|\bOOMKilled\b/.test(line)) return 'er';
+  return '';
+}
+function renderCode(c, opts) {
+  opts = opts || {};
+  const lang = c.lang || 'text';
+  const lines = String(c.code || '').replace(/\n$/, '').split('\n');
+  const body = lines.map((l, i) => { const cls = lineClass(lang, l, i); return '<span class="ln' + (cls ? ' ' + cls : '') + '" data-n="' + (i + 1) + '">' + esc(l) + '</span>'; }).join('\n');
+  const title = c.title || opts.title || '';
+  let html = '<figure class="code blk" style="margin:0"><div class="code-head"><span class="ct">' + esc(title) + '</span><span class="cl">' + esc(LANG_LABEL[lang] || lang) + '</span></div>' +
+    '<pre tabindex="0" aria-label="' + esc((title ? title + ', ' : '') + (LANG_LABEL[lang] || lang)) + '"><code>' + body + '</code></pre>';
+  if (Array.isArray(c.notes) && c.notes.length) html += '<ol class="code-notes" aria-label="What to notice">' + c.notes.map((n) => '<li><span>' + md(n) + '</span></li>').join('') + '</ol>';
+  return html + '</figure>';
+}
+function renderFlowDetail(steps, i) {
+  const s = steps[i];
+  return '<div class="fd"><div class="blk-cap">Step ' + (i + 1) + ' of ' + steps.length + ' &middot; ' + esc(s.actor) + '</div>' + md(s.detail || s.label) + '</div>' +
+    (s.fail ? '<div class="ff"><div class="blk-cap">What breaking here looks like</div>' + md(s.fail) + '</div>'
+      : '<div class="ff none"><div class="blk-cap">What breaking here looks like</div>No distinct failure at this step.</div>');
+}
+function renderBlock(b) {
+  const k = 'b' + (++REG.n);
+  switch (b.t) {
+    case 'p': return '<p class="blk">' + md(b.text) + '</p>';
+    case 'h': return '<h2 class="blk">' + md(b.text) + '</h2>';
+    case 'list': {
+      const tag = b.style === 'number' ? 'ol' : 'ul';
+      return '<' + tag + ' class="blk">' + (b.items || []).map((x) => '<li>' + md(x) + '</li>').join('') + '</' + tag + '>';
+    }
+    case 'callout': {
+      const kind = CALLOUT_LABEL[b.kind] ? b.kind : 'insight';
+      return '<aside class="callout blk ' + kind + '" aria-label="' + esc(CALLOUT_LABEL[kind]) + '"><span class="co-lbl">' + esc(CALLOUT_LABEL[kind]) + '</span>' +
+        (b.title ? '<div class="co-title">' + md(b.title) + '</div>' : '') + '<div>' + md(b.text) + '</div></aside>';
+    }
+    case 'compare': {
+      const cols = b.columns || [];
+      let t = '<div class="blk">' + (b.caption ? '<div class="blk-cap">' + md(b.caption) + '</div>' : '') +
+        '<div class="table-wrap" tabindex="0" role="region" aria-label="' + esc(plain(b.caption || 'Comparison table')) + '"><table class="cmp"><thead><tr>' +
+        cols.map((c, i) => '<th scope="col">' + (i === 0 && !c ? '<span class="sr-only">Aspect</span>' : md(c)) + '</th>').join('') + '</tr></thead><tbody>' +
+        (b.rows || []).map((r) => '<tr>' + r.map((cell, i) => (i === 0 ? '<th scope="row">' + md(cell) + '</th>' : '<td>' + md(cell) + '</td>')).join('') + '</tr>').join('') +
+        '</tbody></table></div>';
+      if (b.verdict) t += '<p class="verdict"><b>Verdict</b>' + md(b.verdict) + '</p>';
+      return t + '</div>';
+    }
+    case 'tradeoff':
+      return '<div class="blk"><div class="blk-cap">Tradeoff' + (b.title ? ': ' + md(b.title) : '') + '</div><div class="tradeoff-opts">' +
+        (b.options || []).map((o) => '<div class="topt"><h3>' + md(o.name) + '</h3>' +
+          '<div><div class="lbl">You gain</div><ul class="gain">' + (o.gain || []).map((g) => '<li><span>' + md(g) + '</span></li>').join('') + '</ul></div>' +
+          '<div><div class="lbl">You pay</div><ul class="cost">' + (o.cost || []).map((g) => '<li><span>' + md(g) + '</span></li>').join('') + '</ul></div>' +
+          (o.choose ? '<div class="choose"><div class="lbl" style="margin-bottom:4px">Choose when</div>' + md(o.choose) + '</div>' : '') + '</div>').join('') +
+        '</div></div>';
+    case 'flow': {
+      const steps = b.steps || [];
+      REG.flows[k] = steps;
+      return '<div class="flow blk" data-flow="' + k + '"><div class="flow-head"><h3>' + md(b.title || 'Sequence') + '</h3>' +
+        '<div class="row"><button type="button" class="btn btn-sm" data-flow-prev>Previous step</button><button type="button" class="btn btn-sm" data-flow-next>Next step</button></div></div>' +
+        '<ol class="flow-steps" aria-label="Steps. Select one to see its detail.">' + steps.map((s, i) =>
+          '<li><button type="button" data-i="' + i + '"' + (i === 0 ? ' aria-current="step"' : ' tabindex="-1"') + '><span class="n">' + (i + 1) + '</span><span class="actor">' + esc(s.actor) + '</span><span class="lab">' + md(s.label) + '</span>' + (s.fail ? '<span class="fmark">can fail</span>' : '<span></span>') + '</button></li>').join('') +
+        '</ol><div class="flow-detail" aria-live="polite">' + (steps.length ? renderFlowDetail(steps, 0) : '') + '</div></div>';
+    }
+    case 'layers':
+      return '<div class="layers blk"><h3>' + md(b.title || 'Layers') + '</h3><div class="blk-cap" style="margin:0">Top of the stack first</div><div class="layer-stack">' +
+        (b.layers || []).map((l) => '<div class="layer"><div class="ln">' + md(l.name) + '</div><div>' + md(l.role) + '</div>' +
+          (l.breaks ? '<div class="lb"><b>Breaks</b>' + md(l.breaks) + '</div>' : '') + '</div>').join('') + '</div></div>';
+    case 'code': return renderCode(b);
+    case 'analogy': return '<div class="analogy blk"><div class="blk-cap">Analogy</div>' + md(b.text) + '</div>';
+    case 'check': {
+      REG.checks[k] = b;
+      return '<div class="inline-q blk" data-check="' + k + '"><div class="blk-cap" style="margin:0">Check yourself</div><div class="q">' + md(b.q) + '</div><div class="opts">' +
+        (b.options || []).map((o, i) => '<button type="button" class="opt" data-i="' + i + '"><span class="k">' + String.fromCharCode(65 + i) + '</span><span>' + md(o) + '</span></button>').join('') +
+        '</div><div class="fbwrap" aria-live="polite"></div></div>';
+    }
+    case 'reveal':
+      return '<div class="reveal blk" data-reveal><div class="blk-cap" style="margin:0">Think first</div><div>' + md(b.prompt) + '</div>' +
+        '<div><button type="button" class="btn btn-sm" data-reveal-btn aria-expanded="false">Reveal the answer</button></div><div class="ans" hidden>' + md(b.answer) + '</div></div>';
+    default: return '';
+  }
+}
+
+function selectFlowStep(root, i) {
+  const steps = REG.flows[root.dataset.flow]; if (!steps) return;
+  i = Math.max(0, Math.min(steps.length - 1, i));
+  $$('.flow-steps button', root).forEach((b, j) => { if (j === i) { b.setAttribute('aria-current', 'step'); b.tabIndex = 0; } else { b.removeAttribute('aria-current'); b.tabIndex = -1; } });
+  $('.flow-detail', root).innerHTML = renderFlowDetail(steps, i);
+  root.dataset.cur = i;
+  return i;
+}
+/* Event delegation for interactive blocks inside a root element. */
+function wireBlocks(root) {
+  root.addEventListener('click', (e) => {
+    const fs = e.target.closest('.flow-steps button');
+    if (fs) { selectFlowStep(fs.closest('[data-flow]'), +fs.dataset.i); return; }
+    const fp = e.target.closest('[data-flow-prev],[data-flow-next]');
+    if (fp) { const f = fp.closest('[data-flow]'); const i = selectFlowStep(f, (+f.dataset.cur || 0) + (fp.hasAttribute('data-flow-next') ? 1 : -1)); return void i; }
+    const co = e.target.closest('[data-check] .opt');
+    if (co) {
+      const box = co.closest('[data-check]'); if (box.dataset.done) return;
+      const b = REG.checks[box.dataset.check]; const i = +co.dataset.i; const ok = i === b.answer;
+      box.dataset.done = '1';
+      $$('.opt', box).forEach((o, j) => { o.setAttribute('aria-disabled', 'true'); if (j === b.answer) o.classList.add('right'); else if (j === i) o.classList.add('wrong'); else o.classList.add('dim'); });
+      $('.fbwrap', box).innerHTML = '<div class="fb ' + (ok ? 'ok' : 'bad') + '"><div class="fb-h"><span class="mark">' + (ok ? '&#10003;' : '&#215;') + '</span>' + (ok ? 'Correct' : 'Not quite') + '</div><div>' + md(b.explain) + '</div></div>';
+      announce((ok ? 'Correct. ' : 'Not quite. ') + plain(b.explain));
+      return;
+    }
+    const rv = e.target.closest('[data-reveal-btn]');
+    if (rv) { const a = $('.ans', rv.closest('[data-reveal]')); a.hidden = !a.hidden; rv.setAttribute('aria-expanded', String(!a.hidden)); rv.textContent = a.hidden ? 'Reveal the answer' : 'Hide the answer'; }
+  });
+  root.addEventListener('keydown', (e) => {
+    const fs = e.target.closest && e.target.closest('.flow-steps button');
+    if (!fs) return;
+    const f = fs.closest('[data-flow]'); let i = +fs.dataset.i;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') i++;
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') i--;
+    else if (e.key === 'Home') i = 0;
+    else if (e.key === 'End') i = 99;
+    else return;
+    e.preventDefault();
+    const j = selectFlowStep(f, i);
+    $$('.flow-steps button', f)[j].focus();
+  });
+}
+/* Flatten a lesson for the tutor prompt. */
+function lessonText(lesson) {
+  const out = [];
+  (lesson.blocks || []).forEach((b) => {
+    switch (b.t) {
+      case 'p': case 'analogy': out.push(plain(b.text)); break;
+      case 'h': out.push('## ' + plain(b.text)); break;
+      case 'list': (b.items || []).forEach((x) => out.push('- ' + plain(x))); break;
+      case 'callout': out.push('[' + b.kind + '] ' + plain(b.title) + ': ' + plain(b.text)); break;
+      case 'compare': out.push('Table ' + plain(b.caption || '') + ': ' + (b.columns || []).join(' | ')); (b.rows || []).forEach((r) => out.push(r.map(plain).join(' | '))); if (b.verdict) out.push('Verdict: ' + plain(b.verdict)); break;
+      case 'tradeoff': out.push('Tradeoff ' + plain(b.title || '')); (b.options || []).forEach((o) => out.push(o.name + ': gain ' + o.gain.join('; ') + '. cost ' + o.cost.join('; ') + '. ' + o.choose)); break;
+      case 'flow': out.push('Flow ' + plain(b.title || '')); (b.steps || []).forEach((s, i) => out.push((i + 1) + '. ' + s.actor + ': ' + plain(s.label) + '. ' + plain(s.detail || '') + (s.fail ? ' Fails: ' + plain(s.fail) : ''))); break;
+      case 'layers': (b.layers || []).forEach((l) => out.push(l.name + ': ' + plain(l.role) + (l.breaks ? ' Breaks: ' + plain(l.breaks) : ''))); break;
+      case 'code': out.push('Artifact (' + b.lang + '):\n' + b.code); (b.notes || []).forEach((n) => out.push('Note: ' + plain(n))); break;
+      case 'check': out.push('Check: ' + plain(b.q) + ' Answer: ' + plain((b.options || [])[b.answer] || '')); break;
+      case 'reveal': out.push('Think: ' + plain(b.prompt) + ' Answer: ' + plain(b.answer)); break;
+    }
+  });
+  return out.join('\n');
+}
+
+/* ===== quiz.js ===== */
+/* ---------- quiz.js: one engine for day quizzes, tests, placement, practice, review ---------- */
+const LEVEL = { 1: 'Recall', 2: 'Apply', 3: 'Diagnose' };
+const Quiz = { s: null };
+
+function qTypeLabel(t) { return { mcq: 'Choose one', multi: 'Select all that apply', order: 'Put in order', match: 'Match', open: 'Written answer' }[t] || t; }
+
+function startQuiz(root, cfg) {
+  const s = { cfg: cfg, root: root, idx: 0, results: [], ui: null };
+  Quiz.s = s;
+  if (!cfg.questions.length) {
+    root.innerHTML = '<div class="empty"><b>No questions available.</b><span>' + esc(cfg.emptyText || 'The days this test draws from are not written yet.') + '</span>' + (cfg.back ? '<a class="btn" href="' + esc(cfg.back.href) + '">' + esc(cfg.back.label) + '</a>' : '') + '</div>';
+    return;
+  }
+  renderQ(s);
+}
+function initUI(q) {
+  const ui = { answered: false, correct: false };
+  if (q.type === 'mcq' || q.type === 'multi') { ui.perm = shuffledPerm(q.options.length); ui.sel = q.type === 'mcq' ? null : new Set(); }
+  if (q.type === 'order') ui.arr = shuffledPerm(q.items.length, true);
+  if (q.type === 'match') { ui.rperm = shuffledPerm(q.pairs.length, true); ui.choice = q.pairs.map(() => ''); }
+  if (q.type === 'open') { ui.compared = false; ui.text = ''; }
+  return ui;
+}
+function renderQ(s) {
+  const item = s.cfg.questions[s.idx], q = item.q;
+  s.ui = initUI(q);
+  const total = s.cfg.questions.length, right = s.results.filter((r) => r.correct).length;
+  const meta = DAY[item.day];
+  s.root.innerHTML = '<div class="quiz">' +
+    '<div class="qprog"><span class="num">Question ' + (s.idx + 1) + ' of ' + total + '</span><div class="meter" aria-hidden="true"><i style="width:' + (100 * s.idx / total) + '%"></i></div><span class="num">' + right + ' right</span></div>' +
+    '<div class="qcard">' +
+    '<div class="qmeta"><span class="chip">' + esc(LEVEL[q.level] || 'Question') + '</span><span class="chip">' + esc(qTypeLabel(q.type)) + '</span>' +
+    (meta ? '<a class="ptag" style="--ph:' + phaseVar(meta.phase) + '" href="#' + meta.id + '">' + (meta.day ? 'Day ' + meta.day : 'Example') + '</a>' : '') + '</div>' +
+    (q.context ? '<div class="qcontext">' + md(q.context) + '</div>' : '') +
+    (q.artifact ? renderCode(q.artifact) : '') +
+    '<div class="q" id="qtext">' + md(q.q) + '</div>' +
+    '<div class="qbody"></div>' +
+    '<div class="qfb"></div>' +
+    '<div class="qactions"><button type="button" class="btn btn-primary" data-act="submit">Check answer</button><span class="kbd-hint">' + keyHint(q) + '</span></div>' +
+    '</div>' + (s.cfg.tutor !== false ? '<div class="tutor-slot"></div>' : '') + '</div>';
+  renderBody(s);
+  updateSubmit(s);
+  const first = $('.qbody button, .qbody select, .qbody textarea', s.root);
+  if (s.idx > 0 && first) first.focus({ preventScroll: false });
+}
+function keyHint(q) {
+  if (q.type === 'mcq') return '<kbd>1</kbd>&ndash;<kbd>' + q.options.length + '</kbd> to choose, <kbd>Enter</kbd> to check';
+  if (q.type === 'multi') return '<kbd>1</kbd>&ndash;<kbd>' + q.options.length + '</kbd> to toggle, <kbd>Enter</kbd> to check';
+  if (q.type === 'order') return 'Move items with the arrow buttons';
+  return '';
+}
+function renderBody(s) {
+  const q = s.cfg.questions[s.idx].q, ui = s.ui, body = $('.qbody', s.root);
+  if (q.type === 'mcq' || q.type === 'multi') {
+    body.innerHTML = '<div class="opts" role="' + (q.type === 'mcq' ? 'radiogroup' : 'group') + '" aria-labelledby="qtext">' + ui.perm.map((oi, pos) => {
+      const sel = q.type === 'mcq' ? ui.sel === oi : ui.sel.has(oi);
+      let cls = 'opt', tag = '', why = '';
+      if (ui.answered) {
+        const isAns = q.type === 'mcq' ? oi === q.answer : q.answers.indexOf(oi) >= 0;
+        if (isAns && sel) { cls += ' right'; tag = q.type === 'multi' ? 'Correct pick' : 'Correct'; }
+        else if (isAns && !sel) { cls += q.type === 'multi' ? ' missed' : ' right'; tag = q.type === 'multi' ? 'Missed' : 'Correct answer'; }
+        else if (!isAns && sel) { cls += ' wrong'; tag = q.type === 'multi' ? 'Extra pick' : 'Your answer'; if (q.type === 'mcq' && q.why && q.why[oi]) why = q.why[oi]; }
+        else cls += ' dim';
+      } else if (sel) cls += ' sel';
+      return '<button type="button" class="' + cls + '" data-oi="' + oi + '" role="' + (q.type === 'mcq' ? 'radio' : 'checkbox') + '" aria-checked="' + sel + '"' + (ui.answered ? ' aria-disabled="true"' : '') + '>' +
+        '<span class="k">' + (pos + 1) + '</span><span>' + md(q.options[oi]) + '</span>' +
+        (tag ? '<span class="tag">' + tag + '</span>' : '') + (why ? '<span class="why">' + md(why) + '</span>' : '') + '</button>';
+    }).join('') + '</div>';
+  } else if (q.type === 'order') {
+    const n = ui.arr.length;
+    body.innerHTML = '<ol class="order-list" aria-labelledby="qtext">' + ui.arr.map((ii, pos) =>
+      '<li class="' + (ui.answered ? (ii === pos ? 'right' : 'wrong') : '') + '" data-pos="' + pos + '"><span class="pos">' + (pos + 1) + '</span><span>' + md(q.items[ii]) + '</span>' +
+      (ui.answered ? '<span class="pos">' + (ii === pos ? 'in place' : 'belongs at ' + (ii + 1)) + '</span>' :
+        '<span class="mv"><button type="button" data-mv="-1" aria-label="Move up: ' + esc(plain(q.items[ii])) + '"' + (pos === 0 ? ' disabled' : '') + '>&uarr;</button><button type="button" data-mv="1" aria-label="Move down: ' + esc(plain(q.items[ii])) + '"' + (pos === n - 1 ? ' disabled' : '') + '>&darr;</button></span>') +
+      '</li>').join('') + '</ol>' +
+      (ui.answered && !ui.correct ? '<div class="model-ans"><div class="blk-cap">The right order</div><ol style="margin:0;padding-left:22px">' + q.items.map((x) => '<li>' + md(x) + '</li>').join('') + '</ol></div>' : '');
+  } else if (q.type === 'match') {
+    body.innerHTML = '<div class="match-list">' + q.pairs.map((p, li) => {
+      const ch = ui.choice[li];
+      const state = ui.answered ? (String(li) === ch ? ' right' : ' wrong') : '';
+      return '<div class="match-row' + state + '"><label class="ml" for="m' + s.idx + '-' + li + '">' + md(p[0]) + '</label>' +
+        '<select id="m' + s.idx + '-' + li + '" data-li="' + li + '"' + (ui.answered ? ' disabled' : '') + '><option value="">Choose a match</option>' +
+        ui.rperm.map((ri) => '<option value="' + ri + '"' + (ch === String(ri) ? ' selected' : '') + '>' + esc(plain(q.pairs[ri][1])) + '</option>').join('') + '</select>' +
+        (ui.answered && String(li) !== ch ? '<div class="mfix">Match: ' + md(p[1]) + '</div>' : '') + '</div>';
+    }).join('') + '</div>';
+  } else if (q.type === 'open') {
+    body.innerHTML = '<div class="field"><label for="open-' + s.idx + '">Your answer</label><textarea id="open-' + s.idx + '" placeholder="Write a few sentences in your own words."' + (ui.compared ? ' readonly' : '') + '>' + esc(ui.text) + '</textarea></div>' +
+      (ui.compared ? '<div class="model-ans"><div class="blk-cap">Model answer</div>' + md(q.model) + '</div>' +
+        '<div class="field"><span class="lbl">Tick the points your answer covers</span><ul class="rubric">' + q.rubric.map((r, i) =>
+          '<li><label><input type="checkbox" data-rb="' + i + '"' + (ui.answered ? ' disabled' : '') + (ui.ticks && ui.ticks[i] ? ' checked' : '') + '><span>' + md(r) + '</span></label></li>').join('') + '</ul>' +
+        '<span class="hint">It counts as correct when you tick at least 60 percent of the points.</span></div>' +
+        (!ui.answered ? '<div class="row tutor-only"><button type="button" class="btn btn-sm" data-act="grade">Grade with Claude</button><span class="grade-note small muted"></span></div>' : '') +
+        '<div class="grade-fb"></div>' : '');
+  }
+}
+function updateSubmit(s) {
+  const btn = $('[data-act="submit"]', s.root); if (!btn) return;
+  const q = s.cfg.questions[s.idx].q, ui = s.ui;
+  if (ui.answered) { btn.textContent = s.idx + 1 < s.cfg.questions.length ? 'Next question' : 'See results'; btn.disabled = false; return; }
+  if (q.type === 'open') { btn.textContent = ui.compared ? 'Record my grade' : 'Compare with model answer'; btn.disabled = !ui.compared && !ui.text.trim(); return; }
+  btn.textContent = 'Check answer';
+  btn.disabled = q.type === 'mcq' ? ui.sel === null : q.type === 'multi' ? ui.sel.size === 0 : q.type === 'match' ? ui.choice.some((c) => c === '') : false;
+}
+function answerSummary(q, ui) {
+  if (q.type === 'mcq') return ui.sel === null ? '' : plain(q.options[ui.sel]);
+  if (q.type === 'multi') return Array.from(ui.sel).map((i) => plain(q.options[i])).join('; ');
+  if (q.type === 'order') return ui.arr.map((i) => plain(q.items[i])).join(' > ');
+  if (q.type === 'match') return q.pairs.map((p, i) => plain(p[0]) + ' = ' + (ui.choice[i] === '' ? '?' : plain(q.pairs[+ui.choice[i]][1]))).join('; ');
+  return ui.text;
+}
+function correctSummary(q) {
+  if (q.type === 'mcq') return plain(q.options[q.answer]);
+  if (q.type === 'multi') return q.answers.map((i) => plain(q.options[i])).join('; ');
+  if (q.type === 'order') return q.items.map(plain).join(' > ');
+  if (q.type === 'match') return q.pairs.map((p) => plain(p[0]) + ' = ' + plain(p[1])).join('; ');
+  return plain(q.model);
+}
+function submitQ(s) {
+  const item = s.cfg.questions[s.idx], q = item.q, ui = s.ui;
+  if (ui.answered) { s.idx++; if (s.idx < s.cfg.questions.length) renderQ(s); else finishQuiz(s); return; }
+  if (q.type === 'open' && !ui.compared) {
+    const ta = $('textarea', s.root); ui.text = ta ? ta.value : ui.text;
+    if (!ui.text.trim()) return;
+    ui.compared = true; ui.ticks = q.rubric.map(() => false); renderBody(s); updateSubmit(s);
+    announce('Model answer shown. Tick the rubric points your answer covers, then record your grade.');
+    const cb = $('.rubric input', s.root); if (cb) cb.focus();
+    return;
+  }
+  let ok = false;
+  if (q.type === 'mcq') ok = ui.sel === q.answer;
+  else if (q.type === 'multi') ok = ui.sel.size === q.answers.length && q.answers.every((a) => ui.sel.has(a));
+  else if (q.type === 'order') ok = ui.arr.every((v, i) => v === i);
+  else if (q.type === 'match') ok = ui.choice.every((c, i) => c === String(i));
+  else if (q.type === 'open') { const t = ui.ticks.filter(Boolean).length; ok = t / q.rubric.length >= 0.6; ui.score = t / q.rubric.length; }
+  ui.answered = true; ui.correct = ok;
+  s.results.push({ id: q.id, day: item.day, level: q.level, correct: ok, q: q, given: answerSummary(q, ui) });
+  reviewAnswer(q.id, ok);
+  renderBody(s);
+  let extra = '';
+  if (q.type === 'multi' && !ok) {
+    const missed = q.answers.filter((a) => !ui.sel.has(a)).length, extraN = Array.from(ui.sel).filter((a) => q.answers.indexOf(a) < 0).length;
+    extra = '<div class="small">' + [missed ? plural(missed, 'correct option') + ' missed' : '', extraN ? plural(extraN, 'extra pick') : ''].filter(Boolean).join(', ') + '.</div>';
+  }
+  if (q.type === 'open') extra = '<div class="small">You ticked ' + ui.ticks.filter(Boolean).length + ' of ' + q.rubric.length + ' points.</div>';
+  const fb = $('.qfb', s.root);
+  fb.innerHTML = '<div class="fb ' + (ok ? 'ok' : 'bad') + '"><div class="fb-h"><span class="mark">' + (ok ? '&#10003;' : '&#215;') + '</span>' + (ok ? 'Correct' : 'Incorrect') + '</div>' + extra +
+    (q.explain ? '<div>' + md(q.explain) + '</div>' : '') +
+    (!ok && s.cfg.tutor !== false ? '<div class="tutor-only"><button type="button" class="btn btn-sm" data-act="askwhy">Ask why</button></div>' : '') + '</div>';
+  announce((ok ? 'Correct. ' : 'Incorrect. ') + plain(q.explain || ''));
+  updateSubmit(s);
+  const btn = $('[data-act="submit"]', s.root); if (btn) btn.focus({ preventScroll: true });
+}
+function finishQuiz(s) {
+  const res = s.results, total = res.length, right = res.filter((r) => r.correct).length, score = total ? right / total : 0;
+  const cfg = s.cfg;
+  if (cfg.onFinish) cfg.onFinish(score, res);
+  const group = (keyFn, labelFn) => {
+    const g = {}; res.forEach((r) => { const k = keyFn(r); (g[k] = g[k] || { n: 0, r: 0 }); g[k].n++; if (r.correct) g[k].r++; });
+    return Object.keys(g).sort().map((k) => '<div class="bk-row"><span>' + labelFn(k) + '</span><div class="meter"><i style="width:' + pct(g[k].r / g[k].n) + '%;background:' + (g[k].r / g[k].n >= 0.8 ? 'var(--ok)' : g[k].r / g[k].n >= 0.5 ? 'var(--warn)' : 'var(--bad)') + '"></i></div><span class="num">' + g[k].r + '/' + g[k].n + '</span></div>').join('');
+  };
+  const days = new Set(res.map((r) => r.day));
+  const pass = cfg.passMark ? (score >= cfg.passMark ? '<span class="chip chip-ok">Passed the ' + pct(cfg.passMark) + '% mark</span>' : '<span class="chip chip-warn">Below the ' + pct(cfg.passMark) + '% mark</span>') : '';
+  const missed = res.filter((r) => !r.correct);
+  s.root.innerHTML = '<div class="results">' +
+    '<div class="row" style="align-items:flex-end;gap:18px"><div class="score-big num">' + pct(score) + '%<small>' + right + ' of ' + total + '</small></div><div class="row">' + pass + '</div></div>' +
+    (cfg.resultExtra ? cfg.resultExtra(score, res) : '') +
+    '<div class="breakdown"><div class="sec"><h3 class="sec-title" style="font-size:16px">By level</h3><div class="bk-rows">' + group((r) => String(r.level || 2), (k) => esc(LEVEL[k] || k)) + '</div></div>' +
+    (days.size > 1 ? '<div class="sec"><h3 class="sec-title" style="font-size:16px">By day</h3><div class="bk-rows">' + group((r) => r.day, (k) => '<a href="#' + k + '">' + (DAY[k] && DAY[k].day ? 'Day ' + DAY[k].day : 'Example') + '</a> <span class="muted small">' + esc(DAY[k] ? DAY[k].title : '') + '</span>') + '</div></div>' : '') +
+    '</div>' +
+    '<div class="sec"><h3 class="sec-title" style="font-size:16px">' + (missed.length ? 'Missed questions' : 'Nothing missed') + '</h3>' +
+    (missed.length ? '<ul class="missed">' + missed.map((r) => '<li><span class="mq">' + md(r.q.q) + '</span>' + (r.given ? '<span class="small muted">Your answer: ' + esc(r.given) + '</span>' : '') + '<span class="ma">Answer: ' + esc(correctSummary(r.q)) + '</span>' + (r.q.explain ? '<span>' + md(r.q.explain) + '</span>' : '') + '</li>').join('') + '</ul>' : '<p class="muted">Every answer was right.</p>') +
+    '</div>' +
+    '<div class="row"><button type="button" class="btn btn-primary" data-act="retake">' + esc(cfg.retakeLabel || 'Retake') + '</button>' + (cfg.after ? cfg.after(score) : '') + (cfg.back ? '<a class="btn" href="' + esc(cfg.back.href) + '">' + esc(cfg.back.label) + '</a>' : '') + '</div>' +
+    '</div>';
+  announce('Finished. Score ' + pct(score) + ' percent, ' + right + ' of ' + total + '.');
+  const rb = $('[data-act="retake"]', s.root); if (rb) rb.focus();
+}
+/* Delegated handlers (installed once). */
+document.addEventListener('click', (e) => {
+  const s = Quiz.s; if (!s || !s.root.isConnected || !s.root.contains(e.target)) return;
+  const q = s.idx < s.cfg.questions.length ? s.cfg.questions[s.idx].q : null;
+  const act = e.target.closest('[data-act]');
+  if (act) {
+    const a = act.dataset.act;
+    if (a === 'submit') return submitQ(s);
+    if (a === 'retake') { const cfg = s.cfg.retake ? s.cfg.retake() : s.cfg; return startQuiz(s.root, cfg); }
+    if (a === 'grade') return gradeOpen(s, act);
+    if (a === 'askwhy') return askWhy(s);
+  }
+  if (!q || s.ui.answered) return;
+  const opt = e.target.closest('.qbody .opt');
+  if (opt) { pickOpt(s, +opt.dataset.oi); return; }
+  const mv = e.target.closest('[data-mv]');
+  if (mv) { const pos = +mv.closest('li').dataset.pos; moveItem(s, pos, +mv.dataset.mv); }
+});
+document.addEventListener('change', (e) => {
+  const s = Quiz.s; if (!s || !s.root.contains(e.target) || !s.ui || s.ui.answered) return;
+  if (e.target.matches('select[data-li]')) { s.ui.choice[+e.target.dataset.li] = e.target.value; updateSubmit(s); }
+  if (e.target.matches('input[data-rb]')) { s.ui.ticks[+e.target.dataset.rb] = e.target.checked; }
+});
+document.addEventListener('input', (e) => {
+  const s = Quiz.s; if (!s || !s.root.contains(e.target) || !s.ui) return;
+  if (e.target.matches('.qbody textarea') && !s.ui.compared) { s.ui.text = e.target.value; updateSubmit(s); }
+});
+document.addEventListener('keydown', (e) => {
+  const s = Quiz.s; if (!s || !s.root.isConnected || e.altKey || e.ctrlKey || e.metaKey) return;
+  if (s.idx >= s.cfg.questions.length) return;
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'textarea' || tag === 'input' || tag === 'select') return;
+  if (e.target.closest && e.target.closest('.tutor')) return;
+  const q = s.cfg.questions[s.idx].q;
+  if (/^[1-9]$/.test(e.key) && !s.ui.answered && (q.type === 'mcq' || q.type === 'multi')) {
+    const pos = +e.key - 1; if (pos < s.ui.perm.length) { e.preventDefault(); pickOpt(s, s.ui.perm[pos], true); }
+  } else if (e.key === 'Enter' && ((tag !== 'button' && tag !== 'a') || e.target.closest('.qbody .opt'))) {
+    const btn = $('[data-act="submit"]', s.root); if (btn && !btn.disabled) { e.preventDefault(); submitQ(s); }
+  }
+});
+function pickOpt(s, oi, fromKey) {
+  const q = s.cfg.questions[s.idx].q;
+  if (q.type === 'mcq') s.ui.sel = oi; else if (s.ui.sel.has(oi)) s.ui.sel.delete(oi); else s.ui.sel.add(oi);
+  renderBody(s); updateSubmit(s);
+  const b = $('.qbody .opt[data-oi="' + oi + '"]', s.root); if (b && !fromKey) b.focus();
+  announce(plain(q.options[oi]) + (q.type === 'multi' && !s.ui.sel.has(oi) ? ' cleared' : ' selected'));
+}
+function moveItem(s, pos, d) {
+  const a = s.ui.arr, to = pos + d; if (to < 0 || to >= a.length) return;
+  [a[pos], a[to]] = [a[to], a[pos]];
+  renderBody(s);
+  const q = s.cfg.questions[s.idx].q;
+  const li = $$('.order-list li', s.root)[to]; if (li) { li.classList.add('flash'); setTimeout(() => li.classList.remove('flash'), 400); const b = $('[data-mv="' + d + '"]', li); (b && !b.disabled ? b : $('[data-mv]:not([disabled])', li)).focus(); }
+  announce(plain(q.items[a[to]]) + ' moved to position ' + (to + 1));
+}
+async function gradeOpen(s, btn) {
+  const q = s.cfg.questions[s.idx].q, ui = s.ui;
+  const note = $('.grade-note', s.root), out = $('.grade-fb', s.root);
+  const sample = tutorSample(); if (!sample) return;
+  btn.disabled = true; note.textContent = 'Claude is reading your answer...';
+  const prompt = 'You grade a learner\'s written answer against a rubric for a course on backend and AI systems. Judge each rubric point independently: met is true only when the learner\'s answer clearly states that point in any words.\n\n' +
+    'Question: ' + plain(q.q) + (q.context ? '\nContext: ' + plain(q.context) : '') +
+    '\n\nRubric points (' + q.rubric.length + '):\n' + q.rubric.map((r, i) => (i + 1) + '. ' + plain(r)).join('\n') +
+    '\n\nModel answer: ' + plain(q.model) + '\n\nLearner\'s answer: ' + ui.text.slice(0, 4000) +
+    '\n\nReply with only JSON of this shape: {"met": [true, false, ...], "feedback": "two or three plain sentences on what the answer got right and what it missed"}. The met array has exactly ' + q.rubric.length + ' booleans, in rubric order.';
+  try {
+    const r = await sample.json(prompt, { modelTier: 'quick' });
+    if (!r || !Array.isArray(r.met) || r.met.length !== q.rubric.length || r.met.some((x) => typeof x !== 'boolean') || typeof r.feedback !== 'string') throw { code: 'invalid_json' };
+    if (s.ui !== ui || ui.answered) return;
+    ui.ticks = r.met.slice();
+    $$('.rubric input', s.root).forEach((cb, i) => { cb.checked = !!r.met[i]; });
+    note.textContent = 'Claude ticked ' + r.met.filter(Boolean).length + ' of ' + r.met.length + ' points. Adjust the ticks if you disagree, then record your grade.';
+    out.innerHTML = '<div class="fb ok" style="background:var(--sunk)"><div class="blk-cap" style="margin:0">Claude\'s feedback</div><div class="tutor-msg">' + mdBlocks(r.feedback) + '</div></div>';
+  } catch (e) {
+    note.textContent = sampleErrorText(e, 'The grade came back in an unexpected form. Try again.');
+  } finally { if (btn.isConnected) btn.disabled = !tutorSample(); }
+}
+function askWhy(s) {
+  const item = s.cfg.questions[s.idx], q = item.q;
+  const slot = $('.tutor-slot', s.root); if (!slot) return;
+  const ctxText = 'Question: ' + plain(q.q) + (q.context ? '\nContext: ' + plain(q.context) : '') + (q.artifact ? '\nArtifact:\n' + q.artifact.code : '') +
+    '\nCorrect answer: ' + correctSummary(q) + '\nExplanation: ' + plain(q.explain || q.model || '');
+  const panel = mountTutor(slot, { title: 'Quiz question from ' + (DAY[item.day] ? DAY[item.day].title : 'the course'), text: ctxText, quick: false });
+  panel.ask('I answered "' + (s.ui ? answerSummary(q, s.ui) : '') + '". Why is that wrong, and what should I notice next time?', 'Why was my answer wrong?');
+}
+
+/* ===== drill.js ===== */
+/* ---------- drill.js: incident simulations ---------- */
+function startDrill(root, day, drill, opts) {
+  const st = { step: 0, first: [], tried: new Set(), solved: false, perm: null, evidence: [], log: [] };
+  if (drill.artifact) st.evidence.push({ label: 'Initial evidence', art: drill.artifact });
+  const total = (drill.steps || []).length;
+  function render() {
+    const done = st.step >= total;
+    let html = '<div class="drill">' +
+      '<div class="brief">' + md(drill.brief) + '</div>' +
+      '<div class="evidence">' + st.evidence.map((e) => '<div class="ev-item"><div class="blk-cap">' + esc(e.label) + '</div>' + (e.text ? '<div class="brief" style="font-size:16px">' + md(e.text) + '</div>' : '') + (e.art ? renderCode(e.art) : '') + '</div>').join('') + '</div>';
+    if (st.log.length) html += '<ol class="step-log" aria-label="Decisions so far">' + st.log.map((l, i) => '<li><span class="sq">Step ' + (i + 1) + ': ' + md(l.q) + '</span><span><b>' + md(l.a) + '</b>' + (l.first ? '' : ' <span class="chip chip-warn">after a retry</span>') + '</span></li>').join('') + '</ol>';
+    if (!done) {
+      const s = drill.steps[st.step];
+      if (!st.perm) st.perm = shuffledPerm(s.options.length);
+      html += '<div class="qcard panel"><div class="qprog"><span class="num">Step ' + (st.step + 1) + ' of ' + total + '</span><div class="meter" aria-hidden="true"><i style="width:' + (100 * st.step / total) + '%"></i></div></div>' +
+        '<div class="q" id="dq">' + md(s.q) + '</div><div class="opts" role="group" aria-labelledby="dq">' + st.perm.map((oi, pos) => {
+          let cls = 'opt', tag = '';
+          if (st.solved && oi === s.answer) { cls += ' right'; tag = 'Best move'; }
+          else if (st.tried.has(oi)) { cls += ' wrong'; tag = 'Not this one'; }
+          else if (st.solved) cls += ' dim';
+          return '<button type="button" class="' + cls + '" data-oi="' + oi + '"' + (st.solved || st.tried.has(oi) ? ' aria-disabled="true"' : '') + '><span class="k">' + (pos + 1) + '</span><span>' + md(s.options[oi]) + '</span>' + (tag ? '<span class="tag">' + tag + '</span>' : '') + '</button>';
+        }).join('') + '</div><div class="dfb" aria-live="polite">' + feedback(s) + '</div>' +
+        (st.solved ? '<div class="qactions"><button type="button" class="btn btn-primary" data-next>' + (st.step + 1 < total ? 'Next step' : 'Read the debrief') + '</button></div>' : '') + '</div>';
+    } else {
+      const score = total ? st.first.filter(Boolean).length / total : 0;
+      html += '<div class="debrief"><div class="blk-cap" style="margin:0">Debrief</div>' + md(drill.debrief) + '</div>' +
+        '<div class="row"><span class="chip ' + (score >= 0.8 ? 'chip-ok' : 'chip-warn') + '">' + st.first.filter(Boolean).length + ' of ' + total + ' steps right on the first try</span></div>' +
+        '<div class="row"><button type="button" class="btn" data-restart>Run this drill again</button>' + (opts && opts.after ? opts.after() : '') + '</div>';
+    }
+    root.innerHTML = html + '</div>';
+  }
+  function feedback(s) {
+    if (st.solved) return '<div class="fb ok"><div class="fb-h"><span class="mark">&#10003;</span>Good call</div><div>' + md(s.explain) + '</div></div>';
+    if (st.tried.size) return '<div class="fb bad"><div class="fb-h"><span class="mark">&#215;</span>Not the best next move</div><div>Ask what that would tell you that you do not already know, and what it costs. Cheap evidence that halves the search space usually comes first. Choose again.</div></div>';
+    return '';
+  }
+  root.onclick = (e) => {
+    if (e.target.closest('[data-restart]')) { startDrill(root, day, drill, opts); return; }
+    if (e.target.closest('[data-next]')) {
+      st.step++; st.tried = new Set(); st.solved = false; st.perm = null; render();
+      if (st.step >= total) { const score = total ? st.first.filter(Boolean).length / total : 0; recordResult('drills', drill.id, score); announce('Drill finished. ' + st.first.filter(Boolean).length + ' of ' + total + ' first-try answers.'); }
+      const f = $('.qcard .opt, .debrief', root); if (f) { f.setAttribute('tabindex', f.getAttribute('tabindex') || '-1'); f.focus(); }
+      return;
+    }
+    const o = e.target.closest('.opt'); if (!o || st.solved || st.step >= total) return;
+    const s = drill.steps[st.step], oi = +o.dataset.oi;
+    if (st.tried.has(oi)) return;
+    if (oi === s.answer) {
+      st.solved = true; st.first[st.step] = st.tried.size === 0;
+      st.log.push({ q: s.q, a: s.options[s.answer], first: st.tried.size === 0 });
+      if (s.reveal || s.artifact) st.evidence.push({ label: 'New evidence after step ' + (st.step + 1), text: s.reveal, art: s.artifact });
+      render(); announce('Good call. ' + plain(s.explain));
+      const nb = $('[data-next]', root); if (nb) nb.focus({ preventScroll: true });
+    } else {
+      st.tried.add(oi); render(); announce('Not the best next move. Choose again.');
+    }
+  };
+  render();
+}
+
+/* ===== tutor.js ===== */
+/* ---------- tutor.js: the sample capability ---------- */
+const Tutor = { sample: null, off: false };
+const TUTOR_RULES = 'You are the tutor inside a thirty-day course on backend and AI systems called the Thirty-Day Backend Runbook. ' +
+  'The learner builds AI and agent projects, reads Python, and spends most of his time testing, evaluating and debugging. ' +
+  'He wants ideas, mechanisms, tradeoffs and failure signatures so that when something breaks he knows where to look. He does not want to learn to write the code. ' +
+  'Answer at concept level, concisely: usually under 180 words. Where it helps, name the tradeoff and what a failure looks like from outside (a status code, a log line, a metric, a trace). ' +
+  'No code tutorials. Write plain text. You may use **bold**, *italic* and `code` marks and short lists that start with "- ". No headings, tables or code blocks. ' +
+  'If the question is outside the lesson, answer briefly and connect it back. The course material for this conversation follows.';
+
+function tutorSample() { return Tutor.off ? null : Tutor.sample; }
+function initTutor() {
+  const dev = lsGet('rb_dev_tutor') === '1';
+  const C = window.claude;
+  const enable = (fn) => { Tutor.sample = fn; document.documentElement.classList.add('has-tutor'); };
+  if (C && typeof C.use === 'function') {
+    withTimeout(C.use('sample'), 10000).then((fn) => { if (fn) enable(fn); else if (dev) enable(mockSample()); }, () => { if (dev) enable(mockSample()); });
+  } else if (dev) enable(mockSample());
+}
+function disableTutor() { Tutor.off = true; document.documentElement.classList.remove('has-tutor'); }
+function sampleErrorText(e, fallback) {
+  const code = (e && e.code) || 'upstream_error';
+  if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed'].indexOf(code) >= 0) { disableTutor(); return 'Claude is not available on this page.'; }
+  if (code === 'rate_limited') return 'Claude is busy right now. Try again in a moment.';
+  if (code === 'session_expired') return 'Your Claude session expired. Sign in again, then try again.';
+  if (code === 'refused') return 'Claude declined that request. Try rephrasing it.';
+  if (code === 'prompt_too_large') return 'That was too much text to send. Ask a shorter question.';
+  if (code === 'invalid_json') return fallback || 'The answer came back in an unexpected form. Try again.';
+  if (code === 'cancelled') return 'Stopped.';
+  return 'The answer was interrupted. Try again.';
+}
+/* Local testing only: a canned tutor when localStorage.rb_dev_tutor === "1" and no capability exists. */
+function mockSample() {
+  const canned = 'Here is a **canned answer** for local testing. A real answer would come from Claude.\n\n- The first point mentions `retry-after`.\n- The second point says where to *look* first.';
+  const fn = function (input, opts) {
+    opts = opts || {};
+    return new Promise((resolve, reject) => {
+      let i = 0;
+      const iv = setInterval(() => {
+        if (opts.signal && opts.signal.aborted) { clearInterval(iv); reject({ code: 'cancelled', message: 'aborted', text: canned.slice(0, i) }); return; }
+        const prev = canned.slice(0, i); i = Math.min(canned.length, i + 24);
+        const text = canned.slice(0, i);
+        if (opts.onText) opts.onText({ text: text, delta: text.slice(prev.length) });
+        if (i >= canned.length) { clearInterval(iv); resolve({ text: canned, truncated: false, modelTierApplied: 'default' }); }
+      }, 25);
+    });
+  };
+  fn.json = function (input) {
+    const m = /Rubric points \((\d+)\)/.exec(typeof input === 'string' ? input : '');
+    const n = m ? +m[1] : 3;
+    return new Promise((r) => setTimeout(() => r({ met: range(n).map((i) => i % 2 === 0), feedback: 'Canned grade for local testing. Your answer covered the **first** point and missed the second.' }), 150));
+  };
+  fn.limits = () => Promise.resolve({ maxPromptBytes: 262144 });
+  return fn;
+}
+
+/* A tutor panel. ctx: {title, text, quick}. Returns {ask(question, shown)}. Turns live with the panel. */
+const QUICK_PROMPTS = ['Explain it with an analogy', 'How would this show up in my logs?', 'Quiz me on this lesson', 'Why does this matter for evals?'];
+let tutorN = 0;
+function mountTutor(el, ctx) {
+  const id = 'tutor-' + (++tutorN);
+  const turns = [];
+  let ctl = null;
+  el.innerHTML = '<section class="tutor tutor-only" aria-labelledby="' + id + '-h"><h3 id="' + id + '-h">Ask the tutor</h3>' +
+    '<p class="tutor-note">Claude answers using this ' + (ctx.quick === false ? 'question' : 'lesson') + (S.settings.note ? ' and your project note' : '') + '. Each answer uses your Claude usage.</p>' +
+    (ctx.quick === false ? '' : '<div class="quick">' + QUICK_PROMPTS.map((p) => '<button type="button" data-q="' + esc(p) + '">' + esc(p) + '</button>').join('') + '</div>') +
+    '<div class="tutor-log" aria-live="polite"></div>' +
+    '<form><label class="sr-only" for="' + id + '-in">Your question</label><input type="text" id="' + id + '-in" placeholder="Ask about this ' + (ctx.quick === false ? 'question' : 'lesson') + '" autocomplete="off"><button type="submit" class="btn btn-sm btn-primary">Ask</button></form>' +
+    '<div class="row"><button type="button" class="btn btn-sm" data-stop hidden>Stop</button><span class="tutor-note" data-status></span></div></section>';
+  const log = $('.tutor-log', el), input = $('input', el), stop = $('[data-stop]', el), status = $('[data-status]', el), askBtn = $('form button', el);
+  const busy = (b) => { askBtn.disabled = b; $$('.quick button', el).forEach((x) => { x.disabled = b; }); stop.hidden = !b; };
+  async function ask(question, shown) {
+    const sample = tutorSample();
+    if (!sample || !question.trim() || ctl) return;
+    status.textContent = '';
+    const me = document.createElement('div'); me.className = 'tutor-msg me'; me.textContent = shown || question; log.appendChild(me);
+    const ai = document.createElement('div'); ai.className = 'tutor-msg ai'; ai.textContent = 'Thinking...'; log.appendChild(ai);
+    log.scrollTop = log.scrollHeight;
+    const head = TUTOR_RULES + '\n\nTopic: ' + plain(ctx.title || '') + '\n\n' + String(ctx.text || '').slice(0, 4500) +
+      (S.settings.note ? '\n\nWhat the learner is building: ' + S.settings.note.slice(0, 600) : '');
+    const msgs = [{ role: 'user', content: head }].concat(turns.slice(-6), [{ role: 'user', content: question }]);
+    ctl = new AbortController(); busy(true);
+    try {
+      const r = await sample(msgs, { cache: false, signal: ctl.signal, onText: (u) => { ai.innerHTML = mdBlocks(u.text); log.scrollTop = log.scrollHeight; } });
+      ai.innerHTML = mdBlocks(r.text);
+      if (r.truncated) status.textContent = 'The answer was cut short. Ask for less at a time.';
+      turns.push({ role: 'user', content: question }, { role: 'assistant', content: r.text });
+    } catch (e) {
+      if (e && e.text && e.code !== 'refused') ai.innerHTML = mdBlocks(e.text); else ai.remove();
+      status.textContent = sampleErrorText(e);
+    } finally { ctl = null; busy(false); }
+  }
+  el.addEventListener('click', (e) => { const b = e.target.closest('[data-q]'); if (b) ask(b.dataset.q); });
+  stop.addEventListener('click', () => { if (ctl) ctl.abort(); });
+  $('form', el).addEventListener('submit', (e) => { e.preventDefault(); const v = input.value; input.value = ''; ask(v); });
+  return { ask: ask };
+}
+
+/* ===== views.js ===== */
+/* ---------- views.js ---------- */
+function dayLabel(meta) { return meta.day ? 'Day ' + meta.day : 'Example'; }
+function ptag(pid, text) { return '<span class="ptag" style="--ph:' + phaseVar(pid) + '">' + esc(text || (PHASE[pid] ? PHASE[pid].name : '')) + '</span>'; }
+function continueTarget(meta) {
+  const ids = lessonIds(meta);
+  const l = ids.findIndex((x) => !S.lessons[x]);
+  if (l >= 0) return { href: '#' + ids[l], label: (ids.slice(0, l).some((x) => S.lessons[x]) || l > 0 ? 'Continue with lesson ' : 'Start lesson ') + (l + 1) };
+  if (quizBest(meta.id) < 0.7) return { href: '#' + meta.id + '-quiz', label: 'Take the quiz' };
+  const d = (meta.drills || []).find((x) => !(S.drills[x.id] && S.drills[x.id].attempts));
+  if (d) return { href: '#' + d.id, label: 'Run the drill: ' + d.title };
+  return null;
+}
+function viewHead(eyebrow, title, sub) {
+  return '<div class="view-head">' + (eyebrow ? '<div class="eyebrow">' + eyebrow + '</div>' : '') + '<h1 class="view-title">' + esc(title) + '</h1>' + (sub ? '<p class="sub">' + sub + '</p>' : '') + '</div>';
+}
+function lessonListHTML(meta) {
+  const ids = lessonIds(meta);
+  const next = ids.findIndex((x) => !S.lessons[x]);
+  return '<ol class="lesson-list" aria-label="Lessons">' + (meta.lessons || []).map((l, i) => {
+    const done = !!S.lessons[ids[i]];
+    return '<li class="' + (done ? 'done' : i === next ? 'next' : '') + '"><a href="#' + ids[i] + '"><span class="tick" aria-hidden="true">' + (done ? '&#10003;' : i + 1) + '</span><span class="lt">' + esc(l.title) + '<span>' + (done ? 'Completed' : i === next ? 'Up next' : 'Not started') + '</span></span><span class="lm">' + (l.minutes ? l.minutes + ' min' : '') + '</span></a></li>';
+  }).join('') + '</ol>';
+}
+
+/* ---------- trace strip (Today) ---------- */
+function traceStrip(cur) {
+  const cps = new Set(CHECKS.map((c) => c.afterDay));
+  return '<div><div class="strip" role="list" aria-label="Thirty days, filled by mastery">' + DAYS.map((d) => {
+    const m = d.available ? mastery(d) : 0;
+    return '<a role="listitem" href="#' + d.id + '" style="--ph:' + phaseVar(d.phase) + '" class="' + (d.available ? '' : 'missing ') + (cur && cur.id === d.id ? 'current ' : '') + (cps.has(d.day) && d.day < 30 ? 'cp-after' : '') + '" title="Day ' + d.day + ': ' + esc(d.title) + ' (' + STATUS_TEXT[dayStatus(d)] + ', ' + pct(m) + '%)" aria-label="Day ' + d.day + ', ' + esc(d.title) + ', ' + STATUS_TEXT[dayStatus(d)] + '"><i style="height:' + Math.max(m > 0 ? 8 : 0, pct(m)) + '%"></i></a>';
+  }).join('') + '</div><div class="strip-scale" aria-hidden="true">' + DAYS.map((d) => '<span>' + (d.day === 1 || d.day % 5 === 0 ? d.day : '') + '</span>').join('') + '</div></div>';
+}
+
+/* ---------- Today ---------- */
+function renderToday(main) {
+  const cur = currentDay();
+  const pace = paceInfo();
+  const done = doneCount();
+  const due = dueCards();
+  const ws = weakSpots();
+  let html = '<div class="view">';
+  if (!S.settings.setup) {
+    html += '<form class="setup" id="setup-form"><div><div class="eyebrow">First run</div><h2 class="sec-title" style="margin-top:6px">Set up your thirty days</h2></div>' +
+      '<p class="small muted" style="max-width:var(--measure)">The start date sets your pace. Nothing is locked: open any day in any order. The note helps the tutor tie answers to your own work.</p>' +
+      '<div class="setup-grid"><div class="field"><label for="setup-start">Start date</label><input type="date" id="setup-start" value="' + esc(S.settings.start || isoDate()) + '" required></div>' +
+      '<div class="field"><label for="setup-note">What are you building? <span class="muted">(optional)</span></label><input type="text" id="setup-note" maxlength="300" value="' + esc(S.settings.note) + '" placeholder="For example: a support agent with RAG over our docs, evaluated nightly"></div></div>' +
+      '<div class="row"><button type="submit" class="btn btn-primary">Start day 1</button><button type="button" class="btn" data-placement>Save and take the placement test</button><span class="small muted">The placement test asks one question per day and marks the days you likely know.</span></div></form>';
+  }
+  const ph = PHASE[cur.phase];
+  html += '<div class="today-hero" style="--ph:' + phaseVar(cur.phase) + '"><div class="daynum num" aria-label="Day ' + cur.day + ' of 30">' + cur.day + '<small>/30</small></div><div class="t-meta">' +
+    '<div class="row">' + ptag(cur.phase) + (cur.minutes ? '<span class="chip">' + cur.minutes + ' min</span>' : '') + '<span class="chip">' + STATUS_TEXT[dayStatus(cur)] + '</span></div>' +
+    '<h1>' + esc(cur.title) + '</h1><p class="muted" style="max-width:var(--measure)">' + md(cur.tagline || '') + '</p></div></div>';
+  html += '<div class="pace">' + (S.settings.start ? '<span class="chip ' + (pace.diff < 0 ? 'chip-warn' : pace.diff > 0 ? 'chip-ok' : 'chip-accent') + '">' + esc(pace.text) + '</span><span>Calendar day ' + Math.max(1, Math.min(pace.cal, 99)) + ' since ' + esc(fmtDate(S.settings.start)) + ', ' + plural(done, 'day') + ' done.</span>' : '<span>' + plural(done, 'day') + ' done.</span>') +
+    (S.settings.start && pace.diff !== 0 ? '<button type="button" class="btn btn-quiet btn-sm" data-shift>Shift my start date</button>' : '') + '</div><div id="shift-slot"></div>';
+
+  html += '<div class="grid2"><div class="sec">';
+  if (cur.available) {
+    const ct = continueTarget(cur);
+    html += '<div class="sec-head"><h2 class="sec-title">Today\'s lessons</h2><a href="#' + cur.id + '" class="small">Open day ' + cur.day + '</a></div>' + lessonListHTML(cur) +
+      '<div class="row">' + (ct ? '<a class="btn btn-primary" href="' + ct.href + '">' + esc(ct.label) + '</a>' : '') + '<a class="btn" href="#' + cur.id + '-quiz">Quiz' + (S.quiz[cur.id] ? ', best ' + pct(S.quiz[cur.id].best) + '%' : '') + '</a></div>';
+  } else {
+    const nextAvail = DAYS.find((d) => d.available && !isDayDone(d));
+    html += '<div class="missing-day"><div class="eyebrow">Day ' + cur.day + ' is not written yet</div><p>The lessons for this day are still being written. Its plan is below. ' + (nextAvail ? 'You can keep going with another day in the meantime.' : '') + '</p>' +
+      '<ol>' + cur.lessons.map((l) => '<li>' + esc(l.title) + '</li>').join('') + '</ol>' +
+      (nextAvail ? '<div><a class="btn btn-primary" href="#' + nextAvail.id + '">Go to day ' + nextAvail.day + ': ' + esc(nextAvail.title) + '</a></div>' : '') + '</div>';
+  }
+  html += '</div><div class="sec">';
+  html += '<div class="panel sec"><div class="sec-head"><h2 class="sec-title">Review</h2><a class="small" href="#review">Open review</a></div>' +
+    (due.length ? '<p><b class="num">' + due.length + '</b> ' + (due.length === 1 ? 'card is' : 'cards are') + ' due today.</p><div><a class="btn btn-primary" href="#review">Review ' + Math.min(20, due.length) + ' cards</a></div>'
+      : Object.keys(S.review).length ? '<p class="muted">Nothing is due today. The next card is due ' + esc(fmtDate(nextDueDate())) + '.</p>' : '<p class="muted">Cards appear here after you answer quiz questions. Each one returns on a schedule: 1, 2, 4, 7, then 14 days.</p>') + '</div>';
+  html += '<div class="stats"><div class="stat"><b>' + streak() + '</b><span>day streak</span></div><div class="stat"><b>' + done + '<span class="muted" style="font-size:.6em">/30</span></b><span>days done</span></div><div class="stat"><b>' + Object.keys(S.lessons).length + '</b><span>lessons read</span></div></div>';
+  html += '<div class="sec"><h2 class="sec-title">Weak spots</h2>' + (ws.length ? '<ul class="weak">' + ws.map((w) => '<li><span>' + (w.kind === 'tag' ? '<code class="mono small">' + esc(w.label) + '</code>' : esc(w.label)) + '</span><div class="meter" title="' + pct(w.acc) + '% right"><i style="width:' + pct(w.acc) + '%"></i></div><a class="btn btn-sm" href="#practice-' + (w.kind === 'tag' ? 'tag-' + w.key : w.key) + '">Practice</a></li>').join('') + '</ul>'
+    : '<p class="small muted">Topics where you get fewer than 80 percent right show up here once you have answered a few questions on them.</p>') + '</div>';
+  html += '</div></div>';
+  html += '<div class="sec rule-top"><div class="sec-head"><h2 class="sec-title">Your trace</h2><a class="small" href="#path">Open the full path</a></div>' + traceStrip(cur) + '</div>';
+  main.innerHTML = html + '</div>';
+
+  const f = $('#setup-form', main);
+  if (f) {
+    const save = () => setSettings({ start: $('#setup-start').value || isoDate(), note: $('#setup-note').value.trim(), setup: true });
+    f.addEventListener('submit', (e) => { e.preventDefault(); save(); announce('Saved. Day 1 starts ' + fmtDate(S.settings.start) + '.'); });
+    $('[data-placement]', f).addEventListener('click', () => { save(); location.hash = 'test-placement'; });
+  }
+  const sh = $('[data-shift]', main);
+  if (sh) sh.addEventListener('click', () => {
+    const newStart = addDays(isoDate(), -done);
+    const slot = $('#shift-slot');
+    slot.innerHTML = '<div class="panel panel-tight row"><span>Move your start date to <b>' + esc(fmtDate(newStart)) + '</b> so that today is day ' + Math.min(30, done + 1) + '.</span><button type="button" class="btn btn-sm btn-primary" data-do>Shift start date</button><button type="button" class="btn btn-sm" data-no>Keep it</button></div>';
+    $('[data-do]', slot).addEventListener('click', () => { setSettings({ start: newStart }); announce('Start date moved to ' + fmtDate(newStart)); });
+    $('[data-no]', slot).addEventListener('click', () => { slot.innerHTML = ''; sh.focus(); });
+  });
+}
+
+/* ---------- Path: the trace waterfall ---------- */
+function renderPath(main) {
+  const cur = currentDay();
+  const cps = CHECKS;
+  const pos = (d) => (100 * d / 30);
+  const cpLines = cps.map((c) => '<span class="cpl" style="left:' + pos(c.afterDay) + '%"></span>').join('');
+  const famil = (S.placement && S.placement.byDay) || {};
+  let rows = '';
+  PHASES.forEach((p) => {
+    const ds = DAYS.filter((d) => d.phase === p.id);
+    const m = ds.length ? ds.reduce((a, d) => a + (d.available ? mastery(d) : 0), 0) / ds.length : 0;
+    const nDone = ds.filter(isDayDone).length;
+    rows += '<div class="tr is-phase" style="--ph:' + phaseVar(p.id) + '"><span class="tid">' + p.id.toUpperCase() + '</span><span class="tname">' + esc(p.name) + '</span><span class="tstat">' + nDone + '/' + ds.length + ' done</span>' +
+      '<div class="track"><span class="grid"></span>' + cpLines + '<span class="span" style="left:' + pos(p.from - 1) + '%;width:' + pos(p.to - p.from + 1) + '%"><i style="width:' + pct(m) + '%"></i></span></div></div>';
+    ds.forEach((d) => {
+      const st = dayStatus(d), mm = d.available ? mastery(d) : 0, q = S.quiz[d.id];
+      const right = d.day > 24;
+      rows += '<a class="tr' + (d.available ? '' : ' is-missing') + (cur.id === d.id ? ' is-current' : '') + '" href="#' + d.id + '" style="--ph:' + phaseVar(d.phase) + '" aria-label="Day ' + d.day + ': ' + esc(d.title) + '. ' + STATUS_TEXT[st] + (q ? ', best quiz ' + pct(q.best) + ' percent' : '') + '">' +
+        '<span class="tid">' + d.id + '</span><span class="tname">' + esc(d.title) + (famil[d.id] ? '<span class="famil">likely familiar</span>' : '') + '</span>' +
+        '<span class="tstat' + (st === 'done' ? ' done' : '') + '">' + (st === 'unwritten' ? 'not written' : st === 'done' ? 'done' : q ? 'quiz ' + pct(q.best) + '%' : st === 'started' ? pct(mm) + '%' : '&nbsp;') + '</span>' +
+        '<div class="track"><span class="grid"></span>' + cpLines + '<span class="span" style="left:' + pos(d.day - 1) + '%;width:' + pos(1) + '%"><i style="width:' + pct(mm) + '%"></i></span>' +
+        (d.available && mm > 0 ? '<span class="span-label" style="' + (right ? 'right:' + (100 - pos(d.day - 1)) + '%;padding-right:6px' : 'left:' + pos(d.day) + '%') + '">' + pct(mm) + '%</span>' : '') + '</div></a>';
+    });
+  });
+  const axis = '<div class="axis"><span class="edge" style="left:0%;transform:none">0</span>' + [5, 10, 15, 20, 25].map((n) => '<span style="left:' + pos(n) + '%">' + n + '</span>').join('') + '<span class="edge" style="left:100%;transform:translateX(-100%)">30</span>' +
+    cps.map((c) => '<span class="cp" style="left:' + pos(c.afterDay) + '%;' + (c.afterDay === 30 ? 'transform:translateX(-100%)' : '') + '">' + esc(c.id === 'final' ? 'F' : c.id) + '</span>').join('') + '</div>';
+  const ex = ALL_DAYS.filter((d) => d.day === 0);
+  main.innerHTML = '<div class="view">' + viewHead('Thirty days', 'The path', 'Each phase is a parent span and each day a child span on a thirty-day axis. A span fills as you master the day: lessons count 40 percent, your best quiz score 40, drills 20. Dashed lines mark the checkpoints.') +
+    '<div class="trace-legend">' + PHASES.map((p) => '<span><span class="sw" style="background:' + phaseVar(p.id) + '"></span>' + esc(p.name) + '</span>').join('') + '<span><span class="sw" style="border:1px dashed var(--accent);width:0;height:12px"></span>checkpoint</span></div>' +
+    '<div class="trace" role="list"><div class="trace-head" aria-hidden="true"><span>Span</span><span>Title</span><span class="th-stat" style="text-align:right">Status</span>' + axis + '</div>' + rows + '</div>' +
+    '<div class="row small muted">' + cps.map((c) => '<a href="#test-' + c.id + '">' + esc(c.title) + '</a> <span>after day ' + c.afterDay + '</span>').join('<span aria-hidden="true">&middot;</span>') + '</div>' +
+    (ex.length ? '<div class="panel panel-tight row"><span class="chip">Example</span><a href="#' + ex[0].id + '">' + esc(ex[0].title) + '</a><span class="small muted">A sample day for testing. It is not part of the thirty.</span></div>' : '') +
+    '</div>';
+}
+
+/* ---------- Day ---------- */
+function dayHeadHTML(meta) {
+  const ph = PHASE[meta.phase];
+  return '<div class="day-head" style="--ph:' + phaseVar(meta.phase) + '"><div class="daynum num" aria-hidden="true">' + (meta.day ? pad2(meta.day) : 'Ex') + '</div><div class="view-head">' +
+    '<div class="row"><a class="dayid" href="#path">' + esc(meta.id) + '</a>' + ptag(meta.phase) + (meta.minutes ? '<span class="chip">' + meta.minutes + ' min</span>' : '') + '</div>' +
+    '<h1>' + esc(dayLabel(meta)) + ': ' + esc(meta.title) + '</h1>' + (meta.tagline ? '<p class="tagline">' + md(meta.tagline) + '</p>' : '') + '</div></div>';
+}
+function fgRowHTML(r, meta, withDay) {
+  return '<details><summary><span class="sym">' + md(r.symptom) + '</span>' + (withDay ? '<span class="ptag" style="--ph:' + phaseVar(meta.phase) + '">' + esc(meta.id) + '</span>' : '<span></span>') + '</summary><dl class="body">' +
+    '<dt>Likely causes</dt><dd><ul>' + (r.causes || []).map((c) => '<li>' + md(c) + '</li>').join('') + '</ul></dd>' +
+    '<dt>Look first</dt><dd>' + md(r.look) + '</dd><dt>Confirm</dt><dd>' + md(r.confirm) + '</dd><dt>Fix</dt><dd class="fix">' + md(r.fix) + '</dd>' +
+    (withDay ? '<dt>Lesson</dt><dd><a href="#' + meta.id + '">' + esc(dayLabel(meta)) + ': ' + esc(meta.title) + '</a></dd>' : '') + '</dl></details>';
+}
+function missingDayHTML(meta) {
+  return '<div class="missing-day"><div class="eyebrow">Not written yet</div><p>This day is planned but its lessons are still being written. Here is what it will cover. Come back later, or keep going with another day.</p>' +
+    '<ol>' + (meta.lessons || []).map((l) => '<li>' + esc(l.title) + (l.scope ? '<span>' + esc(l.scope) + '</span>' : '') + '</li>').join('') + '</ol>' +
+    '<div class="row"><a class="btn" href="#path">Back to the path</a></div></div>';
+}
+function renderDay(main, id) {
+  const meta = DAY[id];
+  main.innerHTML = '<div class="view">' + dayHeadHTML(meta) + '<div id="day-body">' + (meta.available ? '<p class="muted">Loading the day...</p>' : missingDayHTML(meta)) + '</div></div>';
+  if (!meta.available) return;
+  loadDay(id).then((d) => {
+    const body = $('#day-body'); if (!body) return;
+    const ap = S.apply[id] && S.apply[id].done;
+    const qr = S.quiz[id];
+    const m = mastery(meta);
+    let html = '<div class="view">';
+    html += '<div class="grid2"><div class="sec"><p class="why">' + md(d.why) + '</p><div class="sec"><h2 class="sec-title">By the end of today you can</h2><ul class="objectives">' + (d.objectives || []).map((o) => '<li>' + md(o) + '</li>').join('') + '</ul></div></div>' +
+      '<div class="sec"><div class="panel sec"><div class="sec-head"><h2 class="sec-title">Mastery</h2><span class="num mono">' + pct(m) + '%</span></div><div class="meter" style="height:8px"><i style="width:' + pct(m) + '%;background:' + phaseVar(meta.phase) + '"></i></div>' +
+      '<p class="small muted">' + (isDayDone(meta) ? 'Day done.' : 'A day is done when every lesson is complete and your best quiz score is at least 70 percent.') + (S.placement && S.placement.byDay && S.placement.byDay[id] ? ' The placement test marked this day as likely familiar.' : '') + '</p>' +
+      (continueTarget(meta) ? '<div><a class="btn btn-primary" href="' + continueTarget(meta).href + '">' + esc(continueTarget(meta).label) + '</a></div>' : '') + '</div></div></div>';
+    html += '<div class="sec"><h2 class="sec-title">Lessons</h2>' + lessonListHTML(Object.assign({}, meta, { lessons: d.lessons.map((l) => ({ id: l.id, title: l.title, minutes: l.minutes })) })) + '</div>';
+    html += '<div class="sec"><h2 class="sec-title">Practice</h2><div class="entry-row">' +
+      '<a class="entry" href="#' + id + '-quiz"><span class="eyebrow">Quiz</span><span class="et">' + d.quiz.length + ' questions</span><span class="em">' + (qr ? 'Best ' + pct(qr.best) + '%, last ' + pct(qr.last) + '%, ' + plural(qr.attempts, 'attempt') : 'Not taken yet. Pass mark 80 percent.') + '</span></a>' +
+      d.drills.map((x) => { const r = S.drills[x.id]; return '<a class="entry" href="#' + x.id + '"><span class="eyebrow">Incident drill</span><span class="et">' + md(x.title) + '</span><span class="em">' + (r ? 'Best ' + pct(r.best) + '% first-try, ' + plural(r.attempts, 'run') : 'Not run yet') + '</span></a>'; }).join('') + '</div></div>';
+    if (d.apply) html += '<div class="sec panel"><div class="sec-head"><div><div class="eyebrow">Apply it to your project &middot; ' + (d.apply.minutes || 15) + ' min</div><h2 class="sec-title" style="margin-top:6px">' + md(d.apply.title) + '</h2></div>' +
+      '<button type="button" class="btn ' + (ap ? 'btn-primary' : '') + '" data-apply aria-pressed="' + !!ap + '">' + (ap ? 'Done. Mark as not done' : 'Mark as done') + '</button></div>' +
+      '<ol class="apply-steps">' + (d.apply.steps || []).map((s) => '<li>' + md(s) + '</li>').join('') + '</ol></div>';
+    if (d.fieldGuide.length) html += '<div class="sec"><div class="sec-head"><h2 class="sec-title">Field guide</h2><a class="small" href="#guide">All days</a></div><div class="fg">' + d.fieldGuide.map((r) => fgRowHTML(r, meta, false)).join('') + '</div></div>';
+    if (d.glossary.length) html += '<div class="sec"><h2 class="sec-title">Glossary</h2><dl class="gloss">' + d.glossary.map((g) => '<div><dt>' + md(g.term) + '</dt><dd>' + md(g.def) + '</dd><span></span></div>').join('') + '</dl></div>';
+    body.innerHTML = html + '</div>';
+    const ab = $('[data-apply]', body);
+    if (ab) ab.addEventListener('click', () => { const v = !(S.apply[id] && S.apply[id].done); setApply(id, v); ab.setAttribute('aria-pressed', String(v)); ab.classList.toggle('btn-primary', v); ab.textContent = v ? 'Done. Mark as not done' : 'Mark as done'; announce(v ? 'Exercise marked done' : 'Exercise marked not done'); });
+  }).catch((e) => {
+    const body = $('#day-body'); if (body) body.innerHTML = '<div class="empty"><b>This day did not load.</b><span>' + esc(String(e && e.message || e)) + '. Check your connection, then reload the page.</span></div>';
+  });
+}
+
+/* ---------- Lesson reader ---------- */
+function renderLesson(main, id, k) {
+  const meta = DAY[id];
+  if (!meta.available) { renderDay(main, id); return; }
+  main.innerHTML = '<div class="view"><p class="muted">Loading the lesson...</p></div>';
+  loadDay(id).then((d) => {
+    if (!main.isConnected || currentRoute !== id + '-l' + k) return;
+    const L = d.lessons[k - 1];
+    if (!L) { main.innerHTML = notFoundHTML(); return; }
+    const n = d.lessons.length, done = !!S.lessons[L.id];
+    const prev = d.lessons[k - 2], next = d.lessons[k];
+    const nextHref = next ? '#' + next.id : '#' + id + '-quiz';
+    const nextLabel = next ? 'Complete lesson and go to lesson ' + (k + 1) : 'Complete lesson and take the quiz';
+    REG.flows = {}; REG.checks = {};
+    main.innerHTML = '<div class="reader"><article class="article">' +
+      '<div class="view-head"><div class="row"><a class="dayid" href="#' + id + '">' + esc(dayLabel(meta)) + '</a>' + ptag(meta.phase) + '<span class="chip">Lesson ' + k + ' of ' + n + '</span>' + (L.minutes ? '<span class="chip">' + L.minutes + ' min</span>' : '') + (done ? '<span class="chip chip-ok">Completed</span>' : '') + '</div>' +
+      '<h1>' + md(L.title) + '</h1></div>' +
+      (L.blocks || []).map(renderBlock).join('') +
+      '<div class="lesson-foot"><div class="row"><button type="button" class="btn btn-primary" data-complete>' + esc(done ? (next ? 'Go to lesson ' + (k + 1) : 'Go to the quiz') : nextLabel) + '</button>' + (done ? '' : '<span class="small muted">Marks this lesson done.</span>') + '</div>' +
+      '<nav class="pager" aria-label="Lessons">' + (prev ? '<a href="#' + prev.id + '"><span>Previous</span><b>' + md(prev.title) + '</b></a>' : '<a href="#' + id + '"><span>Back to</span><b>' + esc(dayLabel(meta)) + ' overview</b></a>') +
+      (next ? '<a class="nx" href="#' + next.id + '"><span>Next</span><b>' + md(next.title) + '</b></a>' : '<a class="nx" href="#' + id + '-quiz"><span>Next</span><b>Day quiz</b></a>') + '</nav></div>' +
+      '</article><aside aria-label="Lesson tools"><div class="sec"><div class="eyebrow">' + esc(dayLabel(meta)) + ': ' + esc(meta.title) + '</div><ol class="outline">' + d.lessons.map((l, i) => '<li class="' + (S.lessons[l.id] ? 'done' : '') + '"><a href="#' + l.id + '"' + (i === k - 1 ? ' aria-current="page"' : '') + '><span class="o-tick">' + (S.lessons[l.id] ? '&#10003;' : i + 1) + '</span><span>' + md(l.title) + '</span></a></li>').join('') +
+      '<li><a href="#' + id + '-quiz"><span class="o-tick">Q</span><span>Quiz' + (S.quiz[id] ? ' (best ' + pct(S.quiz[id].best) + '%)' : '') + '</span></a></li>' +
+      d.drills.map((x, i) => '<li><a href="#' + x.id + '"><span class="o-tick">X' + (i + 1) + '</span><span>' + md(x.title) + '</span></a></li>').join('') + '</ol></div><div id="tutor-slot"></div></aside></div>';
+    wireBlocks($('.article', main));
+    mountTutor($('#tutor-slot', main), { title: meta.title + ': ' + L.title, text: lessonText(L) });
+    $('[data-complete]', main).addEventListener('click', () => { completeLesson(L.id); announce('Lesson complete'); location.hash = nextHref.slice(1); });
+  }).catch((e) => { main.innerHTML = '<div class="empty"><b>This lesson did not load.</b><span>' + esc(String(e && e.message || e)) + '</span></div>'; });
+}
+
+/* ---------- Day quiz & drills ---------- */
+function quizShell(main, eyebrowHTML, title, sub) {
+  main.innerHTML = '<div class="view">' + viewHead(eyebrowHTML, title, sub) + '<div id="quiz-root"><p class="muted">Loading questions...</p></div></div>';
+  return $('#quiz-root', main);
+}
+function renderDayQuiz(main, id) {
+  const meta = DAY[id];
+  if (!meta.available) { renderDay(main, id); return; }
+  const root = quizShell(main, '<a href="#' + id + '">' + esc(dayLabel(meta)) + '</a> &middot; ' + esc(meta.title), 'Quiz', 'One question at a time. Pass mark 80 percent. Every answer also enters your review deck.');
+  loadDay(id).then((d) => {
+    if (!root.isConnected) return;
+    const mk = () => ({
+      kind: 'day', title: 'Quiz', questions: d.quiz.map((q) => ({ q: q, day: id })), passMark: 0.8,
+      onFinish: (score) => recordResult('quiz', id, score),
+      back: { href: '#' + id, label: 'Back to ' + dayLabel(meta).toLowerCase() },
+      after: () => (d.drills[0] ? '<a class="btn" href="#' + d.drills[0].id + '">Run the drill</a>' : ''),
+      retake: () => mk()
+    });
+    startQuiz(root, mk());
+  }).catch((e) => { root.innerHTML = '<div class="empty">The quiz did not load: ' + esc(e.message) + '</div>'; });
+}
+function renderDrill(main, id, k) {
+  const meta = DAY[id];
+  if (!meta.available) { renderDay(main, id); return; }
+  main.innerHTML = '<div class="view"><p class="muted">Loading the drill...</p></div>';
+  loadDay(id).then((d) => {
+    if (!main.isConnected || currentRoute !== id + '-x' + k) return;
+    const x = d.drills[k - 1];
+    if (!x) { main.innerHTML = notFoundHTML(); return; }
+    const next = d.drills[k];
+    main.innerHTML = '<div class="view">' + viewHead('<a href="#' + id + '">' + esc(dayLabel(meta)) + '</a> &middot; Incident drill ' + k + ' of ' + d.drills.length, plain(x.title), '') + '<div id="drill-root"></div></div>';
+    startDrill($('#drill-root', main), d, x, { after: () => (next ? '<a class="btn btn-primary" href="#' + next.id + '">Next drill</a>' : '<a class="btn btn-primary" href="#' + id + '">Back to ' + esc(dayLabel(meta).toLowerCase()) + '</a>') });
+  }).catch((e) => { main.innerHTML = '<div class="empty">The drill did not load: ' + esc(e.message) + '</div>'; });
+}
+
+/* ---------- Tests ---------- */
+function availIn(from, to) { return DAYS.filter((d) => d.day >= from && d.day <= to && d.available); }
+function sampleCheckpoint(c) {
+  const days = availIn(c.from, c.to).map((d) => d.id).filter((x) => dayCache.has(x));
+  const pools = days.map((x) => { const qs = dayCache.get(x).quiz; return shuffle(qs.filter((q) => q.level >= 2)).concat(shuffle(qs.filter((q) => !(q.level >= 2)))); });
+  const out = []; let opens = 0; let di = 0; const order = shuffle(range(days.length));
+  let guard = 0;
+  while (out.length < c.count && pools.some((p) => p.length) && guard++ < 5000) {
+    const i = order[di++ % order.length]; const p = pools[i];
+    while (p.length) { const q = p.shift(); if (q.type === 'open') { if (opens >= 2) continue; opens++; } out.push({ q: q, day: days[i] }); break; }
+  }
+  return shuffle(out);
+}
+function renderTests(main) {
+  const rows = DAYS.map((d) => {
+    const r = S.quiz[d.id];
+    return '<tr><td class="num">' + d.id + '</td><td>' + (d.available ? '<a href="#' + d.id + '-quiz">' + esc(d.title) + '</a>' : '<span class="muted">' + esc(d.title) + '</span>') + '</td><td class="num">' + (r ? pct(r.best) + '%' : '') + '</td><td class="num">' + (r ? pct(r.last) + '%' : '') + '</td><td class="num">' + (r ? r.attempts : '') + '</td><td>' + (d.available ? (r ? (r.best >= 0.8 ? '<span class="chip chip-ok">passed</span>' : '<span class="chip chip-warn">below 80%</span>') : '') : '<span class="chip">not written</span>') + '</td></tr>';
+  }).join('');
+  const ex = ALL_DAYS.filter((d) => d.day === 0 && d.available);
+  const pl = S.placement;
+  main.innerHTML = '<div class="view">' + viewHead('Tests', 'Quizzes and checkpoints', 'Day quizzes check one day. Checkpoints sample a fresh set of questions from a range of days each time. Every answer also feeds your review deck.') +
+    '<div class="cards3">' +
+    '<div class="panel sec"><div class="eyebrow">Placement</div><h2 class="sec-title">Placement test</h2><p class="small muted">One question per written day. Days you get right are marked as likely familiar. Nothing is skipped or locked.</p>' + (pl ? '<p class="small">Last taken ' + esc(fmtDate(isoDate(new Date(pl.ts)))) + ': ' + pl.score + ' of ' + pl.total + ' right.</p>' : '') + '<div><a class="btn btn-primary" href="#test-placement">' + (pl ? 'Take it again' : 'Take the placement test') + '</a></div></div>' +
+    '<div class="panel sec"><div class="eyebrow">Practice</div><h2 class="sec-title">Custom practice</h2><p class="small muted">Pick phases or days, 10 or 20 questions, and optionally only the questions you tend to miss.</p><div><a class="btn" href="#practice">Build a practice set</a></div></div>' +
+    '</div>' +
+    '<div class="sec"><h2 class="sec-title">Checkpoints</h2><div class="cards3">' + CHECKS.map((c) => {
+      const r = S.tests[c.id]; const n = availIn(c.from, c.to).length; const span = c.to - c.from + 1;
+      return '<div class="panel sec"><div class="row"><span class="dayid">' + esc(c.id) + '</span><span class="small muted">after day ' + c.afterDay + '</span></div><h3 class="sec-title" style="font-size:17px">' + esc(c.title) + '</h3><p class="small muted">' + esc(c.covers) + '. ' + c.count + ' questions' + (n < span ? ', drawn from the ' + n + ' of ' + span + ' days written so far' : '') + '.</p>' +
+        (r ? '<p class="small">Best ' + pct(r.best) + '%, last ' + pct(r.last) + '%, ' + plural(r.attempts, 'attempt') + '</p>' : '') +
+        '<div>' + (n ? '<a class="btn' + (r ? '' : ' btn-primary') + '" href="#test-' + c.id + '">Start ' + esc(c.title.toLowerCase()) + '</a>' : '<span class="chip">No days written in this range yet</span>') + '</div></div>';
+    }).join('') + '</div></div>' +
+    '<div class="sec"><h2 class="sec-title">Day quizzes</h2><div class="table-wrap"><table class="test-table"><thead><tr><th>Day</th><th>Title</th><th>Best</th><th>Last</th><th>Tries</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    (ex.length ? '<p class="small muted">Example day: <a href="#' + ex[0].id + '-quiz">' + esc(ex[0].title) + '</a></p>' : '') + '</div></div>';
+}
+function renderTest(main, tid) {
+  if (tid === 'placement') return renderPlacement(main);
+  const c = CHECKS.find((x) => x.id === tid);
+  if (!c) { main.innerHTML = notFoundHTML(); return; }
+  const root = quizShell(main, '<a href="#tests">Tests</a> &middot; ' + esc(c.covers), c.title, c.count + ' questions sampled across the days in range, mostly apply and diagnose questions. A new sample each attempt.');
+  const ids = availIn(c.from, c.to).map((d) => d.id);
+  ensureDays(ids).then(() => {
+    if (!root.isConnected) return;
+    const mk = () => ({ kind: 'test', questions: sampleCheckpoint(c), passMark: 0.8, onFinish: (score) => recordResult('tests', c.id, score), back: { href: '#tests', label: 'Back to tests' }, retake: () => mk(), retakeLabel: 'Take a new sample', emptyText: 'None of the days this checkpoint covers are written yet.' });
+    startQuiz(root, mk());
+  });
+}
+function renderPlacement(main) {
+  const root = quizShell(main, '<a href="#tests">Tests</a> &middot; Placement', 'Placement test', 'One question per day. Answer what you can; a wrong answer only means that day is worth reading. Results show by phase.');
+  const ids = DAYS.filter((d) => d.available).map((d) => d.id);
+  ensureDays(ids).then(() => {
+    if (!root.isConnected) return;
+    const qs = ids.map((id) => { const d = dayCache.get(id); const q = d && (d.quiz.find((x) => x.diagnostic) || null); return q ? { q: q, day: id } : null; }).filter(Boolean);
+    const mk = () => ({
+      kind: 'placement', questions: qs.slice(), tutor: false,
+      onFinish: (score, res) => { const byDay = {}; res.forEach((r) => { byDay[r.day] = r.correct ? 1 : 0; }); recordPlacement({ score: res.filter((r) => r.correct).length, total: res.length, byDay: byDay }); },
+      resultExtra: (score, res) => {
+        const fam = res.filter((r) => r.correct).map((r) => DAY[r.day]);
+        return '<div class="sec"><h3 class="sec-title" style="font-size:16px">By phase</h3><div class="bk-rows">' + PHASES.map((p) => {
+          const rr = res.filter((r) => DAY[r.day].phase === p.id); if (!rr.length) return '';
+          const k = rr.filter((r) => r.correct).length;
+          return '<div class="bk-row"><span>' + ptag(p.id) + '</span><div class="meter"><i style="width:' + pct(k / rr.length) + '%;background:' + phaseVar(p.id) + '"></i></div><span class="num">' + k + '/' + rr.length + '</span></div>';
+        }).join('') + '</div></div>' +
+          '<div class="sec"><h3 class="sec-title" style="font-size:16px">Likely familiar</h3>' + (fam.length ? '<p class="small muted">You answered these days\' questions correctly. Skim their lessons and go straight to the quiz if you like. They are marked on the path.</p><ul class="weak">' + fam.map((m) => '<li><span><a href="#' + m.id + '">' + esc(dayLabel(m)) + ': ' + esc(m.title) + '</a></span><span></span><a class="btn btn-sm" href="#' + m.id + '-quiz">Take its quiz</a></li>').join('') + '</ul>' : '<p class="small muted">None yet. Start at day 1 and read each day in order.</p>') + '</div>';
+      },
+      back: { href: '#today', label: 'Go to today' }, retake: () => mk(), retakeLabel: 'Take it again', emptyText: 'No days are written yet.'
+    });
+    startQuiz(root, mk());
+  });
+}
+function practicePool(dayIds, weakOnly, tag) {
+  let pool = [];
+  dayIds.forEach((id) => { const d = dayCache.get(id); if (d) d.quiz.forEach((q) => { if (!tag || (q.tags || []).indexOf(tag) >= 0) pool.push({ q: q, day: id }); }); });
+  if (weakOnly) pool = pool.filter((it) => { const c = S.review[it.q.id]; return c && (c.box <= 2 || (c.right || 0) / (c.seen || 1) < 0.7); });
+  const score = (it) => { const c = S.review[it.q.id]; return c ? c.box + (c.right || 0) / (c.seen || 1) : 3; };
+  return shuffle(pool).sort((a, b) => score(a) - score(b));
+}
+function renderPractice(main, preset) {
+  const avail = DAYS.filter((d) => d.available).concat(ALL_DAYS.filter((d) => d.day === 0 && d.available));
+  if (preset) {
+    const isTag = preset.indexOf('tag-') === 0, tag = isTag ? preset.slice(4) : null;
+    const ids = isTag ? avail.map((d) => d.id) : [preset];
+    const title = isTag ? 'Practice: ' + tag : 'Practice: ' + (DAY[preset] ? dayLabel(DAY[preset]) + ', ' + DAY[preset].title : preset);
+    const root = quizShell(main, '<a href="#practice">Custom practice</a>', title, 'Up to 10 questions, the ones you miss most first.');
+    ensureDays(ids).then(() => {
+      if (!root.isConnected) return;
+      const mk = () => ({ kind: 'custom', questions: practicePool(ids, false, tag).slice(0, 10), onFinish: (s) => recordResult('tests', 'custom', s), back: { href: '#practice', label: 'Build another set' }, retake: () => mk(), retakeLabel: 'Practice again', emptyText: 'No questions match yet.' });
+      startQuiz(root, mk());
+    });
+    return;
+  }
+  const saved = (() => { try { return JSON.parse(lsGet('rb_practice') || 'null'); } catch (e) { return null; } })() || { phases: [], days: [], count: 10, weak: false };
+  main.innerHTML = '<div class="view">' + viewHead('<a href="#tests">Tests</a>', 'Custom practice', 'Choose phases or single days. Questions you miss most come first.') +
+    '<form class="panel sec" id="pf"><fieldset class="field" style="border:0;padding:0;margin:0"><legend class="lbl" style="margin-bottom:6px">Phases</legend><div class="toggle-group">' + PHASES.map((p) => '<label><input type="checkbox" name="ph" value="' + p.id + '"' + (saved.phases.indexOf(p.id) >= 0 ? ' checked' : '') + '>' + ptag(p.id) + '</label>').join('') + '</div></fieldset>' +
+    '<fieldset class="field" style="border:0;padding:0;margin:0"><legend class="lbl" style="margin-bottom:6px">Or single days</legend><div class="toggle-group">' + avail.map((d) => '<label title="' + esc(d.title) + '"><input type="checkbox" name="dy" value="' + d.id + '"' + (saved.days.indexOf(d.id) >= 0 ? ' checked' : '') + '><span class="mono small">' + d.id + '</span></label>').join('') + (avail.length ? '' : '<span class="muted small">No days are written yet.</span>') + '</div></fieldset>' +
+    '<fieldset class="field" style="border:0;padding:0;margin:0"><legend class="lbl" style="margin-bottom:6px">Length</legend><div class="toggle-group"><label><input type="radio" name="ct" value="10"' + (saved.count !== 20 ? ' checked' : '') + '>10 questions</label><label><input type="radio" name="ct" value="20"' + (saved.count === 20 ? ' checked' : '') + '>20 questions</label></div></fieldset>' +
+    '<div class="toggle-group"><label><input type="checkbox" id="pf-weak"' + (saved.weak ? ' checked' : '') + '>Weak spots only: questions you missed or that sit in review box 1 or 2</label></div>' +
+    '<div class="row"><button type="submit" class="btn btn-primary">Start practice</button><span class="small muted" id="pf-msg" aria-live="polite"></span></div></form><div id="quiz-root"></div></div>';
+  $('#pf').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const phs = $$('input[name="ph"]:checked', main).map((x) => x.value), dys = $$('input[name="dy"]:checked', main).map((x) => x.value);
+    const count = +($('input[name="ct"]:checked', main) || { value: 10 }).value, weak = $('#pf-weak').checked;
+    lsSet('rb_practice', JSON.stringify({ phases: phs, days: dys, count: count, weak: weak }));
+    const ids = Array.from(new Set(avail.filter((d) => phs.indexOf(d.phase) >= 0 && d.day > 0).map((d) => d.id).concat(dys)));
+    const msg = $('#pf-msg');
+    if (!ids.length) { msg.textContent = 'Choose at least one phase or day that is written.'; return; }
+    msg.textContent = 'Loading questions...';
+    ensureDays(ids).then(() => {
+      const mk = () => ({ kind: 'custom', questions: practicePool(ids, weak).slice(0, count), onFinish: (s) => recordResult('tests', 'custom', s), retake: () => mk(), retakeLabel: 'New set, same choices', emptyText: weak ? 'No weak spots in that selection yet. Turn off "weak spots only" or answer more questions first.' : 'No questions in that selection.' });
+      msg.textContent = '';
+      const root = $('#quiz-root'); startQuiz(root, mk()); root.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  });
+}
+
+/* ---------- Review ---------- */
+function renderReview(main) {
+  const due = dueCards();
+  const counts = [0, 0, 0, 0, 0]; Object.values(S.review).forEach((c) => { counts[(c.box || 1) - 1]++; });
+  const total = Object.keys(S.review).length;
+  main.innerHTML = '<div class="view">' + viewHead('Spaced repetition', 'Review', 'Every quiz question you answer joins this deck. A right answer moves a card up a box and pushes it further out; a wrong one sends it back to box 1.') +
+    '<div class="panel"><div class="breakdown" style="grid-template-columns:repeat(5,minmax(0,1fr));gap:10px">' + counts.map((n, i) => '<div class="stat"><span class="eyebrow">Box ' + (i + 1) + '</span><b>' + n + '</b><span>every ' + plural(BOXES[i], 'day') + '</span></div>').join('') + '</div></div>' +
+    '<div id="quiz-root">' + (due.length ? '<div class="sec"><p><b>' + due.length + '</b> ' + (due.length === 1 ? 'card is' : 'cards are') + ' due. A session takes up to 20.</p><div><button type="button" class="btn btn-primary" id="rv-start">Start review</button></div></div>'
+      : '<div class="empty"><b>Nothing is due today.</b><span>' + (total ? 'The next card is due ' + esc(fmtDate(nextDueDate())) + '.' : 'Answer a quiz question anywhere and it will join the deck.') + '</span>' + (total ? '' : '<a class="btn" href="#today">Go to today</a>') + '</div>') + '</div></div>';
+  const b = $('#rv-start', main);
+  if (b) b.addEventListener('click', () => {
+    b.disabled = true; b.textContent = 'Loading cards...';
+    const ids = due.slice(0, 20);
+    ensureDays(Array.from(new Set(ids.map((x) => x.slice(0, 3))))).then(() => {
+      const mk = () => { const list = dueCards().slice(0, 20).map((x) => QINDEX[x]).filter(Boolean).map((qi) => ({ q: qi.q, day: qi.day })); return { kind: 'review', questions: shuffle(list), retake: () => mk(), retakeLabel: 'Review what is still due', back: { href: '#today', label: 'Go to today' }, emptyText: 'Nothing else is due today.' }; };
+      startQuiz($('#quiz-root'), mk());
+    });
+  });
+}
+
+/* ---------- Field guide & glossary ---------- */
+let guideFilter = { q: '', phase: '' };
+function renderGuide(main) {
+  main.innerHTML = '<div class="view">' + viewHead('When something is broken', 'Field guide', 'Every symptom from every day in one list. Search by what you see on screen: a status code, an error message, a metric.') +
+    '<div class="searchbar"><label class="sr-only" for="guide-q">Search symptoms</label><input type="search" id="guide-q" placeholder="Search: 502, timeout, replica lag, retrieval..." value="' + esc(guideFilter.q) + '" autocomplete="off"></div>' +
+    '<div class="toggle-group" role="group" aria-label="Filter by phase"><button type="button" data-ph="" aria-pressed="' + !guideFilter.phase + '">All phases</button>' + PHASES.map((p) => '<button type="button" data-ph="' + p.id + '" aria-pressed="' + (guideFilter.phase === p.id) + '">' + ptag(p.id) + '</button>').join('') + '</div>' +
+    '<div class="row"><span class="loadnote" data-loadnote>' + esc(loadedCountText()) + '</span><span class="loadnote" id="guide-count"></span></div><div id="guide-list"></div></div>';
+  const inp = $('#guide-q', main);
+  inp.addEventListener('input', () => { guideFilter.q = inp.value; drawGuide(); });
+  $$('[data-ph]', main).forEach((b) => b.addEventListener('click', () => { guideFilter.phase = b.dataset.ph; $$('[data-ph]', main).forEach((x) => x.setAttribute('aria-pressed', String(x === b))); drawGuide(); }));
+  drawGuide();
+}
+function drawGuide() {
+  const list = $('#guide-list'); if (!list) return;
+  const q = guideFilter.q.trim().toLowerCase();
+  const items = [];
+  ALL_DAYS.forEach((m) => { const d = dayCache.get(m.id); if (!d || (guideFilter.phase && m.phase !== guideFilter.phase)) return; d.fieldGuide.forEach((r) => { const hay = [r.symptom, r.look, r.confirm, r.fix].concat(r.causes || []).join(' ').toLowerCase(); if (!q || q.split(/\s+/).every((w) => hay.indexOf(w) >= 0)) items.push([r, m]); }); });
+  const openKeys = new Set($$('details[open]', list).map((x) => x.dataset.k));
+  list.innerHTML = items.length ? '<div class="fg">' + items.map(([r, m], i) => fgRowHTML(r, m, true).replace('<details>', '<details data-k="' + esc(m.id + ':' + r.symptom) + '"' + (openKeys.has(m.id + ':' + r.symptom) ? ' open' : '') + '>')).join('') + '</div>' : '<div class="empty">' + (dayCache.size ? 'No symptom matches that search. Try a shorter word, or a status code.' : 'Loading the field guide...') + '</div>';
+  $('#guide-count').textContent = items.length ? plural(items.length, 'symptom') + (q || guideFilter.phase ? ' match' : '') : '';
+}
+let glossQ = '';
+function renderGlossary(main) {
+  main.innerHTML = '<div class="view">' + viewHead('Terms', 'Glossary', 'Every term defined in the course, with the day that teaches it.') +
+    '<div class="searchbar"><label class="sr-only" for="gloss-q">Search terms</label><input type="search" id="gloss-q" placeholder="Search terms and definitions" value="' + esc(glossQ) + '" autocomplete="off"></div>' +
+    '<div class="row"><span class="loadnote" data-loadnote>' + esc(loadedCountText()) + '</span></div><div id="gloss-list"></div></div>';
+  const inp = $('#gloss-q', main);
+  inp.addEventListener('input', () => { glossQ = inp.value; drawGlossary(); });
+  drawGlossary();
+}
+function drawGlossary() {
+  const list = $('#gloss-list'); if (!list) return;
+  const q = glossQ.trim().toLowerCase();
+  const items = [];
+  ALL_DAYS.forEach((m) => { const d = dayCache.get(m.id); if (d) d.glossary.forEach((g) => { if (!q || (g.term + ' ' + g.def).toLowerCase().indexOf(q) >= 0) items.push([g, m]); }); });
+  items.sort((a, b) => plain(a[0].term).localeCompare(plain(b[0].term)));
+  list.innerHTML = items.length ? '<dl class="gloss">' + items.map(([g, m]) => '<div><dt>' + md(g.term) + '</dt><dd>' + md(g.def) + '</dd><a class="ptag" style="--ph:' + phaseVar(m.phase) + '" href="#' + m.id + '">' + esc(m.id) + '</a></div>').join('') + '</dl>' : '<div class="empty">' + (dayCache.size ? 'No term matches that search.' : 'Loading the glossary...') + '</div>';
+}
+
+/* ---------- Prefs ---------- */
+function renderPrefs(main) {
+  main.innerHTML = '<div class="view">' + viewHead('Preferences', 'Prefs', '') +
+    '<div class="grid2"><div class="sec">' +
+    '<form class="panel sec" id="pref-form"><div class="field"><label for="pref-start">Start date</label><input type="date" id="pref-start" value="' + esc(S.settings.start || isoDate()) + '"><span class="hint">Your pace on Today is measured from this date.</span></div>' +
+    '<div class="field"><label for="pref-note">What are you building?</label><textarea id="pref-note" maxlength="300" style="min-height:80px" placeholder="For example: a support agent with RAG over our docs, evaluated nightly">' + esc(S.settings.note) + '</textarea><span class="hint">The tutor reads this note to tie answers to your work.</span></div>' +
+    '<div class="row"><button type="submit" class="btn btn-primary">Save preferences</button><span class="small muted" id="pref-msg" aria-live="polite"></span></div></form>' +
+    '</div><div class="sec"><div class="panel sec"><h2 class="sec-title">Sync</h2><div id="prefs-sync"></div></div>' +
+    '<div class="panel sec"><h2 class="sec-title">Reset</h2><p class="small muted">Erase lessons, scores, drills, review cards and placement results, here and in your Claude account. Your project note stays.</p><div id="reset-slot"><button type="button" class="btn btn-danger" id="reset-1">Reset all progress</button></div></div></div></div></div>';
+  renderSyncBox($('#prefs-sync', main));
+  $('#pref-form', main).addEventListener('submit', (e) => {
+    e.preventDefault();
+    S.settings = Object.assign({}, S.settings, { start: $('#pref-start').value || isoDate(), note: $('#pref-note').value.trim(), setup: true, ts: Date.now() });
+    commit({ quiet: true });
+    $('#pref-msg').textContent = 'Saved';
+  });
+  const slot = $('#reset-slot', main);
+  slot.addEventListener('click', (e) => {
+    if (e.target.id === 'reset-1') {
+      slot.innerHTML = '<div class="confirm-box" role="group" aria-label="Confirm reset"><b>Erase all progress?</b><span class="small">This cannot be undone. Every completed lesson, score and review card goes.</span><div class="row"><button type="button" class="btn btn-danger solid" id="reset-2">Erase all progress</button><button type="button" class="btn" id="reset-cancel">Keep my progress</button></div></div>';
+      $('#reset-cancel', slot).focus();
+    } else if (e.target.id === 'reset-cancel') {
+      slot.innerHTML = '<button type="button" class="btn btn-danger" id="reset-1">Reset all progress</button>'; $('#reset-1', slot).focus();
+    } else if (e.target.id === 'reset-2') {
+      resetAll();
+      announce('All progress erased');
+      const s2 = $('#reset-slot'); if (s2) s2.innerHTML = '<p class="small"><b>Progress erased.</b> <a href="#today">Set up your thirty days again</a>.</p>';
+    }
+  });
+}
+function notFoundHTML() { return '<div class="view"><div class="empty"><b>There is no page at this address.</b><a class="btn" href="#today">Go to today</a></div></div>'; }
+
+/* ===== main.js ===== */
+/* ---------- main.js: hash router and boot ---------- */
+let currentRoute = '';
+const PASSIVE = /^(today|path|tests|review|prefs|guide|glossary|d\d\d)$/;
+function navKey(r) {
+  if (r === 'today' || r === '') return 'today';
+  if (r === 'path' || /^d\d\d/.test(r)) return 'path';
+  if (r === 'tests' || /^test-|^practice/.test(r)) return 'tests';
+  return r;
+}
+function updateNav() {
+  const k = navKey(currentRoute);
+  $$('.nav a').forEach((a) => { if (a.dataset.nav === k) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current'); });
+  const n = dueCards().length, b = $('#nav-due');
+  if (b) { b.hidden = !n; b.textContent = n > 99 ? '99+' : String(n); }
+}
+function route(first) {
+  const r = (location.hash || '').replace(/^#/, '') || 'today';
+  currentRoute = r;
+  Quiz.s = null;
+  const main = $('#main');
+  let m;
+  try {
+    if (r === 'today') renderToday(main);
+    else if (r === 'path') renderPath(main);
+    else if (r === 'tests') renderTests(main);
+    else if (r === 'review') renderReview(main);
+    else if (r === 'guide') renderGuide(main);
+    else if (r === 'glossary') renderGlossary(main);
+    else if (r === 'prefs') renderPrefs(main);
+    else if (r === 'practice') renderPractice(main, null);
+    else if ((m = /^practice-(d\d\d|tag-[a-z0-9-]+)$/.exec(r))) renderPractice(main, m[1]);
+    else if ((m = /^test-(c\d+|final|placement)$/.exec(r))) renderTest(main, m[1]);
+    else if ((m = /^(d\d\d)$/.exec(r)) && DAY[m[1]]) renderDay(main, m[1]);
+    else if ((m = /^(d\d\d)-l(\d+)$/.exec(r)) && DAY[m[1]]) renderLesson(main, m[1], +m[2]);
+    else if ((m = /^(d\d\d)-quiz$/.exec(r)) && DAY[m[1]]) renderDayQuiz(main, m[1]);
+    else if ((m = /^(d\d\d)-x(\d+)$/.exec(r)) && DAY[m[1]]) renderDrill(main, m[1], +m[2]);
+    else main.innerHTML = notFoundHTML();
+  } catch (e) {
+    console.error(e);
+    main.innerHTML = '<div class="empty"><b>This view failed to draw.</b><span>' + esc(e.message) + '</span><a class="btn" href="#today">Go to today</a></div>';
+  }
+  updateNav();
+  document.title = 'Thirty-Day Backend Runbook';
+  if (!first) { window.scrollTo(0, 0); main.focus({ preventScroll: true }); }
+}
+window.addEventListener('hashchange', () => route(false));
+onState(() => {
+  updateNav();
+  if (!PASSIVE.test(currentRoute)) return;
+  const y = window.scrollY;
+  const active = document.activeElement && document.activeElement.id;
+  route(true);
+  window.scrollTo(0, y);
+  if (active) { const el = document.getElementById(active); if (el) el.focus({ preventScroll: true }); }
+});
+/* Weak spots by tag need the day files; redraw Today once they arrive (debounced, never mid-typing in setup). */
+const refreshToday = debounce(() => {
+  if (currentRoute !== 'today' || $('#setup-form') || $('#shift-slot .panel')) return;
+  const y = window.scrollY; route(true); window.scrollTo(0, y);
+}, 800);
+dayLoadListeners.push((id) => {
+  if (currentRoute === 'guide') drawGuide();
+  if (currentRoute === 'glossary') drawGlossary();
+  if (currentRoute === 'today' && Object.keys(S.review).some((q) => q.slice(0, 3) === id)) refreshToday();
+});
+
+route(true);
+setTimeout(() => {
+  startSync();
+  initTutor();
+  loadAllDays();
+}, 0);
+
+})();
+
+</script>

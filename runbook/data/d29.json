@@ -1,0 +1,616 @@
+{
+  "id": "d29",
+  "day": 29,
+  "phase": "p5",
+  "title": "Training and serving infrastructure",
+  "tagline": "Data pipelines, GPUs, checkpoints, and the signals that tell you a training run or a model server is healthy.",
+  "minutes": 55,
+  "why": "Sooner or later you will be handed a loss curve, a crashed fine-tuning job, or a GPU serving dashboard and asked whether something is wrong. Most of what goes wrong is bookkeeping, data, memory, or queueing, which are things a debugger can find without knowing how the kernels work. Reading these signals well saves days of reruns and stops a bad checkpoint from shipping.",
+  "objectives": [
+    "Read a loss log and say whether it shows healthy training, divergence, a NaN, or overfitting, and what to do next",
+    "Explain what fills GPU memory during training and pick a fix for an out-of-memory error",
+    "Tell queueing from slow generation on a model serving dashboard using TTFT and inter-token latency",
+    "Choose between a hosted API and a self-hosted model, and between quantized and full-precision weights",
+    "List what must be versioned to reproduce a training result, and how to spot slow drift in production"
+  ],
+  "lessons": [
+    {
+      "id": "d29-l1",
+      "title": "The training pipeline end to end",
+      "minutes": 13,
+      "blocks": [
+        {"t": "p", "text": "Training a model is a data pipeline feeding a loop that runs for hours or weeks on expensive hardware, saving its progress as it goes. Most training failures come from the data, the memory budget, or the bookkeeping around checkpoints. Very few come from the math."},
+        {"t": "flow",
+          "title": "From raw data to a registered model",
+          "steps": [
+            {"actor": "Data team", "label": "Collect raw data", "detail": "For a Relay triage model, this is past tickets with the queue each one ended up in.", "fail": "Labels taken from a process that was itself wrong teach the model the old mistakes."},
+            {"actor": "Pipeline", "label": "Clean and deduplicate", "detail": "Remove broken rows, personal data, near-duplicates, and anything that also appears in the eval set.", "fail": "A cleaning step that empties some examples produces rows with no target text, which can turn the loss into NaN."},
+            {"actor": "Pipeline", "label": "Snapshot and version the data", "detail": "Freeze the exact dataset under an ID or hash so the run can be traced back to it.", "fail": "Training on 'the latest export' makes last week's result impossible to reproduce."},
+            {"actor": "Pipeline", "label": "Tokenize", "detail": "Turn text into token IDs with the tokenizer that matches the model.", "fail": "A mismatched tokenizer trains without errors and produces a model that is quietly worse."},
+            {"actor": "GPUs", "label": "Run the training loop", "detail": "Repeat: load a batch, compute loss, compute gradients, update weights. Log loss, learning rate, and gradient norm.", "fail": "Out-of-memory errors, NaN loss, or a curve that climbs instead of falling."},
+            {"actor": "GPUs", "label": "Save checkpoints", "detail": "Every so often, save everything needed to resume, not just the weights.", "fail": "Resuming from the wrong checkpoint, or one missing optimizer state, shows as a jump in loss."},
+            {"actor": "Eval", "label": "Evaluate on held-out data", "detail": "Score each candidate checkpoint on data it never trained on, using the metrics from Day 22.", "fail": "Choosing the checkpoint by training loss picks the most overfit one."},
+            {"actor": "Registry", "label": "Register and roll out", "detail": "Record the chosen weights with their data, code, and config versions, then roll out in stages.", "fail": "Weights with no lineage cannot be debugged or rebuilt."}
+          ]},
+        {"t": "h", "text": "What fills GPU memory"},
+        {"t": "p", "text": "During training, GPU memory holds the weights, the gradients, the optimizer's state, and the activations saved during the forward pass for use in the backward pass. The popular Adam optimizer keeps two extra numbers per weight. Activations grow with batch size and sequence length. So training a model needs several times the memory that serving the same model needs."},
+        {"t": "tradeoff",
+          "title": "Batch size: large vs small",
+          "options": [
+            {"name": "Large batch", "gain": ["Keeps the GPU busy, higher throughput", "Smoother gradient estimates", "Fewer update steps per epoch"], "cost": ["More activation memory, risk of out-of-memory", "Learning rate usually needs retuning"], "choose": "Choose this when memory allows and you want the most data processed per hour."},
+            {"name": "Small batch", "gain": ["Fits in limited memory", "Each step is cheap"], "cost": ["Noisier updates", "GPU sits partly idle, lower throughput"], "choose": "Choose this when memory is the limit, and use gradient accumulation to recover an effective larger batch."}
+          ]},
+        {"t": "p", "text": "**Gradient accumulation** runs several small batches, adds up their gradients, and updates once, which acts like one larger batch. It saves memory and costs time. **Mixed precision** does most math in 16-bit formats to save memory and gain speed. The fp16 format has a narrow range and needs loss scaling to avoid tiny gradients rounding to zero. The bf16 format keeps fp32's range with less precision, so it is usually less fragile."},
+        {"t": "p", "text": "When one GPU is not enough, **data parallelism** gives each GPU a full copy of the model and a slice of the batch, then averages gradients every step. Sharded variants split the weights, gradients, and optimizer state across GPUs to save memory. Model parallelism splits the model itself. All of them add communication, and in synchronous training one slow or failed GPU holds back the whole job, which is why frequent checkpoints matter."},
+        {"t": "compare",
+          "caption": "Train from scratch or start from an existing model",
+          "columns": ["", "Train from scratch", "Full fine-tune", "Parameter-efficient (LoRA)"],
+          "rows": [
+            ["Data needed", "Enormous for language models", "Thousands of good examples can be enough", "Similar to full fine-tune"],
+            ["Compute", "By far the most", "Moderate, all weights update", "Lowest, a small set of added weights trains"],
+            ["What changes", "Everything the model knows", "Behavior and some knowledge", "Behavior and style, mostly"],
+            ["Main risk", "Cost and time with no guarantee", "Forgetting general skills it had", "Too little capacity for big changes"],
+            ["Choose when", "No suitable base model exists", "A narrow task needs deep adaptation", "Several variants on one base, tight budget"]
+          ],
+          "verdict": "For almost every product team, start from a pretrained model. Try prompting first, then parameter-efficient tuning, and reach for a full fine-tune only when those fall short."},
+        {"t": "callout", "kind": "debug", "title": "CUDA out of memory: when it happens matters", "text": "Out of memory on the first step means the model, batch, or sequence length does not fit: shrink the batch and accumulate, cap sequence length, or use mixed precision. Out of memory after hours usually means one batch was unusually long, or memory grows over time. Check the sequence lengths in the failing batch."},
+        {"t": "check",
+          "q": "A fine-tune runs for nine hours, then fails with out of memory on a batch whose sequences are four times longer than average. What is the most targeted fix?",
+          "options": ["Cap or bucket sequence length so no batch exceeds the budget", "Move the job to a GPU with more memory and rerun it", "Lower the learning rate so the updates are smaller"],
+          "answer": 0,
+          "explain": "Activation memory grows with sequence length, so one long batch can blow a budget that every normal batch fits. Capping or grouping by length fixes the cause. A bigger GPU only moves the threshold, and learning rate does not affect memory."}
+      ]
+    },
+    {
+      "id": "d29-l2",
+      "title": "Reading a training run",
+      "minutes": 14,
+      "blocks": [
+        {"t": "p", "text": "The loss curve is a training run's vital sign. Read training loss and validation loss together, alongside the learning rate, the **gradient norm** (the overall size of each update's gradient), and throughput. Each shape below has a usual meaning and a usual first move."},
+        {"t": "code",
+          "lang": "log",
+          "title": "Healthy run",
+          "code": "step    lr       train_loss  val_loss  grad_norm  tokens/s\n  100  1.0e-05     3.42        -         2.81      41.2k\n  500  5.0e-05     2.61        -         1.34      41.5k\n 1000  1.0e-04     2.18       2.21       1.02      41.4k\n 2000  9.7e-05     1.94       1.97       0.88      41.3k\n 4000  8.7e-05     1.79       1.83       0.81      41.4k\n 8000  5.9e-05     1.68       1.74       0.77      41.2k\n12000  2.6e-05     1.62       1.70       0.75      41.3k",
+          "notes": [
+            "The learning rate ramps up for 1,000 steps (**warmup**) and then decays. Warmup avoids large, unstable updates while the model is still random.",
+            "Train and validation loss fall together with a small, steady gap. The model is learning and not yet memorizing.",
+            "Steady throughput rules out a stalled data loader or a slow GPU. This proves learning; only evals prove the model is good at your task."
+          ]},
+        {"t": "code",
+          "lang": "log",
+          "title": "Diverging run",
+          "code": "step   lr        train_loss  grad_norm\n  800  8.0e-04     2.31        1.10\n 1000  1.0e-03     2.25        1.85\n 1100  1.0e-03     2.40        3.90\n 1200  1.0e-03     2.96        9.70\n 1300  1.0e-03     4.12       31.40\n 1400  1.0e-03     6.85      118.00",
+          "notes": [
+            "Loss turns upward just as warmup reaches the peak learning rate. Updates have become too large.",
+            "Gradient norm grows fast and leads the loss. It is the early warning to alert on.",
+            "Roll back to the step-1000 checkpoint and lower the peak rate, lengthen warmup, or add gradient clipping."
+          ]},
+        {"t": "code",
+          "lang": "log",
+          "title": "NaN run",
+          "code": "step   train_loss  grad_norm\n18380    1.612       1.08\n18390    1.598       1.11\n18400    nan         inf\n18410    nan         nan\n18420    nan         nan\nWARN non-finite loss at step 18400, batch from shard 117",
+          "notes": [
+            "Gradient norm was stable, then non-finite in one step. That points at one batch or a numerical overflow, not slow divergence.",
+            "After one NaN update the weights are corrupted, so every later step is useless. Resume from a checkpoint before 18400.",
+            "Replay the named batch. Empty targets, extreme values, or a log of zero are common culprits."
+          ]},
+        {"t": "code",
+          "lang": "log",
+          "title": "Overfitting fine-tune of a triage classifier",
+          "code": "epoch  train_loss  val_loss  val_accuracy\n  1      0.92        0.95       0.71\n  2      0.61        0.74       0.78\n  3      0.38        0.76       0.78\n  4      0.19        0.88       0.76\n  5      0.07        1.10       0.74",
+          "notes": [
+            "Training loss keeps falling while validation loss bottoms out at epoch 2 and climbs. The model is memorizing training examples.",
+            "Ship the epoch 2 checkpoint. Stopping at the best validation score is called **early stopping**.",
+            "More data, regularization, or fewer epochs are the usual fixes for a small fine-tuning set."
+          ]},
+        {"t": "compare",
+          "caption": "Curve shapes and first moves",
+          "columns": ["", "Looks like", "Usually means", "First move"],
+          "rows": [
+            ["Plateau", "Loss flat and high from early on", "Learning rate too low, or a data or label bug", "Overfit a tiny batch; if it cannot, suspect a bug"],
+            ["Diverging", "Loss rising, gradient norm growing", "Learning rate too high", "Roll back, lower the rate, clip gradients"],
+            ["Spikes", "Sharp jumps that partly recover", "Bad batches or borderline stability", "Find the batches at the spikes"],
+            ["NaN", "Loss becomes nan or inf in one step", "Overflow, bad data, division by zero", "Resume before it and replay the batch"],
+            ["Overfitting", "Train falls, validation rises", "Memorizing a small dataset", "Early stopping, more data, regularization"]
+          ],
+          "verdict": "Always compare train and validation curves, and always look at gradient norm next to loss. Most diagnoses come from those two pairings."},
+        {"t": "p", "text": "**Gradient clipping** caps the gradient norm so a single bad batch cannot produce a huge update. It is cheap insurance and does not cure a learning rate that is simply too high. Experiment tracking tools record each run's config, metrics, and outputs, so you can compare runs side by side instead of from memory."},
+        {"t": "callout", "kind": "pitfall", "title": "Changing two things between runs", "text": "If the new run has a different learning rate and a new data snapshot, a better curve tells you nothing about either. Training runs are slow and noisy, which tempts you to batch changes. Change one thing, or run the combinations you need to separate them."},
+        {"t": "reveal", "prompt": "A run's training loss falls nicely, but validation loss is lower than training loss from the first step to the last. What might explain it?", "answer": "Several things can, so check them in order. Regularization such as dropout is active during training and off during validation, which raises training loss. Training loss may be averaged over the epoch while validation is measured at its end. Or the validation set is easier, or overlaps the training data, which is leakage."}
+      ]
+    },
+    {
+      "id": "d29-l3",
+      "title": "Serving models",
+      "minutes": 13,
+      "blocks": [
+        {"t": "p", "text": "Serving a model is a different system from training it. You care about latency per request and throughput across all requests, on hardware that is expensive to leave idle. Almost every serving decision trades one of those for the other."},
+        {"t": "p", "text": "LLM generation has two phases. **Prefill** processes the whole prompt in parallel and mostly sets the time to first token (TTFT). **Decode** then produces one token at a time, and each step must read the model's weights from GPU memory. For a single request, decode is limited by memory bandwidth and leaves most of the GPU's arithmetic unused."},
+        {"t": "p", "text": "Batching fixes that waste. When many sequences decode together, each read of the weights serves all of them, so total tokens per second rises sharply. Each request gets slightly slower. **Continuous batching** lets requests join and leave the batch at every step instead of waiting for the slowest one to finish."},
+        {"t": "code",
+          "lang": "text",
+          "title": "One GPU, one model, different batch limits (illustrative numbers)",
+          "code": "max_batch  total_tok/s  per_req_tok/s  ttft_p50  e2e_p50 (300 tokens)\n    1           45            45        0.12s        6.8s\n    8          320            40        0.15s        7.6s\n   32          980            31        0.24s        9.9s\n   64         1350            21        0.40s       14.7s",
+          "notes": [
+            "Going from 1 to 8 multiplies throughput about sevenfold while each request slows only a little. That is the cheap part of batching.",
+            "From 32 to 64, throughput still rises but each request takes half again as long. Here you are buying throughput with latency.",
+            "Pick the largest batch that still meets your latency target. The right answer depends on the target, not on the hardware alone."
+          ]},
+        {"t": "p", "text": "The **KV cache** stores intermediate results for every token of every active sequence, so the model does not recompute them each step. It grows with context length and with the number of sequences in flight. When it fills, new requests wait in a queue. Long prompts therefore cut how many users one GPU can serve at once."},
+        {"t": "compare",
+          "caption": "Quantized vs full-precision weights",
+          "columns": ["", "16-bit weights", "8-bit weights", "4-bit weights"],
+          "rows": [
+            ["Weight memory", "Baseline", "About half", "About a quarter"],
+            ["Quality", "Reference", "Usually close to reference", "More noticeable loss, varies by model and method"],
+            ["Speed", "Baseline", "Often faster, depends on hardware support", "Often faster, depends on hardware support"],
+            ["Fits", "Largest GPUs or several GPUs", "Fewer or smaller GPUs", "Smallest hardware, more room for KV cache"]
+          ],
+          "verdict": "Quantize when memory or cost is the limit, and measure quality on your own eval set by category, because losses are often uneven across task types."},
+        {"t": "p", "text": "**Distillation** trains a smaller student model to imitate a larger teacher, giving a model that is cheaper to serve and somewhat less capable. Autoscaling a model server is slow: a new replica may need a GPU machine, a large image, and gigabytes of weights loaded into GPU memory, which can take minutes. Scale on queue depth, keep a warm minimum, and pre-scale before known peaks."},
+        {"t": "tradeoff",
+          "title": "Hosted API vs self-hosted model",
+          "options": [
+            {"name": "Hosted API", "gain": ["No GPUs to run or scale", "Access to the most capable models", "Pay only for what you use"], "cost": ["Rate limits and provider outages", "Data leaves your network", "Model versions change on the provider's schedule"], "choose": "Choose this for most products, especially with spiky traffic or a small team."},
+            {"name": "Self-hosted model", "gain": ["Full control of weights and versions", "Data stays in your network", "Cheaper per token at steady high volume"], "cost": ["You own capacity, cold starts, and upgrades", "Usually a less capable open model", "Idle GPUs cost money"], "choose": "Choose this when volume is steady and high, data residency is strict, or you need to tune the weights."}
+          ]},
+        {"t": "callout", "kind": "debug", "title": "Slow responses: queue or generation?", "text": "Split the latency. If TTFT climbs while inter-token latency stays flat, requests are waiting for a slot or for long prompts to prefill: check queue depth and KV cache use. If inter-token latency climbs, each decode step got slower: check batch size and GPU contention."},
+        {"t": "check",
+          "q": "Relay's self-hosted summarizer shows TTFT p99 rising from 0.6 s to 9 s at peak, inter-token latency flat, and KV cache use at 99 percent. What is happening?",
+          "options": ["Decode steps slowed down under load", "Requests queue because there is no room for more sequences", "The network to clients became congested"],
+          "answer": 1,
+          "explain": "Flat inter-token latency means each running sequence decodes at normal speed. A full KV cache means no new sequence can start, so new requests wait, which shows up only in TTFT."}
+      ]
+    },
+    {
+      "id": "d29-l4",
+      "title": "MLOps: versioning, drift, and reproducibility",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "A model is the product of code, data, configuration, and a training run. To reproduce or debug it, you need all of them versioned and linked. **MLOps** is the practice of doing that, plus deploying and monitoring models, which means DevOps with data and weights added as first-class artifacts."},
+        {"t": "layers",
+          "title": "What must be versioned to rebuild a model",
+          "layers": [
+            {"name": "Data snapshot", "role": "The exact training and eval data, by ID or hash.", "breaks": "A query for 'latest' silently pulls new rows, and the result cannot be rebuilt."},
+            {"name": "Code commit", "role": "Training code, preprocessing, and tokenizer settings.", "breaks": "Uncommitted local edits produced the run that everyone is citing."},
+            {"name": "Config", "role": "Learning rate, batch size, epochs, seed, model base.", "breaks": "A default changed between library versions and nobody wrote down the old value."},
+            {"name": "Environment", "role": "Container image, library versions, GPU type.", "breaks": "A library upgrade changes numerics or defaults, and results shift with no code change."},
+            {"name": "Weights and checkpoints", "role": "The outputs, tagged with the run that made them.", "breaks": "Two runs write to one directory and a resume picks up the other run's checkpoint."},
+            {"name": "Eval results", "role": "Scores per checkpoint on fixed eval sets.", "breaks": "Scores from different eval versions are compared as if they were the same test."}
+          ]},
+        {"t": "p", "text": "A **model registry** is a catalog of model versions, each with its lineage and a stage such as staging or production. Rollout follows Day 21's playbook with one addition: a shadow deployment, where the new model receives a copy of real traffic and its outputs are logged but never shown, so you can compare it with the current model before anyone depends on it."},
+        {"t": "compare",
+          "caption": "What MLOps adds to DevOps",
+          "columns": ["", "DevOps", "MLOps"],
+          "rows": [
+            ["Artifact", "A build from code", "Weights from code, data, config, and a run"],
+            ["Tests", "Pass or fail, deterministic", "Eval scores with variance, thresholds by judgment"],
+            ["Reproducibility", "Same commit gives the same build", "Also needs data, seed, environment, and hardware"],
+            ["Decay", "Code does not get worse by itself", "Quality decays as the world drifts"],
+            ["Rollback", "Redeploy the previous build", "Redeploy previous weights, and check data compatibility"]
+          ],
+          "verdict": "Treat weights like a build artifact with a longer bill of materials, and add quality monitoring that DevOps alone would never need."},
+        {"t": "h", "text": "Drift and feedback loops"},
+        {"t": "p", "text": "**Data drift** means the inputs change: Relay's store launches a new product line, and tickets mention items the triage model never saw. **Concept drift** means the right answer changes: the refund window moves from 30 to 14 days. Neither throws an error. Quality decays slowly, and averages hide it until a category is badly wrong."},
+        {"t": "list", "items": [
+          "Watch input statistics: ticket length, language mix, product categories, share of unknown tokens or entities.",
+          "Watch output statistics: class distribution, refusal rate, tool-call rate, response length.",
+          "Watch proxy quality: escalations to humans, thumbs down, reopened tickets.",
+          "Label a small random sample every week and score it, because proxies drift too."
+        ]},
+        {"t": "p", "text": "A feedback loop forms when the model's outputs shape its future training data. If the triage model routes billing tickets to the wrong queue and agents there close them anyway, those tickets later look like correctly labeled examples. Retraining on them teaches the mistake more firmly. Hold out data the model did not influence, or use human labels."},
+        {"t": "callout", "kind": "debug", "title": "Training resumed from the wrong checkpoint", "text": "Signs: loss jumps at the resume point, the step counter or learning rate schedule restarts, or the loaded checkpoint's run ID differs from the job's. Check the resume log line before trusting anything after it. Store the run ID and config hash in every checkpoint and refuse to resume on a mismatch."},
+        {"t": "callout", "kind": "pitfall", "title": "Cannot reproduce last week's result", "text": "Before suspecting the code, check the data snapshot, the library versions, and the seed. Some GPU operations are not bit-for-bit deterministic, so expect small differences even with everything pinned, and compare within the run-to-run spread."},
+        {"t": "reveal", "prompt": "Relay's triage accuracy on the weekly labeled sample fell from 91 to 84 percent over three months with no deploys. Where do you look first?", "answer": "Break the sample down by category and by date. If the drop sits in a few new categories, it is data drift from new products or issues. If an old category degraded after a policy change, it is concept drift. Then check whether recent retraining data came from the model's own routing."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Training loss becomes nan or inf and stays there",
+      "causes": ["A bad batch: empty targets, extreme values, log of zero", "Numerical overflow in 16-bit math", "Learning rate high enough to blow up"],
+      "look": "Gradient norm in the steps before the NaN, and the batch named at the failing step.",
+      "confirm": "Gradient norm stable then non-finite in one step points to a batch or overflow. Steady growth first points to the learning rate.",
+      "fix": "Resume from a checkpoint before it, fix or filter the data, and add clipping or a non-finite check. Filtering costs a little data."
+    },
+    {
+      "symptom": "CUDA out of memory on the GPU",
+      "causes": ["Batch size or sequence length too large", "One unusually long batch", "Memory growing over time"],
+      "look": "When it fails (first step or after hours) and the sequence lengths in the failing batch.",
+      "confirm": "First-step failure means it never fit. A late failure on a long batch means sequence length is the cause.",
+      "fix": "Smaller batches with gradient accumulation, capped or bucketed lengths, mixed precision, or activation recomputation, each trading time for memory."
+    },
+    {
+      "symptom": "Cannot reproduce last week's training result",
+      "causes": ["Data pulled as 'latest' changed", "Library or image version changed", "Different seed or config default"],
+      "look": "The run's recorded data ID, commit, config, image, and seed, compared field by field.",
+      "confirm": "A field differs, or was never recorded.",
+      "fix": "Pin and record data, code, config, environment, and seed for every run. Expect small nondeterminism even then."
+    },
+    {
+      "symptom": "Model quality decays slowly in production with no deploys",
+      "causes": ["Data drift in the inputs", "Concept drift in the right answers", "A feedback loop in retraining data"],
+      "look": "Weekly labeled sample scores by category, and input and output distributions over time.",
+      "confirm": "The decline concentrates in new or changed categories.",
+      "fix": "Retrain on fresh, independently labeled data and add drift monitors. Retraining more often costs labeling time."
+    },
+    {
+      "symptom": "Loss jumps up right after a training job resumed",
+      "causes": ["Resumed from another run's or an older checkpoint", "Optimizer or scheduler state not restored"],
+      "look": "The resume log line: checkpoint path, step, run ID.",
+      "confirm": "The run ID or step does not match, or the learning rate restarted warmup.",
+      "fix": "Resume from the right checkpoint, give each run its own directory, and verify run ID on resume."
+    },
+    {
+      "symptom": "Loss rises steadily and gradient norm grows with it",
+      "causes": ["Learning rate too high", "Warmup too short"],
+      "look": "The learning rate schedule at the step where loss turned.",
+      "confirm": "Loss turns near the peak learning rate, and gradient norm grows before loss does.",
+      "fix": "Roll back, lower the peak rate or lengthen warmup, and add gradient clipping."
+    },
+    {
+      "symptom": "Training loss keeps falling while validation loss rises",
+      "causes": ["Overfitting a small dataset", "Too many epochs"],
+      "look": "Validation loss and task metric per epoch.",
+      "confirm": "Validation is best at an early epoch and worse after.",
+      "fix": "Use the best-validation checkpoint, add data, or regularize. Stopping early can leave some accuracy unclaimed."
+    },
+    {
+      "symptom": "GPU utilization low during training while the job is slow",
+      "causes": ["Data loading or preprocessing cannot keep up", "Waiting on a slow GPU or network in distributed training"],
+      "look": "Time per step split into data loading and compute, and per-GPU step times.",
+      "confirm": "Steps wait on the data loader, or one GPU is consistently slower than the rest.",
+      "fix": "More loader workers, preprocessing ahead of time, or replacing the straggler."
+    },
+    {
+      "symptom": "TTFT p99 climbs at peak while inter-token latency stays flat",
+      "causes": ["Requests queue because the KV cache or batch is full", "Long prompts dominate prefill"],
+      "look": "Queue depth, KV cache use, and prompt length distribution at peak.",
+      "confirm": "Queue depth rises with TTFT and the cache sits near full.",
+      "fix": "Add replicas ahead of peak, cap context length, or quantize to free memory, each with a cost or quality tradeoff."
+    },
+    {
+      "symptom": "New model replicas take minutes to serve traffic after a scale-up",
+      "causes": ["GPU machine provisioning, image pull, and weight loading on cold start"],
+      "look": "Replica start events: time to schedule, pull, load, and become ready.",
+      "confirm": "Most of the delay is in provisioning and loading weights.",
+      "fix": "Keep a warm minimum, scale on queue depth earlier, and pre-scale for known peaks, at the cost of idle GPUs."
+    }
+  ],
+  "glossary": [
+    {"term": "Checkpoint", "def": "A saved snapshot of training: weights, optimizer state, schedule position, and data position, enough to resume the run or evaluate the model."},
+    {"term": "Batch size", "def": "How many examples are processed together before one weight update. Larger batches use more memory and keep the hardware busier."},
+    {"term": "Gradient accumulation", "def": "Adding gradients from several small batches before one update, to get the effect of a larger batch without its memory cost."},
+    {"term": "Mixed precision", "def": "Doing most training math in 16-bit formats such as bf16 or fp16 to save memory and time, with safeguards for numerical range."},
+    {"term": "Data parallelism", "def": "Training with a copy of the model on each GPU, each processing part of the batch, with gradients averaged every step."},
+    {"term": "Warmup", "def": "Starting training with a small learning rate and raising it over the first steps, to avoid unstable early updates."},
+    {"term": "Gradient norm", "def": "The overall size of a step's gradient. A rising or non-finite value is an early sign of divergence or a bad batch."},
+    {"term": "Gradient clipping", "def": "Capping the gradient norm so one bad batch cannot cause a huge weight update."},
+    {"term": "Early stopping", "def": "Using the checkpoint with the best validation score instead of the last one, to avoid shipping an overfit model."},
+    {"term": "Quantization", "def": "Storing weights, and sometimes computing, with fewer bits, such as 8 or 4 instead of 16. Saves memory and often time, at some quality cost."},
+    {"term": "Distillation", "def": "Training a smaller student model to imitate a larger teacher, producing a cheaper model that keeps much of the teacher's skill."},
+    {"term": "KV cache", "def": "Stored intermediate results for each token of each active sequence during generation. It grows with context length and concurrency and limits batch size."},
+    {"term": "Data drift", "def": "A change in the distribution of production inputs compared with training data. Concept drift is a change in what the correct output is."},
+    {"term": "Model registry", "def": "A catalog of model versions with their lineage (data, code, config) and deployment stage."}
+  ],
+  "apply": {
+    "title": "Check whether your last run is reproducible",
+    "minutes": 15,
+    "steps": [
+      "Pick your last eval or batch run and list everything that decided its result: model identifier, prompt version, dataset file and its hash, temperature, library versions, and Git commit.",
+      "Mark which items the run recorded automatically and which you would have to guess today.",
+      "Make 20 streaming calls to your LLM API and record time to first token and total time for each. Note the p50 and the slowest of each.",
+      "Compare TTFT with prompt length across the 20 calls and write one sentence on whether longer prompts delayed the first token."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d29-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["nan-loss", "checkpoints"],
+      "diagnostic": true,
+      "q": "A training run's loss turns into NaN at step 41,200 after hours of normal progress. Gradient norm was stable until the step before. What is the best first move?",
+      "options": [
+        "Restart the run from scratch with a different random seed",
+        "Resume from a checkpoint before the NaN and replay the failing batch",
+        "Keep the run going, since NaN values usually clear on their own",
+        "Double the batch size so one bad example has less weight"
+      ],
+      "answer": 1,
+      "explain": "A sudden jump from stable to non-finite points at one batch or an overflow. Resuming from an earlier checkpoint saves the hours already spent, and replaying the batch finds the cause. After a NaN update the weights are corrupted, so the run never recovers on its own.",
+      "why": ["It throws away hours of good training and does not find the cause, which will strike again.", "", "A NaN in the weights spreads to every later step; it does not clear.", "A larger batch can still contain the bad example, and the NaN poisons the whole batch average."]
+    },
+    {
+      "id": "d29-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["overfitting", "loss-curves"],
+      "artifact": {"lang": "log", "title": "Fine-tuning a ticket classifier", "code": "epoch  train_loss  val_loss  val_f1\n  1      0.88        0.91      0.70\n  2      0.57        0.69      0.79\n  3      0.31        0.72      0.79\n  4      0.14        0.85      0.77\n  5      0.05        1.02      0.75"},
+      "q": "Which checkpoint should ship, and why?",
+      "options": [
+        "Epoch 5, because its training loss is lowest",
+        "Epoch 4, as a middle ground between fit and generalization",
+        "Epoch 1, because the gap between train and validation is smallest",
+        "Epoch 2, because validation loss is lowest there"
+      ],
+      "answer": 3,
+      "explain": "Validation loss bottoms out at epoch 2 and rises after, while F1 is flat then falls. Later epochs memorize the training set. Choosing by training loss, the tempting answer, picks the most overfit model.",
+      "why": ["Lowest training loss is the most memorized model; validation is worst there.", "Validation loss and F1 are both worse at epoch 4 than at epoch 2.", "A small gap at epoch 1 comes from the model barely having learned yet.", ""]
+    },
+    {
+      "id": "d29-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["divergence", "learning-rate"],
+      "artifact": {"lang": "log", "code": "step   lr        loss   grad_norm\n 1800  9.0e-04   2.14     0.95\n 2000  1.0e-03   2.11     1.40\n 2100  1.0e-03   2.27     3.60\n 2200  1.0e-03   2.88    12.10\n 2300  1.0e-03   4.51    47.80"},
+      "q": "What is the most likely cause, and the fix?",
+      "options": [
+        "A corrupt data shard; skip it and continue from step 2300",
+        "The peak learning rate is too high; roll back and lower it or clip",
+        "The model is overfitting; stop early at step 2000",
+        "The GPU is overheating; move the job to other hardware"
+      ],
+      "answer": 1,
+      "explain": "Loss turns upward exactly when warmup reaches the peak rate, and gradient norm grows over several hundred steps before loss explodes. That is divergence from oversized updates. A bad shard gives a sudden one-step jump, and overfitting needs a validation curve to show.",
+      "why": ["A bad batch causes a sudden spike, not growth across hundreds of steps.", "", "This is training loss rising, which is divergence; overfitting shows in validation loss.", "Hardware faults do not produce a smooth rise tied to the learning rate schedule."]
+    },
+    {
+      "id": "d29-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["gpu-memory", "batch-size"],
+      "context": "A fine-tune on Relay's ticket histories runs fine for nine hours, then fails with CUDA out of memory. The failing batch holds a ticket thread with 14,000 tokens; the average is 1,800.",
+      "q": "Which change addresses the cause with the least side effect?",
+      "options": [
+        "Cap sequence length and split or truncate very long threads",
+        "Halve the batch size for the entire run",
+        "Switch from bf16 to fp32 for more numerical headroom",
+        "Restart from the beginning on a GPU with more memory"
+      ],
+      "answer": 0,
+      "explain": "Activation memory grows with sequence length, so one outlier thread breaks a budget every normal batch fits. Capping length targets that outlier. Halving the batch slows every step to fix a rare one, and fp32 uses more memory, not less.",
+      "why": ["", "It works but slows the whole run to handle a rare outlier.", "fp32 doubles the memory per value and makes the problem worse.", "It discards nine hours of progress and only moves the limit."]
+    },
+    {
+      "id": "d29-q05",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["batching", "serving"],
+      "q": "Why does batching many requests raise an LLM server's total throughput so much?",
+      "options": [
+        "Each request's prompt gets shorter when batched",
+        "The model skips layers for requests in a batch",
+        "Each read of the weights serves every sequence in the batch",
+        "Batched requests are routed to a faster GPU"
+      ],
+      "answer": 2,
+      "explain": "Decode is limited by reading the weights from memory for every token. With one request, most arithmetic capacity sits idle. Batching shares each read across many sequences, so tokens per second rise while each request slows only a little at first."
+    },
+    {
+      "id": "d29-q06",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["serving", "kv-cache"],
+      "artifact": {"lang": "text", "title": "Model server at peak", "code": "time   rps  queue  kv_cache  ttft_p99  itl_p50  gpu_util\n09:50   18     0     41%      0.62s     28ms     71%\n09:58   31     4     88%      1.90s     31ms     93%\n10:02   44    37     99%      8.70s     32ms     95%\n10:06   46    61     99%     11.40s     32ms     95%"},
+      "q": "What best explains the rise in time to first token?",
+      "options": [
+        "Each decode step became much slower under load",
+        "Clients on slow networks are delaying their requests",
+        "The server reloaded its model weights at 10:00",
+        "New requests wait because the KV cache is full"
+      ],
+      "answer": 3,
+      "explain": "Inter-token latency barely moved, so running sequences decode at normal speed. The cache is at 99 percent and the queue grows, so new requests cannot start. High GPU utilization here is a sign of a busy, healthy server at capacity, not a fault.",
+      "why": ["Inter-token latency is nearly flat, so decode speed did not change.", "Client network delay would not raise the server's own queue depth.", "A reload would show a gap in serving and a drop in GPU use, not steady 95 percent.", ""]
+    },
+    {
+      "id": "d29-q07",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["hosted-vs-self-hosted"],
+      "q": "Which situation most favors self-hosting a model instead of using a hosted API?",
+      "options": [
+        "Steady high volume, strict data residency, and GPU experience in-house",
+        "Spiky traffic, a two-person team, and fast-changing prompts",
+        "A need for the most capable model available this month",
+        "An early prototype that is still finding its use case"
+      ],
+      "answer": 0,
+      "explain": "Self-hosting pays off when steady volume keeps GPUs busy, data must stay inside your network, and you can operate the hardware. Spiky traffic leaves GPUs idle, and the most capable models are usually available only through hosted APIs.",
+      "why": ["", "Spiky load leaves self-hosted GPUs idle and a small team cannot easily run them.", "The most capable models are generally offered as hosted APIs.", "A prototype benefits from the flexibility of an API and pays little in volume."]
+    },
+    {
+      "id": "d29-q08",
+      "type": "multi",
+      "level": 2,
+      "tags": ["reproducibility", "mlops"],
+      "q": "Which of these must be recorded to reproduce a fine-tuning result? Select all that apply.",
+      "options": [
+        "The exact data snapshot ID or hash",
+        "The Git commit of the training code",
+        "The config, including learning rate and seed",
+        "The container image and library versions",
+        "The wall-clock time the job started",
+        "The name of the person who launched it"
+      ],
+      "answers": [0, 1, 2, 3],
+      "explain": "Data, code, config with seed, and environment together determine a run. Start time and the launcher's name are useful for an audit trail but do not change the result. Missing the data snapshot is the most common reason a result cannot be rebuilt."
+    },
+    {
+      "id": "d29-q09",
+      "type": "order",
+      "level": 2,
+      "tags": ["training-pipeline"],
+      "q": "Put these stages of a fine-tuning pipeline in order.",
+      "items": [
+        "Collect raw examples and labels",
+        "Clean, deduplicate, and remove eval overlap",
+        "Snapshot and version the dataset",
+        "Tokenize and train, saving checkpoints",
+        "Evaluate checkpoints on held-out data",
+        "Register the chosen model and roll out in stages"
+      ],
+      "explain": "Cleaning must come before the snapshot so the versioned data is what trained the model. Checkpoints are evaluated on held-out data before one is registered, and rollout happens only from the registry, so lineage is never lost."
+    },
+    {
+      "id": "d29-q10",
+      "type": "match",
+      "level": 2,
+      "tags": ["loss-curves", "checkpoints"],
+      "q": "Match each training observation to its most likely cause.",
+      "pairs": [
+        ["Train loss falls, validation loss rises", "Overfitting"],
+        ["Loss becomes NaN in a single step", "A bad batch or numerical overflow"],
+        ["Loss and gradient norm climb after warmup", "Learning rate too high"],
+        ["Loss jumps up at the moment of resuming", "Wrong checkpoint or missing optimizer state"],
+        ["Loss flat and high from the first steps", "Learning rate too low, or a data or label bug"]
+      ],
+      "explain": "Each shape points at a different part of the system: the data, the learning rate, the dataset size, or the checkpoint bookkeeping. Reading loss next to gradient norm and the resume log narrows most problems in minutes."
+    },
+    {
+      "id": "d29-q11",
+      "type": "open",
+      "level": 3,
+      "tags": ["drift", "mlops"],
+      "context": "Relay's self-hosted triage classifier was trained six months ago. Escalations to humans have crept up from 8 to 13 percent over three months. Nothing was deployed in that time.",
+      "q": "Explain what is probably happening and how you would confirm it and keep it from recurring.",
+      "rubric": [
+        "Names drift (data or concept) as the likely cause since nothing was deployed",
+        "Breaks the decline down by category or ticket type and by time",
+        "Compares recent input distributions with the training data",
+        "Uses a freshly labeled sample, not only the escalation proxy, to measure quality",
+        "Proposes monitoring and periodic retraining on independently labeled data, avoiding feedback loops"
+      ],
+      "model": "With no deploys, the model stayed the same while the world changed, so drift is the likely cause. I would label a random recent sample, score it by category, and compare input distributions with the training data. If new product categories carry the errors, it is data drift; if old categories changed after a policy update, concept drift. Then I would add input and quality monitors and retrain periodically on human-labeled data, not on the model's own routing."
+    },
+    {
+      "id": "d29-q12",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["quantization", "serving"],
+      "q": "What is true of quantizing a model's weights from 16-bit to 8-bit?",
+      "options": [
+        "Quality is unchanged, since the same parameters remain",
+        "The number of parameters in the model is halved",
+        "Weight memory roughly halves, with a quality change to measure",
+        "Generation becomes deterministic at every temperature"
+      ],
+      "answer": 2,
+      "explain": "Each weight is stored with fewer bits, so weight memory roughly halves while the parameter count stays the same. Rounding changes outputs slightly, and the effect varies by task, so measure it on your own eval set by category."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d29-x1",
+      "title": "The fine-tune that recovered from NaN",
+      "brief": "Relay's team is fine-tuning an open model to triage tickets. Overnight the job hit NaN loss at step 18,400 and crashed. The job's auto-resume restarted it from the `latest` checkpoint, and by morning loss is falling again. A teammate says it recovered on its own and wants to keep the run. Another fine-tune with a different learning rate was launched yesterday by someone else.",
+      "artifact": {"lang": "log", "title": "train.log around the resume", "code": "step 18390  loss 1.598  grad_norm 1.11\nstep 18400  loss nan    grad_norm inf\nERROR non-finite loss, exiting\n--- auto-resume ---\nresuming from checkpoints/latest\nstep  2010  loss 2.912  grad_norm 1.74\nstep  2020  loss 2.897  grad_norm 1.69"},
+      "steps": [
+        {
+          "q": "What stands out first?",
+          "options": [
+            "Loss is falling again, so training is healthy",
+            "The resumed run is at step 2010 with much higher loss",
+            "Gradient norm after the resume is slightly high",
+            "The NaN must have come from a hardware fault"
+          ],
+          "answer": 1,
+          "explain": "A correct resume continues near step 18,400 at a loss near 1.6. Step 2010 and a loss of 2.9 mean it loaded something else. A falling loss only says the new run is learning, not that it is the right run.",
+          "reveal": "The resume log shows the checkpoint's run ID is `triage-lr2e-4`, the teammate's run. Both jobs write to the same `checkpoints/` directory, and `latest` pointed at their newest save."
+        },
+        {
+          "q": "Now the NaN itself. Gradient norm was about 1.1 right up to step 18,400. What do you do?",
+          "options": [
+            "Lower the learning rate tenfold and restart from scratch",
+            "Switch the whole run to fp32 to avoid overflow",
+            "Load this run's step-18,000 checkpoint and replay up to 18,400",
+            "Add more dropout so the model is more stable"
+          ],
+          "answer": 2,
+          "explain": "A stable gradient norm followed by a one-step jump to inf points at one batch, not at the learning rate. Replaying from the last good checkpoint of this run is cheap and shows which batch did it. Restarting or changing precision guesses at a cause the evidence does not support.",
+          "reveal": "The batch at step 18,400 contains three examples with empty target text, left over after a cleaning step stripped signature blocks. The loss averages over zero target tokens for those rows, which divides by zero."
+        },
+        {
+          "q": "What is the right fix for the run?",
+          "options": [
+            "Keep the resumed run going, since its loss is now falling",
+            "Filter and guard empty targets, then resume this run from step 18,000",
+            "Add gradient clipping and continue the run from step 2010",
+            "Skip shard 117 for good and continue from the crash point"
+          ],
+          "answer": 1,
+          "explain": "The data bug must be fixed where it was created and guarded so it cannot return. Resuming from this run's last good checkpoint keeps eighteen thousand steps of work. Clipping cannot fix a division by zero, and skipping one shard leaves the same bug in others."
+        },
+        {
+          "q": "What prevents a resume from loading the wrong run again?",
+          "options": [
+            "Give each run its own directory and verify run ID and config hash on resume",
+            "Turn off auto-resume so a person restarts every crash",
+            "Save checkpoints less often so fewer files exist",
+            "Name the checkpoints by date instead of by step"
+          ],
+          "answer": 0,
+          "explain": "The failure was two runs sharing one `latest` pointer. Unique directories remove the collision, and checking identity on load turns a silent mix-up into an error. Turning off auto-resume costs hours on every crash and does not stop a person picking the wrong file."
+        }
+      ],
+      "debrief": "Two problems overlapped. A cleaning step created examples with empty targets, which produced a NaN, and auto-resume then loaded another run's checkpoint because both shared a directory. The 'recovery' was a different run learning from step 2,000. The fix was filtering and guarding the data, resuming from the right checkpoint, and verifying run identity on load. The general lesson: read the resume line before trusting a curve, and treat NaN as a data question first."
+    },
+    {
+      "id": "d29-x2",
+      "title": "The summarizer is slow every morning at ten",
+      "brief": "Relay moved ticket summarization from a hosted API to a self-hosted model on two GPU replicas last month. Every weekday from about 9:55 to 10:20, agents complain that summaries take ten seconds or more to start. The rest of the day is fine. The autoscaler is set to add replicas when GPU utilization stays above 90 percent. A teammate suggests the model is just slow on long morning tickets.",
+      "steps": [
+        {
+          "q": "What do you look at first?",
+          "options": [
+            "Quantize the model to 4-bit so it generates faster",
+            "Queue depth, TTFT, and inter-token latency over the window",
+            "Average prompt length in the morning versus the afternoon",
+            "Move summarization back to the hosted API today"
+          ],
+          "answer": 1,
+          "explain": "Splitting latency into waiting and generating tells you which half of the system to examine. Prompt length is worth checking, but only after you know whether time is lost before or during generation. Quantizing or switching back are fixes chosen before the cause is known.",
+          "reveal": "At 10:02, queue depth is 37 and KV cache use is 99 percent. TTFT p99 is 8.7 seconds, while inter-token latency is 32 ms, the same as at 9:50.",
+          "artifact": {"lang": "text", "code": "time   rps  queue  kv_cache  ttft_p99  itl_p50  replicas\n09:50   18     0     41%      0.62s     28ms       2\n09:58   31     4     88%      1.90s     31ms       2\n10:02   44    37     99%      8.70s     32ms       2\n10:06   46    61     99%     11.40s     32ms       2\n10:12   45    22     83%      3.10s     30ms       4"}
+        },
+        {
+          "q": "The autoscaler added replicas, but they served traffic only at 10:12. What do the replica events show?",
+          "options": [
+            "The autoscaler fired late because CPU stayed low",
+            "Requests were routed unevenly between the two replicas",
+            "Scale-up began after the queue was deep, and each replica took minutes to load",
+            "The new replicas failed health checks and restarted"
+          ],
+          "answer": 2,
+          "explain": "GPU utilization crossed 90 percent only once the servers were already saturated, and a cold replica needs a machine, an image, and gigabytes of weights before it can serve. Both delays stack up exactly during the morning surge.",
+          "artifact": {"lang": "log", "title": "replica events", "code": "10:00:40 scale-up triggered (gpu_util > 90% for 2m)\n10:03:10 node ready\n10:04:05 image pulled\n10:11:50 weights loaded, readiness probe passed"}
+        },
+        {
+          "q": "Which change fixes the morning problem most directly?",
+          "options": [
+            "Raise the maximum batch size so each replica takes more requests",
+            "Raise the client timeout so fewer summaries fail",
+            "Restart all replicas nightly to clear GPU memory",
+            "Scale on queue depth, keep a higher warm minimum, and pre-scale before 9:50"
+          ],
+          "answer": 3,
+          "explain": "The surge is predictable and the replicas are slow to start, so capacity must exist before the surge arrives. A larger batch limit cannot help when the KV cache is already full, and a longer timeout only hides the wait.",
+          "reveal": "With a scheduled scale-up to four replicas at 9:45 and queue-based scaling after that, TTFT p99 at 10:05 stays under 1 second."
+        },
+        {
+          "q": "What should you alert on so this is seen before agents complain?",
+          "options": [
+            "TTFT p99 and time spent in queue",
+            "GPU utilization above 90 percent",
+            "Average end-to-end latency per hour",
+            "The number of running replicas"
+          ],
+          "answer": 0,
+          "explain": "Users feel TTFT and queue wait directly. High GPU utilization is normal for a well-used model server and makes a noisy alert. An hourly average hides a twenty-minute spike, and replica count is a cause-side signal."
+        }
+      ],
+      "debrief": "Root cause: a predictable morning surge filled the KV cache on two replicas, so new requests queued. The autoscaler watched GPU utilization, which only rose once the servers were already full, and cold replicas then took over ten minutes to load. The model was never slower per token. The fix was pre-scaling, a warm minimum, and scaling on queue depth. The general lesson: split latency into waiting and generating, and remember GPU replicas start slowly."
+    }
+  ]
+}

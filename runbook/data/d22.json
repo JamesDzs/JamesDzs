@@ -1,0 +1,604 @@
+{
+  "id": "d22",
+  "day": 22,
+  "phase": "p5",
+  "title": "Machine learning fundamentals for engineers",
+  "tagline": "What a model is, how training works, and why ML bugs run without errors and still give wrong answers.",
+  "minutes": 58,
+  "why": "Most ML bugs never raise an exception. The pipeline runs, the score looks fine, and production is quietly wrong. Knowing how training, splits, and metrics work lets you read a training log or a confusion matrix and say whether a number can be trusted, which is the core of evaluating any model, including the LLMs you work with every day.",
+  "objectives": [
+    "Describe training and inference as two separate systems and name what can drift between them",
+    "Read a training log with train and validation loss and say whether the run is healthy, underfitting, or overfitting",
+    "Spot data leakage from how a dataset was split and which features it used",
+    "Compute precision and recall from a confusion matrix and pick the metric that matches the cost of each error",
+    "Run cheap sanity checks, such as a majority-class baseline, before trusting any model score"
+  ],
+  "lessons": [
+    {
+      "id": "d22-l1",
+      "title": "Models, parameters, training vs inference",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "A **model** is a function whose behavior is set by numbers learned from examples instead of rules written by hand. Those numbers are its **parameters**, also called weights. **Training** is the process that finds good values for them, and **inference** is running the finished function on new input."},
+        {"t": "p", "text": "Relay already has one. The worker that triages tickets sends each new ticket's text to a small classifier that outputs one of four categories: refund, shipping, account, or other. Nobody wrote a rule saying 'the word parcel means shipping'. The classifier learned that pattern from 48,000 tickets that support staff had already labeled."},
+        {"t": "callout", "kind": "insight", "title": "The parameters are the program", "text": "In ordinary code, behavior lives in source files you can read and diff. In a model, behavior lives in a file of numbers. Retraining with the same code and a different dataset produces a different program, so the weights file deserves the same versioning and release care as a container image."},
+        {"t": "h", "text": "Four ways a model learns"},
+        {"t": "compare",
+          "caption": "Learning paradigms on one map",
+          "columns": ["", "Learns from", "Relay example", "Typical failure"],
+          "rows": [
+            ["Supervised", "Inputs paired with correct answers (labels)", "Ticket text to category, from staff-labeled tickets", "Labels are inconsistent or wrong, so the model learns the noise"],
+            ["Unsupervised", "Inputs with no labels; finds structure such as clusters", "Grouping tickets by topic to find new complaint types", "Clusters that are real but useless for any decision"],
+            ["Self-supervised", "Labels made from the data itself, such as the next word", "The pretraining behind the LLM Relay calls", "Learns whatever the raw data contains, including its errors"],
+            ["Reinforcement", "A reward after acting, with no correct answer given", "Tuning an agent on whether the customer's issue got resolved", "Finds a way to raise the reward that you did not intend"]
+          ],
+          "verdict": "Most business classifiers are supervised. LLMs start self-supervised and are then refined with supervised and reinforcement steps, which Day 23 covers."},
+        {"t": "h", "text": "Training and inference are two systems"},
+        {"t": "p", "text": "Training is a batch job. It reads a large dataset, runs for minutes to weeks, and its output is a file of weights. Inference sits on a request path. It loads that file once and then answers one input at a time under a latency budget. These are the same two shapes you met in backend work: the nightly job on the worker fleet and the API handler."},
+        {"t": "flow",
+          "title": "From labeled tickets to a live prediction",
+          "steps": [
+            {"actor": "Data pipeline", "label": "Exports labeled tickets", "detail": "A query pulls tickets and their final category from PostgreSQL into a training file.", "fail": "The query joins a column that only exists after a ticket is resolved, and the model learns from the future."},
+            {"actor": "Trainer", "label": "Fits parameters", "detail": "The trainer adjusts the weights over many passes so predictions match the labels.", "fail": "Loss never falls, or turns into NaN, and the run produces useless weights without crashing."},
+            {"actor": "Trainer", "label": "Scores held-out data", "detail": "It measures the model on tickets it never trained on.", "fail": "The held-out set overlaps the training set and the score is inflated."},
+            {"actor": "Registry", "label": "Stores a versioned artifact", "detail": "Weights, the label list, and the preprocessing settings are saved together under one version.", "fail": "Only the weights are saved, and the label order lives somewhere else."},
+            {"actor": "Worker", "label": "Loads the artifact at startup", "detail": "Each worker process reads the weights into memory once.", "fail": "A stale image keeps loading last month's version."},
+            {"actor": "Worker", "label": "Predicts per ticket", "detail": "Text is cleaned the same way as in training, then passed through the model.", "fail": "Cleaning differs from training, so inputs look unfamiliar and accuracy drops with no error."}
+          ]},
+        {"t": "compare",
+          "caption": "The two systems side by side",
+          "columns": ["", "Training", "Inference"],
+          "rows": [
+            ["Shape of work", "Long batch job over the whole dataset", "Short call per input on a request path"],
+            ["Optimizes for", "Throughput and total cost of the run", "Latency per request and cost per call"],
+            ["Changes parameters", "Yes, that is its purpose", "No, weights are read-only"],
+            ["How it fails", "Bad curves, wasted compute, a model that looks fine and is not", "Timeouts, memory pressure, silently wrong outputs"],
+            ["Backend analog", "Nightly re-indexing job on the worker fleet", "A FastAPI handler with a latency budget"]
+          ],
+          "verdict": "Debug them as separate systems with separate logs. A wrong prediction can come from either one, and the first question is which."},
+        {"t": "callout", "kind": "pitfall", "title": "Training-serving skew", "text": "If the trainer lowercases text and strips signatures but the worker does neither, the model sees inputs at inference that look nothing like what it learned on. Nothing crashes. Accuracy drops. Share one preprocessing function between both sides, and ship its settings inside the model artifact."},
+        {"t": "check",
+          "q": "A teammate retrains the triage model on a new month of data and redeploys. The worker code did not change at all. Can production behavior have changed?",
+          "options": ["No, because the code is identical", "Yes, because the weights are the behavior", "Only if the model architecture changed"],
+          "answer": 1,
+          "explain": "New data produces new parameter values, and the parameters decide every prediction. Treat a weights change like a code change: version it, evaluate it, and roll it out carefully."},
+        {"t": "reveal", "prompt": "Relay's LLM provider updates a model under the same API name. In the terms of this lesson, what changed and what stayed the same?", "answer": "The inference interface stayed the same: same endpoint, same request shape. The parameters changed, so the function changed. That is why Relay pins model versions and reruns its eval harness before switching."}
+      ]
+    },
+    {
+      "id": "d22-l2",
+      "title": "Loss, gradients, and optimization",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "**Loss** is one number that scores how wrong the model's predictions are on some examples, where lower is better. Training is the search for parameter values that make the loss small on the training data. Everything else in this lesson is about how that search moves and how to tell from a log whether it is working."},
+        {"t": "p", "text": "The search uses the **gradient**: for each parameter, the direction and size of change that would raise the loss fastest. Step the other way and the loss falls a little. **Gradient descent** repeats that small correction thousands or millions of times, each time on a fresh handful of examples."},
+        {"t": "analogy", "text": "Gradient descent is walking downhill in thick fog. You cannot see the valley, but you can feel the slope under your feet, so you take a step downhill and feel again. The analogy stops at two points. The real landscape has millions of dimensions, one per parameter, and each step uses a noisy reading of the slope taken from a small sample of the data."},
+        {"t": "list", "items": [
+          "A **batch** is the handful of examples used for one step, often 16 to a few thousand.",
+          "A **step** is one update: predict on a batch, compute the loss, compute the gradient, nudge every parameter.",
+          "An **epoch** is one full pass over the training set. With 48,000 tickets and a batch of 32, one epoch is 1,500 steps.",
+          "The **learning rate** sets how far each step moves. It is the setting that most often decides whether a run works."
+        ]},
+        {"t": "compare",
+          "caption": "What the learning rate does to the loss curve",
+          "columns": ["", "Too low", "About right", "Too high"],
+          "rows": [
+            ["Loss curve", "Falls very slowly, almost a straight line", "Falls fast, then flattens", "Jumps around, climbs, or becomes NaN"],
+            ["Cost", "Wasted compute; run ends before converging", "Converges in a reasonable time", "Run is useless and must restart"],
+            ["What you see in the log", "Small steady decrease every epoch", "Big early drops, then small ones", "Loss spikes or reads `nan`"]
+          ],
+          "verdict": "When a run misbehaves, the learning rate is the first setting to check, and changing it by a factor of three to ten is a normal experiment."},
+        {"t": "code",
+          "lang": "log",
+          "title": "Training log for triage-v7, a healthy run",
+          "code": "run=triage-v7 classes=4 lr=3e-4 batch=32 train=48000 val=6000\nepoch  step  train_loss  val_loss  val_acc\n0         0       1.386     1.387        -\n1      1500       0.712     0.734     0.74\n2      3000       0.521     0.566     0.80\n3      4500       0.448     0.519     0.82\n4      6000       0.401     0.503     0.83\n5      7500       0.369     0.498     0.83\n6      9000       0.342     0.497     0.84\nbest checkpoint: epoch 6 (val_loss 0.497)",
+          "notes": [
+            "At step 0 the loss is 1.386, which is what the usual classification loss gives a model when it spreads its guess evenly over four classes. A starting loss far from that value points to a bug in the labels or the loss setup.",
+            "Both losses fall together, and validation loss stays a little above training loss. That gap is normal.",
+            "By epoch 5 and 6 validation loss barely moves. That flattening is **convergence**: more epochs would buy little.",
+            "The run saves the checkpoint with the lowest validation loss, not simply the last one."
+          ]},
+        {"t": "callout", "kind": "debug", "title": "Reading a bad loss curve", "text": "Loss turns to `nan` or spikes: lower the learning rate and check the inputs for missing or extreme values. Loss flat from the first step: check that parameters are actually being updated and that the learning rate is not zero. Loss falls but stays high: the model may be too small or the labels too noisy. Day 29 goes deeper into reading large runs."},
+        {"t": "callout", "kind": "pitfall", "title": "Loss is not the metric you care about", "text": "Loss is chosen because the optimizer can follow it, and it does not always move with the metric your users feel. A run can lower loss while recall on the rare class you care about stays flat. Always log the business metric next to the loss."},
+        {"t": "check",
+          "q": "A new run's training loss reads 1.386 at step 0 and still 1.386 at step 9,000 across four classes. What is the most likely cause?",
+          "options": ["The model has converged early", "The parameters are not being updated", "The validation set is too small", "The model is overfitting"],
+          "answer": 1,
+          "explain": "1.386 is the score of an even guess over four classes, so the model never learned anything. Convergence would happen at a much lower loss, and overfitting needs training loss to fall first. Look for a zero learning rate or frozen weights."},
+        {"t": "reveal", "prompt": "The run doubles the batch size from 32 to 64 and changes nothing else. What happens to the number of steps in one epoch, and why might the curve look different?", "answer": "Steps per epoch halve, from 1,500 to 750. Each step uses a less noisy estimate of the slope but there are fewer of them, so the same learning rate can behave differently. Change one setting at a time and compare curves by epoch, not by step."}
+      ]
+    },
+    {
+      "id": "d22-l3",
+      "title": "Generalization: splits, overfitting, leakage",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "A model is only useful on data it has not seen. **Generalization** is how well it performs there. A score on training data measures memory, so every honest number comes from examples held out of training, and most silent ML failures come from holding out the wrong thing."},
+        {"t": "compare",
+          "caption": "Three splits and what each is for",
+          "columns": ["", "Train", "Validation", "Test"],
+          "rows": [
+            ["Used for", "Fitting the parameters", "Choosing settings and the best checkpoint", "One final estimate of real performance"],
+            ["How often you look", "Every step", "After every epoch or experiment", "Once, at the end"],
+            ["If contaminated", "Model learns the wrong pattern", "You pick settings that fit this set by luck", "The reported score is a fiction"]
+          ],
+          "verdict": "Look at validation as often as you like. Every decision made by peeking at the test set leaks a little of it into your choices."},
+        {"t": "h", "text": "Overfitting and underfitting"},
+        {"t": "p", "text": "**Overfitting** is learning the training examples too specifically, including their noise, so performance on new data suffers. **Underfitting** is failing to learn the real pattern at all. You tell them apart by comparing training and validation loss over time."},
+        {"t": "code",
+          "lang": "log",
+          "title": "triage-v8: a bigger model trained for longer",
+          "code": "epoch  train_loss  val_loss  val_acc\n1          0.655     0.701     0.76\n2          0.430     0.522     0.81\n3          0.301     0.488     0.83\n4          0.204     0.495     0.83\n5          0.131     0.540     0.82\n6          0.080     0.611     0.81\n7          0.045     0.690     0.80\nbest checkpoint: epoch 3 (val_loss 0.488)",
+          "notes": [
+            "Training loss keeps falling all the way to 0.045, so the model fits its training tickets almost perfectly.",
+            "Validation loss bottoms out at epoch 3 and then rises. From there on the model is memorizing.",
+            "**Early stopping** means keeping the epoch 3 checkpoint and ending the run once validation stops improving.",
+            "If someone shipped the final epoch because its training loss was lowest, they shipped the worst generalizer in the run."
+          ]},
+        {"t": "p", "text": "Two words name the two errors. **Bias** is error from a model too simple or too constrained to capture the pattern; training and validation scores are both poor. **Variance** is error from being too sensitive to the particular training sample; training is excellent and validation is much worse. **Regularization** is any technique that limits how closely the model can fit the training data, trading a little bias for less variance."},
+        {"t": "tradeoff",
+          "title": "Validation is not good enough: bigger model or more data?",
+          "options": [
+            {"name": "Bigger model", "gain": ["Can represent more complex patterns", "Lowers bias"], "cost": ["Slower and costlier training and inference", "Overfits harder if data is limited"], "choose": "Choose this when training error itself is high, so the model cannot even fit what it has seen."},
+            {"name": "More or cleaner data", "gain": ["Lowers variance", "Covers cases the model has never seen"], "cost": ["Labeling takes time and money", "Does little if the model is too small"], "choose": "Choose this when training error is low and validation error is much higher."},
+            {"name": "Regularize and stop early", "gain": ["Cheap, no new data needed", "Uses the run you already have"], "cost": ["Caps how well the model fits", "Gains are usually modest"], "choose": "Choose this as the first, cheapest step when the train and validation gap is opening."}
+          ]},
+        {"t": "h", "text": "Leakage and distribution shift"},
+        {"t": "p", "text": "**Data leakage** is information reaching the model during training that will not be available when it predicts for real. Leakage shows up as a validation score that is too good, followed by disappointment in production. It comes in two common forms: features computed after the outcome, and evaluation examples that also appear in training."},
+        {"t": "list", "items": [
+          "A feature such as `refund_issued` or `resolved_by_team` is filled in after triage, so it gives away the label.",
+          "Customers resend the same message; a random split puts copies in both train and test.",
+          "Messages from one ticket thread land on both sides of the split, so the test set measures recall of a conversation already seen.",
+          "Time-ordered data split randomly lets the model learn from next month to predict last month."
+        ]},
+        {"t": "p", "text": "**Distribution shift** is production inputs differing from training inputs. A new product line, a holiday spike in shipping complaints, or a redesigned contact form that changes how customers write all shift the distribution. The model was fine on the data it was tested on; the world moved."},
+        {"t": "callout", "kind": "debug", "title": "When a score is too good to be true", "text": "Search for exact and near-duplicate inputs across train and test. List every feature and ask whether it exists at the moment of prediction. Re-split by time or by customer and re-score. A large drop after the re-split means the first number measured leakage."},
+        {"t": "callout", "kind": "pitfall", "title": "Great validation, poor production", "text": "This pattern almost always has one of three causes: leakage that inflated the offline score, distribution shift since the data was collected, or training-serving skew in preprocessing. Retraining a bigger model fixes none of them."},
+        {"t": "check",
+          "q": "Relay's new triage model scores 97 percent on test, up from 84. The dataset was split randomly by message, and many tickets contain several messages. What should you check first?",
+          "options": ["Whether messages from one thread appear in both train and test", "Whether the learning rate was too high", "Whether the model needs more parameters", "Whether the test set has too few examples"],
+          "answer": 0,
+          "explain": "Splitting by message puts parts of the same conversation on both sides, which lets the model recognize a thread it trained on. A high learning rate would hurt the score, and a bigger model is not evidence. Split by thread and re-score."},
+        {"t": "reveal", "prompt": "Why should an evaluation set for Relay be split by time, with the newest tickets held out, rather than at random?", "answer": "In production the model always predicts on tickets newer than its training data. A time split reproduces that, including any drift, and rules out learning from the future. A random split gives a more flattering number that production will not match."}
+      ]
+    },
+    {
+      "id": "d22-l4",
+      "title": "Metrics, and why ML bugs are silent",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "A metric is a decision about which mistakes matter most. Pick it from the cost of each kind of error in your product, then read every score against a simple baseline. Without both, a number like 96 percent tells you nothing."},
+        {"t": "p", "text": "Relay has a second classifier that flags urgent tickets, such as a customer reporting a fraudulent charge, so a human sees them within minutes. About 5 percent of tickets are urgent. Here is how it did on 1,000 recent tickets."},
+        {"t": "code",
+          "lang": "text",
+          "title": "Confusion matrix: urgent-ticket classifier, 1,000 tickets",
+          "code": "                    predicted urgent   predicted normal   total\nactually urgent            30                 20             50\nactually normal            15                935            950\ntotal                      45                955           1000\n\naccuracy  = (30 + 935) / 1000 = 0.965\nprecision = 30 / 45 = 0.67   of flagged tickets, how many were urgent\nrecall    = 30 / 50 = 0.60   of urgent tickets, how many were flagged\nbaseline 'never urgent': accuracy 0.950, recall 0.00",
+          "notes": [
+            "A **confusion matrix** counts each combination of true class and predicted class. Every classification metric is arithmetic on these four cells.",
+            "Accuracy is 96.5 percent, and a model that never flags anything scores 95 percent. The gap is small because the rare class barely moves accuracy.",
+            "Twenty urgent tickets were missed. For a fraud report, that is the number that matters."
+          ]},
+        {"t": "compare",
+          "caption": "Common metrics and what each can hide",
+          "columns": ["", "Question it answers", "Fooled by"],
+          "rows": [
+            ["Accuracy", "What share of all predictions were right?", "Imbalanced classes; always guessing the majority scores high"],
+            ["Precision", "When it says yes, how often is it right?", "A model that says yes rarely, only on easy cases"],
+            ["Recall", "Of the real yes cases, how many did it catch?", "A model that says yes to everything"],
+            ["F1", "One number balancing precision and recall", "Hides which of the two is weak"],
+            ["AUC", "How well it ranks positives above negatives, across all thresholds", "Says nothing about the threshold you actually deploy"],
+            ["Calibration", "When it says 80 percent, is it right about 80 percent of the time?", "Good ranking with badly scaled confidence"]
+          ],
+          "verdict": "Report precision and recall for the class you care about, plus the baseline. Use accuracy only when classes are roughly balanced and errors cost about the same."},
+        {"t": "tradeoff",
+          "title": "Moving the threshold: favor precision or recall?",
+          "options": [
+            {"name": "Favor recall (lower threshold)", "gain": ["Fewer urgent tickets missed", "Safer when a miss is costly"], "cost": ["More false alarms", "Humans learn to ignore the flag if noise is high"], "choose": "Choose this when a missed positive is far worse than a wasted look, such as fraud reports."},
+            {"name": "Favor precision (higher threshold)", "gain": ["Flags are trustworthy", "Less wasted human time"], "cost": ["More real cases slip through", "Misses are invisible until a customer complains"], "choose": "Choose this when acting on a false positive is expensive, such as automatically issuing refunds."}
+          ]},
+        {"t": "h", "text": "Bugs that raise no exception"},
+        {"t": "p", "text": "ML code can be wrong and still run cleanly to the end. The output is a number, and a wrong number looks like a right one. These are the usual ones:"},
+        {"t": "list", "items": [
+          "Features shuffled but labels not, so every example carries someone else's label.",
+          "The label list in the worker in a different order from the trainer's, so 'refund' and 'shipping' swap.",
+          "Evaluation run on the training split by mistake.",
+          "Ticket text truncated to the first 50 characters at inference only.",
+          "A class missing from the validation set, so its errors never count."
+        ]},
+        {"t": "tradeoff",
+          "title": "Simple baseline or complex model?",
+          "options": [
+            {"name": "Simple baseline", "gain": ["Built in an hour", "Easy to debug and explain", "Sets the bar any model must clear"], "cost": ["Lower ceiling on quality"], "choose": "Choose this first, always, even if only to measure against."},
+            {"name": "Complex model", "gain": ["Higher ceiling", "Handles subtle patterns"], "cost": ["More ways to fail silently", "Costlier to train and serve"], "choose": "Choose this when it clearly beats the baseline on the metric that matters, on an honest split."}
+          ]},
+        {"t": "callout", "kind": "debug", "title": "Sanity checks before trusting a score", "text": "Compare with a majority-class baseline and a keyword rule. Check that the starting loss matches an even guess. Train on 50 examples and confirm the model can memorize them. Shuffle the labels and confirm the score drops to chance. Read 20 predictions next to their inputs by hand."},
+        {"t": "callout", "kind": "insight", "title": "This applies to your LLM features too", "text": "An LLM that routes tickets or an LLM judge that grades eval answers is a classifier. It has a confusion matrix, a precision, and a recall, and it can look accurate on imbalanced data while missing every rare case."},
+        {"t": "check",
+          "q": "In the matrix above, the team lowers the threshold. Flags rise to 90, and 45 of the 50 urgent tickets are now caught. What happened to precision and recall?",
+          "options": ["Recall rose to 0.90 and precision fell to 0.50", "Both rose, because more urgent tickets were caught", "Precision rose to 0.90 and recall fell to 0.50", "Recall stayed at 0.60 and precision fell to 0.50"],
+          "answer": 0,
+          "explain": "Recall is 45 of 50, or 0.90. Precision is 45 of 90 flags, or 0.50. Lowering the threshold usually buys recall with precision; catching more true cases does not raise both at once."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Great validation score, poor results in production",
+      "causes": ["Leakage inflated the offline score", "Distribution shift since the data was collected", "Preprocessing differs between trainer and server"],
+      "look": "How the split was made, which features exist at prediction time, and a labeled sample of recent production inputs.",
+      "confirm": "Re-scoring on a time-based split, or on the production sample, reproduces the production number.",
+      "fix": "Split by time or by entity, remove leaky features, share preprocessing code. The honest score will be lower, and it will hold."
+    },
+    {
+      "symptom": "99% accuracy, yet the model never flags the rare case",
+      "causes": ["Class imbalance; the model predicts the majority class", "Threshold set too high for the rare class"],
+      "look": "The confusion matrix and the share of each class in the data.",
+      "confirm": "A model that always predicts the majority class scores about the same accuracy.",
+      "fix": "Report precision and recall for the rare class and tune the threshold for its cost. Expect more false alarms."
+    },
+    {
+      "symptom": "Training loss keeps falling while validation loss rises",
+      "causes": ["Overfitting: model memorizes training noise", "Too many epochs for the amount of data"],
+      "look": "Train and validation loss per epoch, and which checkpoint was saved.",
+      "confirm": "Validation loss reached its minimum several epochs before the end.",
+      "fix": "Keep the best-validation checkpoint, stop early, add regularization or data. Costs some training fit."
+    },
+    {
+      "symptom": "Test score jumped far above every earlier model",
+      "causes": ["Test examples, or near-copies, are in the training set", "A feature encodes the label"],
+      "look": "Duplicate and near-duplicate inputs across splits; when each feature is filled in.",
+      "confirm": "Removing overlapping examples or the suspect feature drops the score back toward earlier models.",
+      "fix": "Deduplicate before splitting, split by thread or customer, and rebuild the test set."
+    },
+    {
+      "symptom": "Loss becomes nan or spikes mid-training",
+      "causes": ["Learning rate too high", "Missing or extreme values in a batch"],
+      "look": "The step where it began and the batch fed at that step.",
+      "confirm": "A lower learning rate, or skipping that batch, removes the spike.",
+      "fix": "Lower the learning rate, clean the inputs. Runs take longer."
+    },
+    {
+      "symptom": "Loss stays at its starting value for thousands of steps",
+      "causes": ["Parameters are not being updated", "Labels are all one value or misaligned"],
+      "look": "Learning rate in the config, which weights are trainable, label counts.",
+      "confirm": "Weights are identical at step 0 and step 1,000.",
+      "fix": "Fix the optimizer setup or the label join, then rerun from scratch."
+    },
+    {
+      "symptom": "Model is right in the notebook and wrong in the worker",
+      "causes": ["Training-serving skew in text cleaning or truncation", "Label order differs between trainer and worker", "Worker loaded an old artifact"],
+      "look": "Run the same ten inputs through both paths and diff the predictions and the model version.",
+      "confirm": "Predictions differ in a consistent pattern, such as two classes swapped.",
+      "fix": "Ship preprocessing settings and label list inside the versioned artifact, and smoke-test known inputs at deploy."
+    },
+    {
+      "symptom": "A model's 90% confident predictions are right only 60% of the time",
+      "causes": ["Poor calibration", "Inputs have shifted away from training data"],
+      "look": "Group predictions by stated confidence and compare with the actual hit rate.",
+      "confirm": "Hit rate falls well below stated confidence in the higher bands.",
+      "fix": "Recalibrate on recent data, and stop using raw confidence as an automatic action gate until then."
+    },
+    {
+      "symptom": "Accuracy on live traffic slides down over weeks with no deploy",
+      "causes": ["Distribution shift: new products, seasons, or customer wording"],
+      "look": "Weekly metrics on a labeled sample, and the mix of input types over time.",
+      "confirm": "Errors concentrate on input types that were rare or absent in training data.",
+      "fix": "Label recent data and retrain on a schedule. Day 29 covers drift monitoring."
+    }
+  ],
+  "glossary": [
+    {"term": "Model", "def": "A function whose behavior is set by parameters learned from data instead of rules written by hand."},
+    {"term": "Parameters (weights)", "def": "The numbers inside a model that training adjusts. Together they determine every prediction."},
+    {"term": "Training vs inference", "def": "Training is the batch process that finds parameter values. Inference is running the trained model on new input, with weights fixed."},
+    {"term": "Loss", "def": "A single number scoring how wrong predictions are on some examples. Training tries to make it small."},
+    {"term": "Gradient descent", "def": "Repeatedly nudging every parameter a small step in the direction that lowers the loss, using one batch at a time."},
+    {"term": "Learning rate", "def": "How far each gradient step moves the parameters. Too low wastes compute; too high makes loss spike or turn into NaN."},
+    {"term": "Epoch", "def": "One full pass over the training set. Steps per epoch equal the dataset size divided by the batch size."},
+    {"term": "Overfitting", "def": "Fitting training examples so closely, noise included, that performance on new data gets worse. Shows as validation loss rising while training loss falls."},
+    {"term": "Bias and variance", "def": "Bias is error from a model too simple to capture the pattern. Variance is error from sensitivity to the particular training sample."},
+    {"term": "Data leakage", "def": "Information in training or evaluation that will not exist at prediction time, such as a feature filled in after the outcome or test examples copied into training."},
+    {"term": "Distribution shift", "def": "Production inputs differ from the data the model was trained and tested on, so offline scores stop predicting live performance."},
+    {"term": "Precision and recall", "def": "Precision: of the cases flagged positive, the share that were positive. Recall: of the truly positive cases, the share that were flagged."},
+    {"term": "Calibration", "def": "Whether stated confidence matches reality: predictions made with 80 percent confidence should be right about 80 percent of the time."},
+    {"term": "Training-serving skew", "def": "A difference between how inputs are prepared in training and at inference, which degrades predictions without raising any error."}
+  ],
+  "apply": {
+    "title": "Build a confusion matrix for one decision your system makes",
+    "minutes": 20,
+    "steps": [
+      "Pick one yes-or-no decision in your project made by a model, such as an LLM judge marking an answer pass or fail, or a router deciding to escalate.",
+      "Collect 40 recent cases and label each by hand with the answer you believe is right.",
+      "Count the four cells of the confusion matrix, then compute precision and recall for the 'yes' class and the accuracy of always answering the majority class.",
+      "Write one sentence saying which error is costlier in your system, and whether the current behavior favors the right one."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d22-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["precision-recall", "metrics"],
+      "diagnostic": true,
+      "q": "A fraud model flags 100 transactions, and 80 of them are fraud. The full dataset contains 400 fraudulent transactions. What are the model's precision and recall?",
+      "options": [
+        "Precision 0.80 and recall 0.20",
+        "Precision 0.20 and recall 0.80",
+        "Precision 0.80 and recall 0.80",
+        "Precision 0.25 and recall 0.20"
+      ],
+      "answer": 0,
+      "explain": "Precision is the share of flags that were right, 80 of 100. Recall is the share of all fraud that was caught, 80 of 400. Swapping the two is the most common mistake; remember that recall is measured against everything that should have been found.",
+      "why": ["", "This swaps the definitions: 0.80 is the share of flags that were right, which is precision.", "Recall compares 80 caught cases with 400 real ones, so it cannot be 0.80.", "0.25 is 100 flags over 400 frauds, which is not a precision; precision divides by flags, not by real cases."]
+    },
+    {
+      "id": "d22-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["overfitting", "loss-curves"],
+      "context": "A teammate trained a larger triage model for ten epochs and proposes shipping the final checkpoint because its training loss is the lowest of any run.",
+      "artifact": {"lang": "log", "title": "triage-v9 per-epoch losses", "code": "epoch  train_loss  val_loss\n2          0.480     0.540\n4          0.290     0.471\n6          0.160     0.502\n8          0.070     0.588\n10         0.021     0.674"},
+      "q": "What should you tell them?",
+      "options": [
+        "Ship epoch 10, because the model has converged",
+        "Train for more epochs until validation loss falls again",
+        "Use the epoch 4 checkpoint, because later epochs overfit",
+        "Shrink the validation set, because it disagrees with training"
+      ],
+      "answer": 2,
+      "explain": "Validation loss is lowest at epoch 4 and rises after, while training loss keeps falling, which is overfitting. Low training loss measures memorization of the training set. The epoch 4 checkpoint generalizes best.",
+      "why": ["Convergence means both curves flatten; here validation loss is rising, so the model is getting worse on new data.", "More epochs make memorization worse; validation loss is trending up.", "", "The validation set is the honest signal; shrinking it hides the problem."]
+    },
+    {
+      "id": "d22-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["class-imbalance", "metrics"],
+      "context": "A vendor pitches a model that detects abusive messages with 99 percent accuracy. In your traffic, 1 percent of messages are abusive.",
+      "artifact": {"lang": "text", "title": "Vendor's evaluation on 10,000 messages", "code": "                 predicted abusive   predicted fine\nactually abusive         4                 96\nactually fine            4               9896"},
+      "q": "What does the evaluation show?",
+      "options": [
+        "The model is excellent, since 99 percent accuracy is very high",
+        "The model has high recall but poor precision on abuse",
+        "The test set is too small to draw any conclusion",
+        "The model catches 4 percent of abuse, barely beating 'always fine'"
+      ],
+      "answer": 3,
+      "explain": "Recall on abuse is 4 of 100, so 96 abusive messages pass. Always predicting 'fine' scores 99 percent accuracy too. The tempting reading trusts accuracy on a class that is 99 percent of the data.",
+      "why": ["Always predicting 'fine' also scores 99 percent, so the accuracy adds almost nothing.", "Precision is 4 of 8, or 0.50; recall is the weak number at 0.04.", "Ten thousand messages with 100 positives is enough to see that 96 of them were missed.", ""]
+    },
+    {
+      "id": "d22-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["leakage", "production-gap"],
+      "context": "Relay's urgent-ticket model scored recall 0.94 offline but catches about half of urgent tickets in production. Its features include ticket text, customer tenure, and `minutes_to_first_agent_reply`.",
+      "q": "What is the most likely cause of the gap?",
+      "options": [
+        "The model is too small to learn the urgent class",
+        "A feature is only known after triage, so it leaked the label",
+        "Production traffic is too high for the worker to keep up",
+        "The threshold was tuned for precision instead of recall"
+      ],
+      "answer": 1,
+      "explain": "Agents reply faster to urgent tickets, so reply time is a near-copy of the label, and it does not exist when a new ticket arrives. Offline the model leaned on it; in production it is missing. A bigger model would not explain such a sharp drop.",
+      "why": ["A model too small to learn the class would also score poorly offline.", "", "Load causes latency and timeouts, not a drop in recall on tickets that were scored.", "A precision-tuned threshold would lower recall offline as well, not only in production."]
+    },
+    {
+      "id": "d22-q05",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["bias-variance", "model-size"],
+      "q": "A classifier scores 99 percent on training data and 78 percent on validation. Which change is most likely to help?",
+      "options": [
+        "A larger model with more parameters",
+        "A higher learning rate",
+        "More training data or stronger regularization",
+        "Evaluating on the training set instead"
+      ],
+      "answer": 2,
+      "explain": "A large train-validation gap is high variance: the model fits its sample too closely. More data or regularization narrows it. A bigger model helps when training error is itself high, which is not the case here."
+    },
+    {
+      "id": "d22-q06",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["training-serving-skew", "inference"],
+      "context": "The triage model gives correct categories on 50 sample tickets in a notebook. Run through the worker, the same 50 tickets come back wrong about a third of the time, always on long tickets. The model version matches.",
+      "q": "Where do you look first?",
+      "options": [
+        "The training learning rate",
+        "Text preprocessing and truncation in the worker",
+        "The size of the validation set",
+        "The database connection pool"
+      ],
+      "answer": 1,
+      "explain": "Same weights, same inputs, different outputs, concentrated on long tickets: the worker must be preparing the text differently, such as cutting it shorter. Training settings cannot explain it because both paths use the same trained weights.",
+      "why": ["Both paths load the same trained weights, so a training setting cannot make them disagree.", "", "Validation size affects the reliability of a score, not predictions on these tickets.", "Pool trouble causes errors and latency, not wrong categories on long tickets."]
+    },
+    {
+      "id": "d22-q07",
+      "type": "mcq",
+      "level": 1,
+      "tags": ["splits", "evaluation"],
+      "q": "What is the difference in how the validation set and the test set should be used?",
+      "options": [
+        "Validation is used to fit parameters; test is used to choose settings",
+        "Validation guides repeated choices; test is used once for a final estimate",
+        "Both can be checked freely, since neither is used in training",
+        "Test is used during training; validation is used after deployment"
+      ],
+      "answer": 1,
+      "explain": "You look at validation after every experiment to choose settings and checkpoints. The test set stays untouched until the end, so its score is not shaped by your decisions. Checking the test set repeatedly turns it into another validation set."
+    },
+    {
+      "id": "d22-q08",
+      "type": "multi",
+      "level": 2,
+      "tags": ["leakage", "sanity-checks"],
+      "q": "Which of these would cause or reveal data leakage? Select all that apply.",
+      "options": [
+        "Splitting time-ordered tickets at random instead of by date",
+        "A feature filled in by agents after the ticket is resolved",
+        "Duplicate customer messages landing in both train and test",
+        "Using a lower learning rate for the final run",
+        "Reporting precision and recall instead of accuracy"
+      ],
+      "answers": [0, 1, 2],
+      "explain": "Random splits of time-ordered data, features from after the outcome, and duplicates across splits all let information about the answer reach training. The learning rate affects how training converges, and the choice of metric affects what you see, but neither leaks anything."
+    },
+    {
+      "id": "d22-q09",
+      "type": "order",
+      "level": 1,
+      "tags": ["gradient-descent", "training-loop"],
+      "q": "Put the parts of one training step in order.",
+      "items": [
+        "Take the next batch of training examples",
+        "Run the model to get predictions for the batch",
+        "Compute the loss from predictions and labels",
+        "Compute the gradient of the loss for each parameter",
+        "Nudge each parameter a small step against its gradient"
+      ],
+      "explain": "Predictions come before the loss, and the loss before its gradient, because each is computed from the one before. Only the last step changes the parameters, by an amount set by the learning rate."
+    },
+    {
+      "id": "d22-q10",
+      "type": "match",
+      "level": 2,
+      "tags": ["loss-curves", "diagnosis"],
+      "q": "Match each loss curve pattern to its most likely cause.",
+      "pairs": [
+        ["Loss turns to nan at step 3,200", "Learning rate too high or bad values in a batch"],
+        ["Loss flat at its starting value", "Parameters are not being updated"],
+        ["Train falls, validation rises", "Overfitting the training data"],
+        ["Both losses flat and high", "Underfitting: model too small or labels too noisy"]
+      ],
+      "explain": "Each shape points to a different layer of the problem: the optimizer settings, the training setup, generalization, or model capacity. Reading the shape before changing anything saves whole reruns."
+    },
+    {
+      "id": "d22-q11",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["precision-recall", "thresholds"],
+      "q": "Relay's urgent-ticket flag sends a ticket to a human within five minutes. A missed fraud report costs far more than a human glancing at a normal ticket. What should the threshold favor?",
+      "options": [
+        "Precision, so every flag is trustworthy",
+        "Accuracy, since it covers both kinds of error",
+        "Calibration, so confidence matches reality",
+        "Recall, so few urgent tickets are missed"
+      ],
+      "answer": 3,
+      "explain": "When a miss is much more expensive than a false alarm, favor recall and accept more noise. Precision would suit an automatic action such as issuing a refund. Accuracy is dominated by the 95 percent normal tickets and barely reflects misses.",
+      "why": ["Favoring precision raises the threshold and misses more fraud reports, the costly error here.", "Accuracy is dominated by the common class, so it barely changes when urgent tickets are missed.", "Calibration matters for reading scores, but it does not say which error to accept more of.", ""]
+    },
+    {
+      "id": "d22-q12",
+      "type": "open",
+      "level": 3,
+      "tags": ["baselines", "evaluation", "leakage"],
+      "context": "A new triage model scores 94 percent on its test set; the current one scored 81 percent. The new dataset was built by a teammate who merged last year's tickets with this year's and split at random. You are asked whether to ship it.",
+      "q": "What would you check before deciding, and why?",
+      "rubric": [
+        "Checks for duplicates or same-thread messages across train and test",
+        "Re-evaluates both models on the same time-based held-out set",
+        "Compares against a simple baseline such as majority class or keyword rules",
+        "Looks at per-class precision and recall instead of one accuracy number",
+        "Smoke-tests the new model through the real worker path before rollout"
+      ],
+      "model": "A 13-point jump with a random split over merged data looks like leakage, so I would first search for duplicate and same-thread messages across splits. Then I would score both models on one held-out set of the newest tickets, split by time, and compare per-class precision and recall against a majority-class baseline. If the gain survives, I would run known tickets through the worker before rolling it out gradually."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d22-x1",
+      "title": "Refund tickets landing in the shipping queue",
+      "brief": "Two hours after triage model v8 was deployed, the shipping team reports that most tickets in their queue are refund requests. v8 scored 91 percent on its test set, up from 87 for v7. The training export script was rewritten for v8; the worker code was not touched.",
+      "artifact": {"lang": "log", "title": "triage worker, last hour", "code": "10:02:11 ticket=88213 model=triage-v8 pred=shipping conf=0.94\n10:02:14 ticket=88214 model=triage-v8 pred=account  conf=0.88\n10:02:19 ticket=88215 model=triage-v8 pred=shipping conf=0.91\n10:02:23 ticket=88216 model=triage-v8 pred=refund   conf=0.90\nhourly counts: refund=168 shipping=139 account=88 other=40 (v7 avg: refund=140 shipping=170)"},
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Retrain v8 with more refund examples added",
+            "Compare offline and worker predictions on the same 50 tickets",
+            "Switch v8 to a larger model architecture",
+            "Lower the confidence threshold for refunds"
+          ],
+          "answer": 1,
+          "explain": "The offline score and the production behavior disagree, so the cheapest split of the search space is to feed identical inputs through both paths. Retraining or resizing assumes the model is bad, which the 91 percent score does not support yet.",
+          "reveal": "Offline, v8 predicts 'refund' for 46 of the 47 refund tickets. Through the worker, 45 of those same tickets come back as 'shipping', with high confidence. Shipping tickets come back as 'refund'."
+        },
+        {
+          "q": "The two classes are swapped consistently, with high confidence. What does that pattern point to?",
+          "options": [
+            "Overfitting to the training set",
+            "Distribution shift in this week's tickets",
+            "A mismatch between the model's label order and the worker's",
+            "Text truncation in the worker"
+          ],
+          "answer": 2,
+          "explain": "A model that was wrong for statistical reasons would be scattered and less confident. A clean, confident swap of exactly two classes means the model is right and its output index is being read with the wrong names. Shift and truncation affect the inputs and do not swap labels so neatly.",
+          "reveal": "The new export script sorts labels alphabetically. The worker still has a hardcoded list from v7.",
+          "artifact": {"lang": "diff", "title": "label order: v7 worker config vs v8 training export", "code": "- labels = [\"account\", \"other\", \"shipping\", \"refund\"]   # worker, hardcoded\n+ labels = [\"account\", \"other\", \"refund\", \"shipping\"]   # v8 export, sorted"}
+        },
+        {
+          "q": "The incident is mitigated by rolling back to v7. What is the durable fix?",
+          "options": [
+            "Edit the worker's hardcoded label list to match the v8 order",
+            "Revert the export script so it never sorts the labels again",
+            "Retrain v8 so its output order matches the worker's list",
+            "Version labels with the weights and smoke-test at deploy"
+          ],
+          "answer": 3,
+          "explain": "Editing the list fixes v8 and sets the same trap for v9. Making the label list part of the versioned artifact means the worker can never pair weights with the wrong names, and a smoke test on a handful of known tickets catches anything else that drifts.",
+          "reveal": "With the label list in the artifact, v8 is redeployed. Refund volume returns to normal and per-class precision matches the offline evaluation."
+        }
+      ],
+      "debrief": "Root cause: the training export changed the order of class labels and the worker kept its own hardcoded order, so the model's correct predictions were read under the wrong names. Nothing raised an error and the offline score was honest. The fix is to version the label list and preprocessing with the weights and to run known inputs through the real serving path before traffic moves. The general lesson: when offline and production disagree, push identical inputs through both before suspecting the model."
+    },
+    {
+      "id": "d22-x2",
+      "title": "The urgent flag that worked offline",
+      "brief": "Relay's urgent-ticket model v3 reported recall 0.92 offline, against 0.71 for v2. Three weeks after launch, the fraud team says urgent reports are waiting hours again. v3 was trained on a larger dataset that merges last year's tickets with this year's. Latency and error rates for the worker are normal.",
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Lower the threshold now to raise recall immediately",
+            "Measure production recall on a labeled sample from last week",
+            "Retrain v3 as a larger model on the same data",
+            "Check the worker's CPU and memory usage graphs"
+          ],
+          "answer": 1,
+          "explain": "A complaint is not yet a number. Measuring production precision and recall tells you whether the gap is real and which metric moved. Lowering the threshold might be right later, but doing it blind trades away precision for an unknown gain. Worker health is already normal.",
+          "reveal": "On 600 labeled tickets from last week, production recall is 0.55 and precision is 0.70. Offline, v3 had recall 0.92 and precision 0.74."
+        },
+        {
+          "q": "Offline recall was 0.92, production is 0.55. Distribution shift is the obvious suspect. What do you check before accepting that?",
+          "options": [
+            "How the offline test set was split from training",
+            "Whether the learning rate was tuned",
+            "Whether the worker uses the latest Python version",
+            "Whether the fraud team's queue is understaffed"
+          ],
+          "answer": 0,
+          "explain": "Shift is plausible, but a 37-point gap after a dataset rebuild points first at the evaluation itself. If the test set overlaps training, the 0.92 never measured generalization. The learning rate and runtime version cannot inflate an offline score.",
+          "reveal": "The split was random by message. Most tickets contain several messages, and 79 percent of urgent test messages share a ticket thread with a training message.",
+          "artifact": {"lang": "log", "title": "split audit", "code": "split=random_by_message train=212000 test=26500\nurgent test messages: 1310, sharing a thread with train: 1035 (79.0%)\nrecall, urgent with thread overlap:     0.99\nrecall, urgent without thread overlap:  0.66"}
+        },
+        {
+          "q": "Rescored on a time-based split, v3 has recall 0.63 and v2 has 0.60. What do you do now?",
+          "options": [
+            "Declare it fixed, since the evaluation is now correct",
+            "Keep v3 and raise the threshold to recover precision",
+            "Split by thread and time, lower the threshold, track recall weekly",
+            "Train a much larger model on the same random split"
+          ],
+          "answer": 2,
+          "explain": "The honest number is near 0.63, so the model is only slightly better than v2 and production at 0.55 is roughly in line, with some shift on top. Lowering the threshold trades precision for recall, the right trade for fraud reports. Weekly measurement catches the next drop. Raising the threshold goes the wrong way.",
+          "reveal": "With a lower threshold, production recall rises to 0.80 and precision falls to 0.52. The fraud team accepts the extra reviews."
+        }
+      ],
+      "debrief": "Root cause: a random split by message put parts of the same ticket thread into both training and test, so the offline recall of 0.92 measured recognition of seen conversations. The honest recall was about 0.63, and production was close to it. The fix was a split by thread and time, a threshold chosen for the cost of a missed fraud report, and a weekly labeled sample. The general lesson: when production disagrees with an offline score, audit how the score was produced before blaming the world."
+    }
+  ]
+}

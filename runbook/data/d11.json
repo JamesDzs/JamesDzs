@@ -1,0 +1,609 @@
+{
+  "id": "d11",
+  "day": 11,
+  "phase": "p3",
+  "title": "Beyond one database: NoSQL, replication, partitioning",
+  "tagline": "The other datastore families, and what changes once your data lives on more than one machine.",
+  "minutes": 55,
+  "why": "Once data is copied to replicas or split across shards, a read can return something other than the last write, and a failover can quietly lose data that was confirmed. Those bugs look like flaky product behavior until you know to ask which copy answered. You also get asked SQL or NoSQL, Postgres or MongoDB, and the defensible answer starts from how the data is read and written, not from the store's reputation.",
+  "objectives": [
+    "Match an access pattern to the datastore family that serves it cheaply, and say what that family gives up",
+    "Make a fair case for PostgreSQL or MongoDB for a given feature, starting from its reads and writes",
+    "Diagnose 'saved, refreshed, saw the old value' as replica lag and choose a read-your-writes fix",
+    "Explain what asynchronous replication can lose in a failover, and what synchronous replication costs",
+    "Spot a hot partition key from per-shard metrics and say why adding shards does not fix it"
+  ],
+  "lessons": [
+    {
+      "id": "d11-l1",
+      "title": "The NoSQL families and what each optimizes",
+      "minutes": 11,
+      "blocks": [
+        {"t": "p", "text": "**NoSQL** is a loose name for datastores that do not store relational tables queried with SQL. Each family gives up something general, such as joins, ad hoc queries, or an enforced schema, to make one access pattern fast or one scaling path easy. The useful question is how the data will be read and written. The store follows from that."},
+        {"t": "compare",
+          "caption": "Datastore families by what they make cheap",
+          "columns": ["", "Data shape", "Fast at", "Gives up"],
+          "rows": [
+            ["Document (MongoDB)", "JSON-like documents with nested fields", "Reading or writing one entity and its parts in one operation", "Joins are limited; shape is unenforced unless you add validation"],
+            ["Key-value (Redis, DynamoDB)", "A value looked up by a key", "Get and put by key at low, predictable latency", "Queries by anything but the key, except through extra indexes"],
+            ["Wide-column (Cassandra)", "Rows grouped into partitions by a partition key", "Very high write rates spread across many nodes", "Ad hoc queries; you design one table per query"],
+            ["Graph (Neo4j)", "Nodes and edges with properties", "Traversals many hops deep, such as friends of friends", "Bulk scans and aggregates over everything"],
+            ["Search (Elasticsearch)", "An inverted index over text fields", "Full-text relevance ranking, facets, fuzzy matching", "Being the source of truth; writes appear after a short refresh"],
+            ["Time-series", "Timestamped points with tags", "Appending and aggregating over time windows", "Updating old points; general-purpose queries"],
+            ["Vector (pgvector, dedicated stores)", "Embeddings with metadata", "Approximate nearest-neighbor search", "Exactness; results are approximate by design"]
+          ],
+          "verdict": "Pick the family whose 'fast at' column matches your top access pattern, and check that you can live with its 'gives up' column."},
+        {"t": "p", "text": "Relay already uses three of these. PostgreSQL holds tickets, orders, and users, which are related and need transactions. Redis holds cache entries, sessions, and rate-limit counters, which are read by key. pgvector holds help-center embeddings for retrieval, inside the same Postgres, so an article and its chunks can be updated in one transaction."},
+        {"t": "h", "text": "SQL vs NoSQL, and PostgreSQL vs MongoDB"},
+        {"t": "p", "text": "Relational databases store each fact once and join at read time. Document stores keep related data together in one document, so a read needs no join, and each document can have a different shape. That trade decides most comparisons: joins and constraints on one side, one-fetch reads and schema freedom on the other. Postgres narrows the gap with JSONB, a binary JSON column type you can index."},
+        {"t": "tradeoff",
+          "title": "PostgreSQL vs MongoDB for a new feature",
+          "options": [
+            {"name": "PostgreSQL", "gain": ["Joins and constraints across related tables", "Transactions over many rows and tables", "JSONB columns for the parts whose shape varies", "Ad hoc questions in SQL you did not plan for"], "cost": ["Schema changes need migrations", "Write scaling past one primary needs partitioning or an extension"], "choose": "Choose this when the data relates to other data, rules must hold, and you will ask questions you have not thought of yet."},
+            {"name": "MongoDB", "gain": ["A whole aggregate in one document and one read", "Shape can evolve without migrations", "Sharding is built into the product"], "cost": ["Relationships across documents are your code's job", "Shape drift unless validation is turned on", "Multi-document transactions exist, but the model favors avoiding them"], "choose": "Choose this when each entity is read and written whole, rarely joined, and its shape varies a lot between records."}
+          ]},
+        {"t": "compare",
+          "caption": "Start from the access pattern",
+          "columns": ["Access pattern", "Lean toward", "Because"],
+          "rows": [
+            ["Related entities, money, reporting", "PostgreSQL", "Joins, constraints, transactions"],
+            ["One aggregate read and written whole, shape varies", "A document store, or JSONB in Postgres", "One fetch returns everything needed"],
+            ["Lookups by one key at very high volume", "Key-value store", "Predictable latency and simple scaling"],
+            ["Huge append-heavy writes read by a known key", "Wide-column store", "Writes spread evenly across many nodes"],
+            ["Free-text search with ranking", "A search engine beside the main store", "Inverted index and relevance scoring"],
+            ["Similarity search over embeddings", "pgvector first, a dedicated store at large scale", "Approximate nearest-neighbor indexes"]
+          ],
+          "verdict": "If two rows lean different ways, keep one source of truth and feed the specialized store from it."},
+        {"t": "callout", "kind": "pitfall", "title": "Schemaless means the schema lives in your code", "text": "A store that accepts any shape still has readers that expect one. After a year you have `customer_id` in some documents, `customerId` in older ones, and a field that changed from string to number, and every reader must handle every version ever written. Turn on validation, store a schema version in each document, and migrate old documents when the shape changes."},
+        {"t": "callout", "kind": "ai", "title": "LLM outputs drift in shape", "text": "Tool-call results and structured outputs are tempting to store as raw JSON. Their shape changes with each prompt or model version, so old eval records stop loading. Store a schema or prompt version beside each record, whether the JSON lives in MongoDB or in a Postgres JSONB column."},
+        {"t": "check",
+          "q": "A team stores each ticket with all its messages inside one MongoDB document. A new report needs every message written by agent X this week, across all tickets. What is the likely cost?",
+          "options": ["Scanning many documents, unless an index on the nested field is added", "Nothing extra, because every field is indexed automatically", "A join that the database resolves through foreign keys"],
+          "answer": 0,
+          "explain": "Embedding makes reading one ticket cheap and querying across tickets by a nested field expensive. MongoDB only indexes `_id` by default, and it has no foreign keys. Embedding also caps growth: one document is limited to 16 MB."}
+      ]
+    },
+    {
+      "id": "d11-l2",
+      "title": "Replication and replica lag",
+      "minutes": 11,
+      "blocks": [
+        {"t": "p", "text": "**Replication** keeps copies of the same data on several servers. In the common leader-follower setup, one **leader** (also called primary) accepts all writes and streams its change log to **followers** (replicas), which apply the changes in order. Followers can serve reads and stand ready to take over if the leader fails."},
+        {"t": "flow",
+          "title": "One write and one read, with a read replica",
+          "steps": [
+            {"actor": "API", "label": "Writes the new shipping address to the leader", "detail": "The leader commits and records the change in its write-ahead log (WAL).", "fail": "If the leader is down, writes fail outright with connection errors."},
+            {"actor": "Leader", "label": "Streams the WAL to the replica", "detail": "With asynchronous replication, the commit has already returned to the API before the replica receives anything.", "fail": "A slow network or a write burst lets the replica fall behind."},
+            {"actor": "Replica", "label": "Replays the changes in order", "detail": "The replica is behind by the time to ship and apply the change, usually milliseconds.", "fail": "A heavy write burst, an undersized replica, or a long query conflicting with replay stretches the gap to seconds or minutes."},
+            {"actor": "API", "label": "Reads the profile from the replica", "detail": "A router sends read-only queries to replicas to take load off the leader.", "fail": "If the change has not been replayed yet, the user sees the old address right after saving the new one."},
+            {"actor": "Ops", "label": "Leader dies; a replica is promoted", "detail": "**Failover** makes a replica the new leader, and clients reconnect to it.", "fail": "With asynchronous replication, commits the leader confirmed but had not yet shipped are gone."}
+          ]},
+        {"t": "tradeoff",
+          "title": "Synchronous vs asynchronous replication",
+          "options": [
+            {"name": "Asynchronous", "gain": ["Write latency unaffected by replicas", "A slow or dead replica never blocks writes"], "cost": ["Replicas lag behind", "Failover can lose the last confirmed commits"], "choose": "Choose this when losing a few seconds of writes in a rare failover is acceptable, or is covered by reconciliation."},
+            {"name": "Synchronous", "gain": ["A confirmed commit exists on at least two machines", "Failover to the synchronous standby loses nothing confirmed"], "cost": ["Every commit waits for a network round trip", "If the synchronous standby is unreachable and no other can stand in, commits hang"], "choose": "Choose this for data where a confirmed write must never disappear, such as payments and refunds."}
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "Synchronous does not mean the replica shows it", "text": "In Postgres's default synchronous mode, the leader waits until the standby has the change safely on disk, not until it has replayed it. A read on that standby can still return the old value for a moment. A stricter setting waits for replay, at a further latency cost."},
+        {"t": "h", "text": "Reading your own writes"},
+        {"t": "p", "text": "**Read-your-writes** consistency means a user always sees their own changes, even if other users may briefly see older data. Replicas break it by default. The fix is to route some reads, not to stop using replicas."},
+        {"t": "list", "items": [
+          "Read from the leader for a short window, a few seconds, after this user writes.",
+          "Always read a user's own profile and settings from the leader; send everything else to replicas.",
+          "Record the leader's log position after a write and use a replica only once it has replayed past it.",
+          "Return the new value in the write's response so the client does not need to read it back."
+        ]},
+        {"t": "code",
+          "lang": "sql",
+          "title": "Measuring lag in Postgres",
+          "code": "-- on the leader\nSELECT client_addr, state, write_lag, flush_lag, replay_lag\n  FROM pg_stat_replication;\n\n client_addr |   state   |    write_lag    |    flush_lag    |   replay_lag\n-------------+-----------+-----------------+-----------------+-----------------\n 10.0.3.21   | streaming | 00:00:00.000812 | 00:00:00.001930 | 00:00:00.002410\n 10.0.3.22   | streaming | 00:00:00.000790 | 00:00:00.002105 | 00:00:47.802330\n\n-- on replica 10.0.3.22\nSELECT now() - pg_last_xact_replay_timestamp() AS replay_delay;\n  replay_delay\n-----------------\n 00:00:48.113004",
+          "notes": [
+            "Replica .22 receives and flushes changes in about two milliseconds but replays them 47 seconds late. The network is fine; applying is stuck.",
+            "A common cause is a long query on the replica that conflicts with replay. Postgres pauses replay up to a configured limit, then cancels the query with `canceling statement due to conflict with recovery`.",
+            "The replay-timestamp method overstates lag when the leader is idle, because no new commits arrive to replay."
+          ]},
+        {"t": "callout", "kind": "debug", "title": "User saves, refreshes, sees the old value", "text": "Find the trace for the stale read and check which server answered it. If it was a replica, compare that replica's replay lag at that moment with the time since the write. Confirm by routing the same read to the leader: if the bug disappears, it is lag, not a bug in the write path."},
+        {"t": "compare",
+          "caption": "Two ways to take read load off the leader",
+          "columns": ["", "Read replica", "Cache (Redis)"],
+          "rows": [
+            ["Serves", "Any SQL query, with the full data", "Precomputed answers, by key"],
+            ["Staleness", "Replication lag: usually tiny, unbounded under trouble", "Up to the TTL, or until you invalidate"],
+            ["Work to adopt", "Point read-only queries at it", "Choose keys, TTLs, and invalidation for each use"],
+            ["Best for", "Many different reads, reports, exports", "The same hot answers read over and over"]
+          ],
+          "verdict": "Use a replica for breadth of reads and a cache for repetition. Both make reads stale; know which one answered."},
+        {"t": "reveal", "prompt": "Relay's leader crashed and a replica was promoted in 20 seconds. Two refunds that customers were told about just before the crash are missing from the new leader. How did that happen?", "answer": "Replication was asynchronous. The old leader committed both refunds and confirmed them to the API, but had not yet shipped those WAL records to the replica when it died. The promoted replica never received them, so from its point of view they never happened."}
+      ]
+    },
+    {
+      "id": "d11-l3",
+      "title": "Partitioning and sharding",
+      "minutes": 10,
+      "blocks": [
+        {"t": "p", "text": "**Partitioning** splits one dataset into pieces by a key, so each piece is smaller. **Sharding** puts those pieces on different machines, so storage and writes can grow past one server. Each row belongs to exactly one partition, chosen by its **partition key**."},
+        {"t": "p", "text": "Postgres partitions a table within one server, for example messages by month. That makes old data cheap to drop and lets queries skip irrelevant months, but it adds no write capacity. Sharding Postgres across servers needs an extension such as Citus or routing in the application. Cassandra, DynamoDB, and MongoDB shard as part of their design."},
+        {"t": "compare",
+          "caption": "Two ways to map a key to a partition",
+          "columns": ["", "Hash partitioning", "Range partitioning"],
+          "rows": [
+            ["How a row is placed", "A hash of the key picks the partition", "The key falls inside a boundary, such as a date range"],
+            ["Load spread", "Even, if there are many keys with similar traffic", "Uneven when all new data lands in the newest range"],
+            ["Range queries", "Must ask every partition", "Ask only the partitions that overlap"],
+            ["Typical hot spot", "One very busy key", "The current time range takes every write"]
+          ],
+          "verdict": "Hash when writes must spread; range when queries are by range and old ranges get dropped."},
+        {"t": "h", "text": "Hot keys and skew"},
+        {"t": "p", "text": "A **hot key** is one partition key that receives far more traffic than the rest. Hashing spreads keys evenly, but it cannot spread traffic that belongs to one key, because every request for that key goes to the same partition. Adding shards does not help either: the hot key still lives on exactly one of them."},
+        {"t": "code",
+          "lang": "text",
+          "title": "Per-shard metrics for a message store partitioned by customer_id",
+          "code": "shard  hash range   cpu   writes/s  p99 write ms  top key (share of writes)\n-----  -----------  ----  --------  ------------  -------------------------\ns0     0000-3fff    22%       410          8      cust_88120  (2%)\ns1     4000-7fff    99%     3,920        410      cust_10007  (89%)\ns2     8000-bfff    25%       450          9      cust_51734  (3%)\ns3     c000-ffff    19%       380          7      cust_33002  (2%)",
+          "notes": [
+            "Three shards are healthy. The problem is one key, `cust_10007`, which sends almost nine in ten of s1's writes.",
+            "The top-key column is the clue: on a healthy shard no single key dominates.",
+            "Splitting s1 would move the other customers away but leave cust_10007's whole load on one machine."
+          ]},
+        {"t": "tradeoff",
+          "title": "Choosing the partition key for Relay's messages",
+          "options": [
+            {"name": "Partition by customer_id", "gain": ["A customer's history lives on one shard", "Per-customer queries touch one shard"], "cost": ["One huge or automated customer makes a hot shard", "Cross-customer reports touch every shard"], "choose": "Choose this when customers are similar in size and most reads are per customer."},
+            {"name": "Partition by ticket_id hash", "gain": ["Even spread, no single customer can overload a shard"], "cost": ["A customer's tickets are scattered across shards", "'All tickets for this customer' asks every shard"], "choose": "Choose this when traffic per customer varies wildly and most reads are per ticket."}
+          ]},
+        {"t": "p", "text": "A query that cannot be answered from one shard becomes a **scatter-gather**: ask every shard, then merge. It is as slow as the slowest shard. A transaction that writes to two shards needs coordination between machines, which is costly and covered on Day 18. Pick a key so that the common queries and transactions stay on one shard."},
+        {"t": "callout", "kind": "pitfall", "title": "Hash mod N reshuffles almost everything", "text": "Placing keys with `hash(key) mod N` means that going from 4 to 5 servers changes the home of most keys. In a cache that is a sudden cold start; in a database it is a huge data move. **Consistent hashing**, or many small fixed partitions assigned to nodes, moves only a fraction of keys when a node joins or leaves."},
+        {"t": "callout", "kind": "debug", "title": "One shard at 100% while others idle", "text": "Compare per-shard CPU, write rate, and the top keys on each shard. If one key dominates the hot shard, it is skew and more shards will not help. Fix it by splitting that key into sub-keys (for example `cust_10007#0` to `#7`) and merging on read, by giving it a dedicated shard, or by rate-limiting the sender."},
+        {"t": "check",
+          "q": "Relay partitions its messages table by month with range partitioning. Where do almost all new writes go?",
+          "options": ["The current month's partition", "Evenly across all partitions", "The partition with the most free space"],
+          "answer": 0,
+          "explain": "New messages carry the current timestamp, so they all fall in the newest range. That is fine inside one Postgres server; across shards it would make one shard take every write, which is why time ranges make poor shard keys for write-heavy data."}
+      ]
+    },
+    {
+      "id": "d11-l4",
+      "title": "Consistency models and choosing a store",
+      "minutes": 10,
+      "blocks": [
+        {"t": "p", "text": "A **consistency model** is the promise a system makes about what a read may return after writes. Under **strong consistency**, every read sees the latest confirmed write, as if there were one copy. Under **eventual consistency**, copies converge if writes stop, and until then a read may return older data."},
+        {"t": "h", "text": "CAP and PACELC in practical terms"},
+        {"t": "p", "text": "**CAP** says that during a network partition, when nodes cannot reach each other, a replicated system must choose. It can refuse some requests to stay consistent, or keep answering with data that may be stale. Partitions are rare. **PACELC** adds the everyday case: else, with no partition, you still trade latency against consistency, because waiting for other copies to agree takes time."},
+        {"t": "compare",
+          "caption": "Strong vs eventual consistency",
+          "columns": ["", "Strong", "Eventual"],
+          "rows": [
+            ["A read returns", "The latest confirmed write", "Some recent write, possibly older"],
+            ["Cost", "Waiting for coordination; less available during a partition", "Stale reads; conflicts to resolve when copies diverge"],
+            ["Fits", "Balances, refunds, idempotency checks, permissions", "Feeds, counters, search results, recommendations"],
+            ["Relay example", "Has this order already been refunded?", "Help-center search results after an article edit"]
+          ],
+          "verdict": "Ask what goes wrong if this read is a few seconds old. If the answer involves money or permissions, it needs strong consistency."},
+        {"t": "callout", "kind": "insight", "title": "Most systems are mixed", "text": "Relay's leader gives strong consistency, its replicas and Redis cache give eventual consistency, and its pgvector index is as fresh as the last embedding job. The design question is which reads may go where, decided read by read."},
+        {"t": "h", "text": "A decision guide"},
+        {"t": "list", "style": "number", "items": [
+          "Write down the five most frequent reads and writes, with rough rates, sizes, and how stale each may be.",
+          "Ask whether one Postgres serves them with indexes, a cache, and read replicas. At Relay's scale it does.",
+          "For a pattern that does not fit, such as ranked full-text search or very large append-only writes, add a specialized store for that pattern only.",
+          "Keep one source of truth, feed other stores from it, and state how stale each copy may be.",
+          "Count the operating cost of each new store: backups, monitoring, upgrades, and someone who can debug it at 2 a.m."
+        ]},
+        {"t": "callout", "kind": "rule", "title": "PostgreSQL until a specific need appears", "text": "Postgres gives you transactions, constraints, JSONB for flexible fields, full-text search, pgvector, partitioning, and replicas in one system you already back up and know how to debug. Move a workload elsewhere when you can name the access pattern it fails and have measured it failing."},
+        {"t": "tradeoff",
+          "title": "One general store vs a specialized store beside it",
+          "options": [
+            {"name": "Keep it in Postgres", "gain": ["One source of truth", "Transactions across everything", "One system to operate"], "cost": ["Some patterns are slower than in a purpose-built store", "Write scaling has a ceiling on one primary"], "choose": "Choose this until a measured access pattern exceeds what Postgres can serve."},
+            {"name": "Add a specialized store", "gain": ["The one pattern becomes fast", "Scales that pattern independently"], "cost": ["Two copies that can disagree", "A sync job and its lag", "More on-call surface"], "choose": "Choose this when one pattern clearly fails in Postgres and you can tolerate that copy being slightly stale."}
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "Two stores, two truths", "text": "Writing to Postgres and then to a search index from the same request fails halfway sooner or later, and the two disagree from then on. Feed the second store from the first, through a queue or a change stream, and run a periodic job that compares them. Day 17 covers the outbox pattern that makes this reliable."},
+        {"t": "callout", "kind": "ai", "title": "Retrieval is eventually consistent", "text": "If help-center embeddings lived in a separate vector store, a deleted article would keep being retrieved until the sync job ran. Keeping them in pgvector beside the articles lets a delete remove both in one transaction. That is a real argument for pgvector at Relay's scale, separate from speed."},
+        {"t": "check",
+          "q": "Which of these Relay reads can safely be served eventually consistent?",
+          "options": ["Help-center search results shown to the agent", "The check for an existing refund before issuing one", "The lookup of an idempotency key before charging"],
+          "answer": 0,
+          "explain": "A help-center result that is a few seconds old costs little. The other two guard money: a stale 'no refund yet' or 'key not seen' answer lets the same refund or charge happen twice."},
+        {"t": "reveal", "prompt": "A teammate wants to move Relay's tickets to MongoDB because 'it scales better'. What do you ask before agreeing?", "answer": "Which access pattern is failing today, and what the measurement shows. Tickets relate to orders and refunds, which need transactions and constraints. If the real problem is read load, replicas or a cache fix it; if it is flexible fields, JSONB covers it. Move only for a named pattern Postgres cannot serve."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "User saves a change, refreshes, and sees the old value; another refresh shows the new one",
+      "causes": ["The read went to a replica that had not replayed the write", "A cache entry not invalidated on write"],
+      "look": "The trace of the stale read: which server or cache answered, and the replica's replay lag at that moment.",
+      "confirm": "The same read sent to the leader returns the new value, and replay lag exceeded the time since the write.",
+      "fix": "Read the user's own data from the leader for a short window after a write. Do not route everything to the leader; that throws the replicas away."
+    },
+    {
+      "symptom": "Data confirmed to users before a failover is missing afterward",
+      "causes": ["Asynchronous replication: the old leader had not shipped its last commits", "Failover to a replica that was lagging"],
+      "look": "Commit times of the missing rows against the failover time and the promoted replica's last replayed position.",
+      "confirm": "Every missing row was committed in the last seconds before the old leader died.",
+      "fix": "Reconcile from the old leader's disk or external systems. For data that must not be lost, use synchronous replication and accept slower commits."
+    },
+    {
+      "symptom": "One shard or partition at 100% CPU while the others idle",
+      "causes": ["A hot partition key, such as one huge or automated customer", "Range partitioning on time, so the newest range takes all writes"],
+      "look": "Per-shard write rates and the top keys on the hot shard.",
+      "confirm": "One key, or the current range, accounts for most of the hot shard's traffic.",
+      "fix": "Split the hot key into sub-keys, give it its own shard, or change the partition key. Adding shards alone does not move a single key's load."
+    },
+    {
+      "symptom": "KeyError or null field on older documents after a deploy",
+      "causes": ["Documents with inconsistent shapes: renamed or retyped fields with no enforced schema"],
+      "look": "A sample of documents grouped by key set and creation date.",
+      "confirm": "The failing documents all predate a specific change and use the old field name or type.",
+      "fix": "Migrate old documents, store a schema version per document, and turn on validation. Readers that handle every historic shape are a cost that keeps growing."
+    },
+    {
+      "symptom": "Writes hang on the leader right after a replica went down",
+      "causes": ["Synchronous replication waiting for a standby that cannot answer"],
+      "look": "The leader's synchronous standby setting and pg_stat_replication: which standby is listed as synchronous.",
+      "confirm": "Commits wait on a replication wait event and resume when the standby returns or the setting is changed.",
+      "fix": "Configure more than one candidate standby so another can take over, or temporarily drop to asynchronous, accepting the loss risk while you do."
+    },
+    {
+      "symptom": "Replica lag climbs to minutes during the nightly report, or the report fails with 'conflict with recovery'",
+      "causes": ["A long query on the replica conflicts with replay; Postgres pauses replay, then cancels the query"],
+      "look": "replay_lag in pg_stat_replication over time, and the long queries running on that replica.",
+      "confirm": "Lag rises while the report runs and drops right after it finishes or is canceled.",
+      "fix": "Run long analytics on a replica the application does not read from, or accept cancellations. You cannot have zero lag and unbounded queries on one replica."
+    },
+    {
+      "symptom": "Search or retrieval returns an item that was already deleted or edited",
+      "causes": ["The search or vector store is fed asynchronously and lags the source", "A dual write that failed halfway"],
+      "look": "The item's last update time in the source and in the search store.",
+      "confirm": "The search store's copy is older than the source's and newer events for it are missing or still queued.",
+      "fix": "Feed the second store from the source through a reliable pipeline and run a periodic comparison. Keep the copy in the same database when practical."
+    },
+    {
+      "symptom": "Adding one cache or database node made most keys move or miss",
+      "causes": ["Keys placed with hash mod N, so changing N remaps most of them"],
+      "look": "How the client or router maps keys to nodes.",
+      "confirm": "Miss rate or data movement jumps in proportion to the whole keyspace, not one node's share.",
+      "fix": "Use consistent hashing or a fixed set of virtual partitions assigned to nodes, so a change moves only a fraction of keys."
+    }
+  ],
+  "glossary": [
+    {"term": "NoSQL", "def": "A loose name for datastores that do not use relational tables and SQL, each optimized for particular access patterns."},
+    {"term": "Document store", "def": "A database that stores JSON-like documents, each holding an entity and its nested parts, with no fixed schema by default."},
+    {"term": "Wide-column store", "def": "A database such as Cassandra that groups rows into partitions by key and spreads partitions across many nodes for high write rates."},
+    {"term": "Leader and follower", "def": "In replication, the leader accepts writes and streams changes; followers, or replicas, apply them and may serve reads."},
+    {"term": "Replica lag", "def": "How far a replica is behind the leader, in time or log position. Reads from a lagging replica return old data."},
+    {"term": "Asynchronous replication", "def": "The leader confirms a commit without waiting for replicas. Fast, but a failover can lose the newest confirmed writes."},
+    {"term": "Synchronous replication", "def": "The leader confirms a commit only after a standby has stored it. Nothing confirmed is lost, but every commit pays a round trip."},
+    {"term": "Read-your-writes", "def": "A guarantee that a user always sees their own changes, even if other users may briefly see older data."},
+    {"term": "Failover", "def": "Promoting a replica to leader when the leader fails, and redirecting clients to it."},
+    {"term": "Partition key", "def": "The field that decides which partition or shard a row belongs to."},
+    {"term": "Sharding", "def": "Splitting data by a key across several machines so that storage and writes can exceed one server."},
+    {"term": "Hot key", "def": "A partition key that receives far more traffic than others, overloading the one shard that holds it."},
+    {"term": "Eventual consistency", "def": "Copies of data converge if writes stop; until then, a read may return an older value."},
+    {"term": "CAP", "def": "During a network partition, a replicated system must choose between answering every request and returning only the latest data."}
+  ],
+  "apply": {
+    "title": "Map your project's reads to the copies that serve them",
+    "minutes": 15,
+    "steps": [
+      "List the five most frequent reads and writes in your project, and next to each, the store that serves it: database, cache, vector store, files, or an API.",
+      "For each read, write how stale it may be before something goes wrong, in seconds. Mark the ones that touch money, permissions, or deduplication.",
+      "If you store JSON records such as LLM outputs or eval results, load 200 of them and count the distinct sets of top-level keys. More than one set means shape drift.",
+      "For any store that is a copy of another, such as a vector index built from documents, find out how and when it is refreshed, and what happens to a deleted source item."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d11-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["async-replication", "failover"],
+      "diagnostic": true,
+      "q": "A database uses asynchronous replication. The leader fails and a replica is promoted. What can be lost?",
+      "options": [
+        "Only transactions that were still uncommitted on the leader",
+        "Commits the leader confirmed but had not yet sent to the replica",
+        "Nothing, because every commit was flushed to the leader's disk",
+        "Only read queries that were running on the replica at the time"
+      ],
+      "answer": 1,
+      "explain": "Asynchronous means the leader confirms a commit before any replica has it. Commits in that gap exist only on the failed leader. The tempting answer is that the leader's disk flush makes it safe, but the promoted replica never sees the old leader's disk.",
+      "why": ["Uncommitted transactions are lost in any setup; the asynchronous risk is losing confirmed ones.", "", "The commits are durable on the old leader, but the new leader is a different machine that never received them.", "In-flight reads fail and are retried; that is not data loss."]
+    },
+    {
+      "id": "d11-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["replica-lag", "postgres"],
+      "context": "Customers report that profile edits sometimes take a minute to appear. Reads go to two replicas.",
+      "artifact": {"lang": "text", "title": "pg_stat_replication on the leader", "code": " client_addr |   state   |    write_lag    |    flush_lag    |   replay_lag\n-------------+-----------+-----------------+-----------------+-----------------\n 10.0.3.21   | streaming | 00:00:00.000910 | 00:00:00.002002 | 00:00:00.002377\n 10.0.3.22   | streaming | 00:00:00.000874 | 00:00:00.001988 | 00:00:52.410261"},
+      "q": "What do these numbers say about replica 10.0.3.22?",
+      "options": [
+        "The network between it and the leader is saturated",
+        "It has disconnected and stopped streaming",
+        "The leader is overloaded and slow to send changes",
+        "It receives changes promptly but is slow to apply them"
+      ],
+      "answer": 3,
+      "explain": "Write and flush lag are about two milliseconds, the same as the healthy replica, so changes arrive and reach disk quickly. Only replay lag is large, so applying is stalled, often by a long query on that replica. A network problem would raise write lag first.",
+      "why": ["A network problem would show in write_lag, which is under a millisecond.", "Its state is `streaming`, and it reports fresh write and flush positions.", "The other replica receives and replays promptly from the same leader.", ""]
+    },
+    {
+      "id": "d11-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["hot-key", "sharding"],
+      "context": "A messages store is hash-partitioned by customer_id across four shards. One shard is slow; the team proposes adding four more shards.",
+      "artifact": {"lang": "text", "title": "Per-shard metrics", "code": "shard  cpu   writes/s  top key (share of shard's writes)\ns0     21%       400  cust_7781   (3%)\ns1     24%       430  cust_2290   (2%)\ns2     98%     4,100  cust_10007  (91%)\ns3     20%       390  cust_5013   (2%)"},
+      "q": "Which change addresses the cause?",
+      "options": [
+        "Add four more shards so each holds fewer keys",
+        "Upgrade every shard to a larger machine",
+        "Split cust_10007 into several sub-keys and merge them on read",
+        "Switch from hash to range partitioning on customer_id"
+      ],
+      "answer": 2,
+      "explain": "One key produces 91 percent of the hot shard's writes, and any partitioning by customer_id sends all of that key to one place. Spreading the key itself is what helps. Adding shards is the tempting answer, but it only moves the other customers off the hot shard.",
+      "why": ["cust_10007 still maps to exactly one shard, which stays at full load.", "Three of the four upgrades are wasted, and the hot key may outgrow the bigger machine too.", "", "A single customer_id still falls in one range, so the hot key still lands on one shard."]
+    },
+    {
+      "id": "d11-q04",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["postgres-vs-mongodb", "transactions"],
+      "context": "A teammate proposes moving Relay's orders and refunds into MongoDB 'for flexibility'.",
+      "q": "What is the strongest reason to keep them in PostgreSQL?",
+      "options": [
+        "MongoDB cannot store currency amounts precisely",
+        "MongoDB has no way to replicate data to other servers",
+        "A refund must update order and refund rows atomically, under constraints",
+        "PostgreSQL is faster than MongoDB for every kind of read"
+      ],
+      "answer": 2,
+      "explain": "Orders and refunds are related records with money rules, which is what joins, constraints, and multi-row transactions are for. The other claims are false or too broad. MongoDB can do transactions too, but its design favors keeping each write within one document, which this data does not fit.",
+      "why": ["MongoDB has a decimal type for exact amounts.", "MongoDB replicates through replica sets.", "", "Neither store is faster for every read; a one-document fetch can beat a multi-table join."]
+    },
+    {
+      "id": "d11-q05",
+      "type": "mcq",
+      "level": 1,
+      "tags": ["nosql-families", "search"],
+      "q": "Which datastore family is built around an inverted index and relevance ranking?",
+      "options": [
+        "Search engines such as Elasticsearch",
+        "Wide-column stores such as Cassandra",
+        "Graph databases such as Neo4j",
+        "Time-series databases"
+      ],
+      "answer": 0,
+      "explain": "An inverted index maps each word to the documents that contain it, which is what makes ranked full-text search fast. Wide-column stores are often confused with it because both scale out, but they are organized around a partition key, not around words.",
+      "why": ["", "Wide-column stores organize rows by partition key and are built for write throughput.", "Graph databases are built for traversing relationships.", "Time-series databases are built for appending and aggregating timestamped points."]
+    },
+    {
+      "id": "d11-q06",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["read-your-writes", "replica-lag"],
+      "q": "Relay sends all reads to replicas. Which change gives users read-your-writes on their own profile with the least added load on the leader?",
+      "options": [
+        "Send every read to the leader instead of the replicas",
+        "Read from the leader for a few seconds after a user writes",
+        "Switch replication from asynchronous to synchronous",
+        "Put a Redis cache in front of both replicas"
+      ],
+      "answer": 1,
+      "explain": "Only the user who just wrote needs the fresh value, and only briefly, so sending just those reads to the leader fixes it cheaply. Synchronous replication is the tempting answer, but in Postgres's default mode it waits for the standby to store the change, not to replay it, and it slows every write.",
+      "why": ["This works but discards the replicas and puts all read load on the leader.", "", "By default it waits for the standby to flush, not replay, so a replica read can still be stale, and every commit gets slower.", "A cache adds its own staleness on top of the replica's."]
+    },
+    {
+      "id": "d11-q07",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["cap", "consistency"],
+      "q": "During a network partition, a store keeps answering reads from every replica, including ones cut off from the leader. What has it chosen?",
+      "options": [
+        "Consistency over availability",
+        "Durability over latency",
+        "Availability over consistency",
+        "Latency over partition tolerance"
+      ],
+      "answer": 2,
+      "explain": "Answering from replicas that cannot hear the leader keeps the system responsive while risking stale data, which is the availability choice in CAP. Partition tolerance is not optional in a distributed system; the real choice during a partition is between the other two.",
+      "why": ["Choosing consistency would mean refusing reads from replicas that cannot confirm they are current.", "Durability concerns surviving crashes; this is about which reads to serve.", "", "Partition tolerance is not something you trade away; partitions happen whether you choose them or not."]
+    },
+    {
+      "id": "d11-q08",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["schema-drift", "documents"],
+      "context": "Relay stores each recorded eval case as a JSON document in a JSONB column. After a refactor of the loader, the nightly eval crashes on some cases.",
+      "artifact": {"lang": "text", "title": "Loader error and a sample of stored cases", "code": "KeyError: 'customer_id'   (evals/load_cases.py, line 41)\n\nsample of 1,000 cases, grouped by top-level keys:\n  612  {id, customer_id, messages, status, created}\n  301  {id, customerId, messages, status, created}\n   87  {id, customer_id, messages, status, created, agent_summary}\n\nall 301 'customerId' cases were created before 2026-04-10"},
+      "q": "What is the most likely cause?",
+      "options": [
+        "The cases are read from a replica that is lagging",
+        "Older cases use a different field name and nothing enforced one shape",
+        "The JSONB column truncated large documents",
+        "The refactor dropped an index on customer_id"
+      ],
+      "answer": 1,
+      "explain": "The failing records share an older key name and a creation date range, which is shape drift in unvalidated JSON. Replica lag would show old values, not a different key, and a missing index makes queries slower without raising KeyError.",
+      "why": ["Lag returns older versions of data, not documents with a differently named field.", "", "Nothing in the evidence suggests truncation; the documents have all their fields, under another name.", "An index affects speed, never which keys a document contains."]
+    },
+    {
+      "id": "d11-q09",
+      "type": "multi",
+      "level": 2,
+      "tags": ["polyglot", "consistency"],
+      "q": "Which of these are costs you take on when you add a second datastore beside PostgreSQL? Select all that apply.",
+      "options": [
+        "The two stores can disagree after a write to one of them fails",
+        "PostgreSQL stops enforcing its own constraints",
+        "Another system to back up, monitor, upgrade, and debug",
+        "Transactions inside PostgreSQL become eventually consistent",
+        "Reads from the new store can lag behind PostgreSQL"
+      ],
+      "answers": [0, 2, 4],
+      "explain": "A second store adds divergence risk, operating cost, and a staleness window for its copy. It changes nothing about how Postgres enforces constraints or isolates its own transactions; those guarantees stay within Postgres and simply do not extend to the new store."
+    },
+    {
+      "id": "d11-q10",
+      "type": "order",
+      "level": 2,
+      "tags": ["replica-lag", "read-your-writes"],
+      "q": "Put in order the events behind 'I saved my address, refreshed, and saw the old one'.",
+      "items": [
+        "The user submits the new address",
+        "The leader commits and the API returns success",
+        "The page reloads and the API reads the profile from a replica",
+        "The replica returns the old row because it has not replayed the change",
+        "The replica replays the change",
+        "A second reload shows the new address"
+      ],
+      "explain": "The write was confirmed by the leader before the replica had it, and the read raced ahead of replay. The bug lives in the gap between the second and fifth events, which is replica lag."
+    },
+    {
+      "id": "d11-q11",
+      "type": "match",
+      "level": 3,
+      "tags": ["diagnosis", "replication"],
+      "q": "Match each observation to its most likely cause.",
+      "pairs": [
+        ["Saved, refreshed, saw the old value", "The read was served by a lagging replica"],
+        ["One shard hot, others idle", "A single high-traffic partition key"],
+        ["Confirmed writes missing after failover", "Asynchronous replication lost unshipped commits"],
+        ["Writes hang after a replica fails", "Synchronous replication waiting on that replica"],
+        ["'canceling statement due to conflict with recovery'", "A long replica query held up replay past the limit"]
+      ],
+      "explain": "Each symptom points to which copy answered or which copy was waited for. Asking where the data was read from, and which machine had to acknowledge the write, resolves most replication mysteries."
+    },
+    {
+      "id": "d11-q12",
+      "type": "open",
+      "level": 2,
+      "tags": ["postgres-vs-mongodb", "access-patterns"],
+      "context": "A teammate proposes MongoDB for Relay's new 'customer memory' feature: the agent stores a running set of facts about each customer, whose fields change as the prompt evolves. The facts are read at the start of every conversation and sometimes joined with the customer's orders.",
+      "q": "Explain how you would decide between PostgreSQL and MongoDB for this feature.",
+      "rubric": [
+        "Starts from the access patterns: one read per conversation by customer, occasional join with orders",
+        "Notes that a JSONB column in Postgres handles a changing shape and keeps the join and transactions",
+        "Names the operating cost and consistency risk of adding a second store",
+        "States when MongoDB would be the better fit, such as large self-contained documents and no relation to other data",
+        "Mentions storing a schema version because the shape will drift with prompts"
+      ],
+      "model": "The main read is one record per customer at conversation start, plus occasional joins with orders. A JSONB column keyed by customer in Postgres serves that, handles changing fields, and keeps joins and transactions with orders, with no second system to run or keep in sync. I would store a schema version in each record. MongoDB would win if these documents were large, self-contained, never related to orders, and written at a scale one Postgres could not handle."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d11-x1",
+      "title": "The agent quotes the old address",
+      "brief": "Customers complain that after updating their shipping address in the web app and then asking Relay to ship a replacement, the agent confirms the old address. It happens mostly mid-morning. Yesterday the team pointed the API's read-only queries at replica-2, which also serves the analytics dashboards. Customer profiles are also cached in Redis.",
+      "artifact": {"lang": "trace", "title": "One affected conversation", "code": "trace 7f2c  POST /chat  ticket=9921  started 10:42:31\n  api.handle_message                        2,410 ms\n    tool.lookup_customer                        9 ms\n      redis GET customer:311                    1 ms   miss\n      pg.query host=replica-2 SELECT users      6 ms   rows=1\n    llm.call                                2,380 ms\n\naudit: user 311 address updated 10:42:07 on leader"},
+      "steps": [
+        {
+          "q": "What do you conclude from this trace first?",
+          "options": [
+            "The Redis cache served a stale profile",
+            "The model ignored the tool result and invented an address",
+            "The address came from replica-2, 24 seconds after the write",
+            "The write to the leader never committed"
+          ],
+          "answer": 2,
+          "explain": "The trace shows a cache miss and a read from replica-2, so Redis is cleared, and the audit shows the write committed at 10:42:07. The cache was the obvious suspect, but the evidence rules it out. The next question is whether replica-2 was more than 24 seconds behind.",
+          "reveal": "The tool result logged in the trace contains the old address, so the model repeated what it was given."
+        },
+        {
+          "q": "What do you check next?",
+          "options": [
+            "Replica-2's replay lag around 10:42, and what was running on it",
+            "The TTL on customer profile keys in Redis",
+            "The index on users.id on replica-2",
+            "The leader's CPU during the morning"
+          ],
+          "answer": 0,
+          "explain": "The read came from replica-2, so its lag at that moment decides whether it could have had the new address. Redis is already cleared by the miss, and the query took 6 ms, so indexing is not the issue.",
+          "reveal": "Replay lag on replica-2 rose from under a second to 70 seconds between 10:38 and 10:49, while a weekly cohort dashboard query ran. Replica-2's settings were changed last month to let long dashboard queries finish instead of being canceled, which lets replay wait for them.",
+          "artifact": {"lang": "text", "title": "Replay lag by minute", "code": "time   replica-1  replica-2   running on replica-2\n10:30     0.01 s      0.4 s\n10:38     0.01 s      3.1 s   cohort_weekly started\n10:42     0.02 s     41.7 s   cohort_weekly\n10:47     0.01 s     70.3 s   cohort_weekly\n10:49     0.01 s      0.3 s   cohort_weekly finished"}
+        },
+        {
+          "q": "What protects customers right away, with the least risk?",
+          "options": [
+            "Switch replication to synchronous for replica-2",
+            "Read a customer's profile from the leader for a minute after they edit it",
+            "Disable caching of customer profiles in Redis",
+            "Send every API read back to the leader permanently"
+          ],
+          "answer": 1,
+          "explain": "Read-your-writes for recently edited profiles fixes the visible bug for exactly the reads that need it. Synchronous replication waits for the standby to store changes, not replay them, so it would not stop this stale read. Sending all reads to the leader works but undoes the reason for the replica.",
+          "reveal": "With the routing rule in place, the complaint rate drops to zero the next morning, while replica-2's lag still spikes during dashboards."
+        },
+        {
+          "q": "What is the durable fix for the lag itself?",
+          "options": [
+            "Move the dashboards to a replica the API does not read from",
+            "Add more CPU to replica-2",
+            "Restore the default setting so dashboard queries get canceled",
+            "Run the cohort query on the leader instead"
+          ],
+          "answer": 0,
+          "explain": "The replica was asked to do two incompatible jobs: stay current for the API and let long queries hold up replay. Separating them lets each be configured for its job. Restoring the default would break the dashboards, and moving the query to the leader loads the most important machine."
+        }
+      ],
+      "debrief": "Root cause: the API began reading from a replica whose replay was deliberately allowed to pause for long dashboard queries, so it was sometimes over a minute behind. The cache was the obvious suspect and was cleared by one line of the trace. Fixes: read-your-writes routing for recently edited data, and a separate replica for analytics. The general lesson: when data looks stale, first find out which copy answered, then how far behind it was."
+    },
+    {
+      "id": "d11-x2",
+      "title": "Two refunds vanished after the failover",
+      "brief": "At 09:14 Relay's Postgres leader host failed and the standby was promoted about 20 seconds later. Replication to the standby is asynchronous. An hour later, two customers wrote in: Relay told them a refund was issued, the money arrived, but the order page shows no refund and the agent says none exists.",
+      "artifact": {"lang": "log", "title": "API log around the failover", "code": "09:14:01.884 issue_refund ticket=4410 refund=r_5512 db=committed provider=ok\n09:14:02.955 issue_refund ticket=4418 refund=r_5513 db=committed provider=ok\n09:14:04.020 db error: server closed the connection unexpectedly\n09:14:24.610 db reconnected host=pg-standby (promoted)\n10:02:11 query refunds where id in (r_5512, r_5513) -> 0 rows"},
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "The issue_refund code, for a path that skips the commit",
+            "Last night's backup, to see whether the rows are there",
+            "Retry issue_refund for both tickets so the rows exist again",
+            "The refunds' commit times against the standby's last replayed commit before the failover"
+          ],
+          "answer": 3,
+          "explain": "The log says both commits succeeded, and both happened seconds before the crash. Comparing them with what the standby had replayed tests the asynchronous-loss explanation directly. A code bug is the obvious suspect, but the log already shows `db=committed`, and retrying would refund the customers twice.",
+          "reveal": "The standby's last replayed commit before promotion was at 09:14:00.4. Both refunds committed after that on the old leader.",
+          "artifact": {"lang": "text", "title": "Timeline", "code": "09:14:00.400  last commit replayed on standby\n09:14:01.880  r_5512 committed on old leader\n09:14:02.950  r_5513 committed on old leader\n09:14:04.000  old leader host fails\n09:14:24.500  standby promoted"}
+        },
+        {
+          "q": "What does the timeline tell you?",
+          "options": [
+            "The refunds were rolled back by the crash",
+            "The standby corrupted the two rows during promotion",
+            "The servers' clocks disagree, so the rows are mislabeled",
+            "The old leader confirmed the refunds before shipping them to the standby"
+          ],
+          "answer": 3,
+          "explain": "Asynchronous replication confirms a commit before any replica has it, and these two commits fell in that gap. They were durable on the old leader, which then disappeared from service. Rollback would mean the API never saw a commit, but it did.",
+          "reveal": "The old leader's disk is intact. Its WAL contains both refund commits."
+        },
+        {
+          "q": "What do you do about these two refunds?",
+          "options": [
+            "Re-run issue_refund for both tickets to recreate the rows",
+            "Rebuild the rows from the old leader's WAL and provider records",
+            "Promote the old leader back so its data returns to service",
+            "Leave them alone, since the customers already have their money"
+          ],
+          "answer": 1,
+          "explain": "The money moved, so the database must record it without moving it again. Rebuilding from the old leader and the provider restores the truth. Re-running the tool would pay twice, and promoting the old leader back would discard everything written to the new leader since.",
+          "reveal": "After reconciliation, the team also finds one ticket message lost the same way, and restores it."
+        },
+        {
+          "q": "What is the durable change for refund data?",
+          "options": [
+            "Add two more asynchronous replicas",
+            "Shorten failover from 20 seconds to 5",
+            "Synchronous replication to one standby, accepting slower commits",
+            "Take backups every hour instead of nightly"
+          ],
+          "answer": 2,
+          "explain": "With synchronous replication, the leader confirms a commit only after a standby stores it, so failing over to that standby loses nothing confirmed. More asynchronous replicas have the same gap, a faster failover does not close it, and hourly backups still lose up to an hour."
+        }
+      ],
+      "debrief": "Root cause: asynchronous replication confirmed two refunds before the standby received them, and failover promoted a standby that never had them. The obvious suspect, a missing commit in the code, was ruled out by the log. Fixes: reconcile from the old leader and the provider, and use synchronous replication to a standby, with a second candidate so one failure does not hang writes. The general lesson: 'committed' means committed on the machine that said so."
+    }
+  ]
+}

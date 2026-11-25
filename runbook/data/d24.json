@@ -1,0 +1,639 @@
+{
+  "id": "d24",
+  "day": 24,
+  "phase": "p5",
+  "title": "The LLM application backend",
+  "tagline": "An LLM call is a slow, expensive, rate-limited, non-deterministic dependency. Build accordingly.",
+  "minutes": 60,
+  "why": "Every backend lesson from the last three weeks applies to the LLM call: it is a remote dependency that times out, throttles, costs money per byte, and changes behavior when someone else upgrades it. Most of Relay's production incidents involve this call, and most are diagnosable from four fields in the response: the stop reason, the token usage, the model served, and the latency.",
+  "objectives": [
+    "Read an LLM request and response and say what each field means, including the stop reason and token usage",
+    "Explain why output tokens dominate latency, and estimate the cost of a call and a day of traffic from token counts",
+    "Choose which LLM errors to retry, set timeouts for long generations, and keep tool side effects idempotent under retries",
+    "Validate structured output and handle truncation before acting on it",
+    "Choose between prompting, retrieval, and fine-tuning, and ship prompt and model changes behind versions and evals"
+  ],
+  "lessons": [
+    {
+      "id": "d24-l1",
+      "title": "Anatomy of an LLM call",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "An LLM call is an HTTPS POST with a JSON body. You send the instructions, the conversation so far, the tools the model may use, and a cap on output length. You get back content, a reason the model stopped, and a count of the tokens you will pay for. Field names differ between providers, and the shape is the same everywhere."},
+        {"t": "code",
+          "lang": "json",
+          "title": "Request: one Relay agent turn (generic field names)",
+          "code": "{\n  \"model\": \"provider-large-2026-03\",\n  \"max_tokens\": 1024,\n  \"temperature\": 0.2,\n  \"system\": \"You are Relay, support agent for the store. Never promise delivery dates.\",\n  \"tools\": [\n    {\"name\": \"lookup_order\",\n     \"description\": \"Fetch an order by ID. Use before discussing any order.\",\n     \"input_schema\": {\"type\": \"object\",\n       \"properties\": {\"order_id\": {\"type\": \"string\"}},\n       \"required\": [\"order_id\"]}}\n  ],\n  \"messages\": [\n    {\"role\": \"user\", \"content\": \"Where is order A-10482? It's been 9 days.\"}\n  ]\n}",
+          "notes": [
+            "`system` holds the standing instructions. `messages` holds the conversation as alternating user and assistant turns.",
+            "Each tool has a name, a description the model reads to decide when to use it, and a schema for its arguments.",
+            "`max_tokens` caps the output only. It does not limit the input, and it is not a target length.",
+            "The model name pins a dated version here. An alias such as 'large-latest' can change underneath you."
+          ]},
+        {"t": "code",
+          "lang": "json",
+          "title": "Response: the model asks to call a tool",
+          "code": "{\n  \"id\": \"msg_7f3a\",\n  \"model\": \"provider-large-2026-03\",\n  \"role\": \"assistant\",\n  \"content\": [\n    {\"type\": \"text\", \"text\": \"Let me check that order.\"},\n    {\"type\": \"tool_use\", \"id\": \"call_01\", \"name\": \"lookup_order\",\n     \"input\": {\"order_id\": \"A-10482\"}}\n  ],\n  \"stop_reason\": \"tool_use\",\n  \"usage\": {\"input_tokens\": 1312, \"output_tokens\": 41}\n}",
+          "notes": [
+            "The model did not call anything. It asked your code to call `lookup_order` with these arguments.",
+            "`stop_reason` says why generation ended. Here it paused for a tool result, so this turn is not finished.",
+            "`usage` is what you are billed for. Log it on every call; it is the raw material for cost and latency analysis."
+          ]},
+        {"t": "compare",
+          "caption": "Stop reasons and what your code should do",
+          "columns": ["", "Means", "Your code should"],
+          "rows": [
+            ["`end_turn`", "The model finished its answer", "Validate and use the output"],
+            ["`tool_use`", "The model wants a tool run", "Run the tool, append the result, call again"],
+            ["`max_tokens`", "Output hit the cap mid-generation", "Treat as incomplete; never parse it as a full answer"],
+            ["`stop_sequence`", "A string you listed as a stop marker appeared", "Use the output up to the marker"]
+          ],
+          "verdict": "Branch on the stop reason before reading the content. Code that only checks the HTTP status treats a truncated answer as a finished one."},
+        {"t": "flow",
+          "title": "One customer message that needs a tool",
+          "steps": [
+            {"actor": "API", "label": "Builds the request", "detail": "FastAPI loads the conversation from PostgreSQL and sends system prompt, tools, and all prior messages.", "fail": "History missing from the request, so the model 'forgets' what the customer said a minute ago."},
+            {"actor": "Model", "label": "Returns a tool request", "detail": "Stop reason `tool_use`, with arguments for `lookup_order`.", "fail": "Arguments invalid for the schema, such as an order ID the model invented."},
+            {"actor": "API", "label": "Runs the tool", "detail": "Your code validates the arguments, checks the customer owns the order, and queries the database.", "fail": "Tool raises and the error is swallowed, so the model guesses."},
+            {"actor": "API", "label": "Sends the tool result back", "detail": "A second call carries everything from the first, plus the tool request and its result.", "fail": "Input tokens roughly double, and so does the cost of this turn."},
+            {"actor": "Model", "label": "Writes the answer", "detail": "Stop reason `end_turn`, text grounded in the order data.", "fail": "Stop reason `max_tokens` and an answer cut off mid-sentence."}
+          ]},
+        {"t": "callout", "kind": "insight", "title": "The API is stateless", "text": "The model keeps nothing between calls. Every call must carry the whole conversation, which your backend stores and resends. That is why input tokens, cost, and time to first token all grow with every turn of a long conversation."},
+        {"t": "callout", "kind": "pitfall", "title": "Checking only the status code", "text": "A truncated answer arrives with `200 OK`. If your code reads the content without checking `stop_reason`, it will show customers half a sentence or try to parse half a JSON object."},
+        {"t": "callout", "kind": "debug", "title": "Log these on every call", "text": "Request ID, model requested and model served, prompt version, stop reason, input and output tokens, time to first token, total time, and attempt number. Almost every incident in this lesson's field guide is diagnosed from these fields."},
+        {"t": "check",
+          "q": "On turn 12 of a conversation, a single Relay call uses 14,000 input tokens. On turn 1 it used 1,300. Nothing about the prompt template changed. Why?",
+          "options": ["The model caches earlier turns and bills for the cache", "Every call resends the full conversation history", "Tool schemas are counted again for each turn", "The provider charges more later in a conversation"],
+          "answer": 1,
+          "explain": "The API keeps no state, so each call carries all prior turns, including tool calls and results. Tool schemas are sent on every call too, but they are a fixed amount and cannot explain the growth."},
+        {"t": "reveal", "prompt": "The response above has stop reason `tool_use`. What exactly must the next request contain?", "answer": "The same system prompt and tools, the original user message, the assistant turn with the text and the tool request, and a new message carrying the tool result tagged with the tool call's ID. Leave any of it out and the model loses track of the turn."}
+      ]
+    },
+    {
+      "id": "d24-l2",
+      "title": "Latency, streaming, and cost",
+      "minutes": 13,
+      "blocks": [
+        {"t": "p", "text": "Two numbers describe LLM latency. **Time to first token** (TTFT) is the wait before any output appears. Total time adds the time to generate every output token. The model reads the whole input in one parallel pass, then writes output one token at a time, so output length usually dominates total time."},
+        {"t": "code",
+          "lang": "log",
+          "title": "Relay agent calls before and after prompt v15",
+          "code": "call  prompt  input_tok  output_tok  ttft_ms  total_ms\na91   v14         4,120         180      420     3,980\na92   v14         4,090         210      410     4,560\nb17   v15        16,300         190      890     4,710\nb18   v15        16,280         420      910     9,330",
+          "notes": [
+            "Quadrupling the input roughly doubled TTFT, from about 0.4 to 0.9 seconds.",
+            "Total time tracks output tokens: about 50 tokens per second here, a rough figure that varies by model and load.",
+            "Call b18 took twice as long as b17 with the same prompt, because it wrote twice as many tokens."
+          ]},
+        {"t": "callout", "kind": "debug", "title": "Latency doubled after a prompt change", "text": "Split the latency into TTFT and generation time, then compare input and output token counts before and after. If output tokens grew, the new prompt is making the model write more. If only input grew, TTFT carries the increase, and caching or trimming the prompt helps."},
+        {"t": "h", "text": "Streaming"},
+        {"t": "p", "text": "**Streaming** sends tokens to the client as they are generated, usually over server-sent events (SSE), the one-way HTTP stream from Day 5. It does not make generation faster. It makes the wait feel shorter, because the customer starts reading after the first token instead of after the last."},
+        {"t": "tradeoff",
+          "title": "Streaming vs waiting for the full response",
+          "options": [
+            {"name": "Stream", "gain": ["Users see progress within about a second", "Can stop early or cancel"], "cost": ["Harder error handling mid-stream", "Proxies may buffer or time out the connection", "Cannot validate the whole output before showing it"], "choose": "Choose this for chat text a person reads as it arrives."},
+            {"name": "Wait for the full response", "gain": ["Validate before anything is shown or acted on", "Simpler code and retries"], "cost": ["User stares at a spinner for the full time", "Long generations risk client timeouts"], "choose": "Choose this for structured output that code consumes, such as a refund decision or a ticket category."}
+          ]},
+        {"t": "h", "text": "Cost is token arithmetic"},
+        {"t": "code",
+          "lang": "text",
+          "title": "Cost of Relay's agent traffic (made-up rates for this example)",
+          "code": "MADE-UP RATES, not any provider's prices:\n  input          $2.00 per million tokens\n  cached input   $0.20 per million tokens\n  output        $10.00 per million tokens\n\nOne agent call: 10,000 input (6,000 is a stable prefix) + 400 output\n  no cache:   10,000 x $2.00/M  = $0.0200\n                 400 x $10.00/M = $0.0040   total $0.0240\n  cached:      6,000 x $0.20/M  = $0.0012\n               4,000 x $2.00/M  = $0.0080\n                 400 x $10.00/M = $0.0040   total $0.0132\n\nPer day: 20,000 tickets x 3 calls = 60,000 calls\n  no cache $1,440      with prefix cached $792",
+          "notes": [
+            "Output tokens cost more each, yet input dominates this call because there are 25 times as many of them.",
+            "Caching the stable prefix cuts this bill by about 45 percent in this example. Real ratios vary by provider.",
+            "Multiply by calls per task, not tickets. An agent that loops five times costs five calls."
+          ]},
+        {"t": "p", "text": "**Prompt caching** lets the provider reuse its processing of a prompt prefix it saw recently. If a request starts with exactly the same tokens as an earlier one, those tokens are cheaper and TTFT drops. The match is exact and from the start, and cached prefixes expire after a short idle period, often minutes. Put stable content first and anything that changes per request last."},
+        {"t": "p", "text": "A **batch API** accepts many requests at once and returns results later, often within hours, usually at a discount and with separate rate limits. It suits work nobody is waiting on, such as Relay's nightly triage backlog or a large eval run. It is useless on a request path."},
+        {"t": "tradeoff",
+          "title": "Cache responses or generate fresh?",
+          "options": [
+            {"name": "Cache full responses", "gain": ["Near-zero cost and latency on a hit", "Identical answers to identical questions"], "cost": ["Stale after a policy change", "Wrong when answers depend on the customer", "Exact-match hit rates are often low"], "choose": "Choose this for repeated, non-personal questions with stable answers, keyed on normalized input plus prompt and model version."},
+            {"name": "Generate fresh, cache the prefix", "gain": ["Always current and personalized", "Prefix caching still cuts cost"], "cost": ["Pays for output every time", "Full latency every time"], "choose": "Choose this when answers depend on the customer, their orders, or recent policy."}
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "A timestamp at the top kills the cache", "text": "Putting the current time or the customer's name in the first line of the system prompt makes every prefix unique, so nothing is ever reused. The bill and TTFT rise with no error anywhere. Check the cached token count in `usage` after any prompt change."},
+        {"t": "check",
+          "q": "Relay's nightly job re-triages 30,000 old tickets. Nobody reads the results until morning. Which option cuts cost the most with the least risk?",
+          "options": ["Stream every response to save time", "Submit the work through a batch API", "Raise concurrency to finish sooner", "Cache full responses keyed on ticket text"],
+          "answer": 1,
+          "explain": "Nobody is waiting, so the delay of a batch API costs nothing and its discount and separate limits apply. Streaming changes perceived latency for a reader, and there is no reader. Higher concurrency adds rate-limit trouble without lowering cost."},
+        {"t": "reveal", "prompt": "Using the made-up rates above, what does a single call cost with 2,000 input tokens and 2,000 output tokens, and which half dominates?", "answer": "Input is 2,000 x $2.00 per million, $0.004. Output is 2,000 x $10.00 per million, $0.020. Total $0.024, with output five times the input cost. Long answers, and reasoning tokens, are where output cost hides."}
+      ]
+    },
+    {
+      "id": "d24-l3",
+      "title": "Reliability: rate limits, retries, fallbacks, structured output",
+      "minutes": 13,
+      "blocks": [
+        {"t": "p", "text": "Treat the LLM provider like any remote dependency from Day 18. Every call gets a timeout, a bounded retry policy with backoff and jitter, and a plan for when the provider is down. Two things make it harder than a database call: generations can legitimately take a minute, and the output must be checked before you act on it."},
+        {"t": "compare",
+          "caption": "LLM call failures and how to react",
+          "columns": ["", "What it means", "Retry?", "Reaction"],
+          "rows": [
+            ["400 invalid request", "Your request is malformed or too long", "No", "Fix the request; retrying repeats the error"],
+            ["401 or 403", "Key missing, wrong, or lacking access", "No", "Check key and environment"],
+            ["429 rate limited", "Over requests or tokens per minute", "Yes, after `retry-after`", "Backoff with jitter; lower concurrency"],
+            ["5xx or overloaded", "Provider-side trouble", "Yes, a few times", "Backoff; fall back if it persists"],
+            ["Timeout", "No complete answer in time", "Yes, within the user's deadline", "Check whether output length explains it"],
+            ["`max_tokens` stop", "Output was cut off", "Not unchanged", "Raise the cap or shorten the output first"]
+          ],
+          "verdict": "Retry what might succeed next time. A request that failed for a deterministic reason fails the same way every time, and each attempt is billed."},
+        {"t": "p", "text": "Providers limit **requests per minute** and **tokens per minute** separately, per account. A batch job with long prompts can exhaust tokens at modest request counts, and it shares the budget with live chat traffic. Size concurrency from the tokens per minute limit, keep headroom, and put batch work on a batch API, or on a separately limited budget where your provider offers one."},
+        {"t": "h", "text": "Timeouts and retries for long generations"},
+        {"t": "list", "items": [
+          "Set the timeout from the worst case you allow: `max_tokens` divided by a slow generation rate, plus TTFT. A 30 second timeout kills honest 2,000-token answers.",
+          "With streaming, use two timeouts: one for the first token and one for silence between chunks. A stalled stream is then caught in seconds.",
+          "Bound retries by a total time budget tied to the user's deadline, not only an attempt count.",
+          "A retried LLM call has no side effects at the provider. It costs money again and may return a different answer.",
+          "A retried agent turn can re-run tools. Give side-effecting tools such as `issue_refund` an idempotency key so the second run does nothing."
+        ]},
+        {"t": "callout", "kind": "pitfall", "title": "The retry loop that burns money", "text": "Retrying on every failure, with no cap, turns a deterministic failure into a bill. The classic case: output truncated at `max_tokens`, JSON fails to parse, and the code retries the identical request ten times, each truncated at the same place. Alert on calls per task, not only on errors."},
+        {"t": "h", "text": "Structured output and its validation"},
+        {"t": "p", "text": "**Structured output** means asking the model for JSON matching a schema, through a tool definition or a schema setting that some providers enforce during generation. Enforcement reduces malformed JSON. It cannot make the content right, and it cannot rescue output that was truncated. Validate every response before acting on it."},
+        {"t": "code",
+          "lang": "json",
+          "title": "A refund decision that hit the output cap",
+          "code": "{\n  \"stop_reason\": \"max_tokens\",\n  \"usage\": {\"input_tokens\": 3210, \"output_tokens\": 300},\n  \"content\": [{\"type\": \"text\", \"text\":\n    \"{\\\"reasoning\\\": \\\"The customer reported the blender arrived cracked\n     and attached a photo. [... about 200 more tokens ...] Order A-10482\n     was delivered on March 2, within the 30-day window, and the item\"}]\n}",
+          "notes": [
+            "Output tokens equal the configured cap of 300, and the stop reason confirms it.",
+            "The JSON never closes, so parsing fails. Retrying the identical request will fail the same way.",
+            "The free-text `reasoning` field came first and used the whole budget, so `decision` and `amount` were never written. Put short decision fields first, and raise the cap."
+          ]},
+        {"t": "list", "style": "number", "items": [
+          "Check the stop reason; anything except a normal finish is not a complete answer.",
+          "Parse the JSON and validate it against the schema.",
+          "Check business rules in code: the refund amount is not above the order total, the order belongs to this customer.",
+          "On a validation failure, retry once with the error message included, then fall back to a human."
+        ]},
+        {"t": "p", "text": "Those code checks are **guardrails**: rules enforced outside the model, on its inputs, outputs, and actions. A refund above a set amount needing human approval is a guardrail. So is blocking a reply that contains a card number. The model can be persuaded; the code cannot."},
+        {"t": "h", "text": "Fallbacks, gateways, and routing"},
+        {"t": "p", "text": "A **fallback** is a second model or provider used when the first fails or is overloaded. A **gateway** is a proxy service between your app and the providers that centralizes keys, routing, retries, rate limits, budgets, logging, and sometimes caching. Both add resilience, and both add a hop that can fail and a place where 'which model answered' gets lost. Log the model actually served."},
+        {"t": "tradeoff",
+          "title": "One large model, or route by difficulty?",
+          "options": [
+            {"name": "One large model for everything", "gain": ["One prompt and one eval to maintain", "Best quality on hard cases"], "cost": ["Highest cost and latency on easy requests", "One provider outage takes everything down"], "choose": "Choose this when volume is low or most requests are genuinely hard."},
+            {"name": "Small model by default, large when needed", "gain": ["Lower cost and latency for most traffic", "Large model reserved for hard cases"], "cost": ["A router that can misroute", "Two prompts and two evals", "Harder to explain behavior"], "choose": "Choose this when traffic is high and most requests are simple, with an eval proving the small model handles them."}
+          ]},
+        {"t": "callout", "kind": "rule", "title": "An untested fallback is a second outage", "text": "Prompts are tuned to a model. A fallback that has never run your eval may ignore tool schemas or format output differently. Run the eval against every fallback, and consider giving the fallback a reduced role, such as answering but not issuing refunds."},
+        {"t": "check",
+          "q": "A Relay call returns `200 OK`, stop reason `end_turn`, and valid JSON with `\"amount\": 940.00` for an order whose total is 94.00. Which layer should stop this refund?",
+          "options": ["The JSON schema check", "The business-rule check in code", "The provider's structured output mode", "A retry with lower temperature"],
+          "answer": 1,
+          "explain": "The response is complete and schema-valid, so the schema and structured output layers pass it. Only a rule that compares the amount with the order total catches it. Retrying might fix this instance but enforces nothing."}
+      ]
+    },
+    {
+      "id": "d24-l4",
+      "title": "Prompt vs retrieval vs fine-tuning, and prompt management",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "When Relay behaves wrongly, there are three levers. Change the prompt, change what information reaches the prompt, or change the model's weights. Each fixes a different kind of problem, and picking the wrong one wastes weeks."},
+        {"t": "compare",
+          "caption": "A decision guide for changing model behavior",
+          "columns": ["", "Prompting", "Retrieval (RAG)", "Fine-tuning"],
+          "rows": [
+            ["Fixes", "Unclear task, missing rules, wrong tone", "Missing or changing facts", "Stable style or format over many cases"],
+            ["Time to change", "Minutes", "Hours to set up, then a data update", "Days, plus a curated dataset"],
+            ["Cost per call", "Grows with prompt length", "Adds retrieved tokens and a search", "Often lower; shorter prompts"],
+            ["Fails by", "Long prompts, buried rules", "Retrieving the wrong chunk", "Forgetting skills, stale facts"],
+            ["Relay example", "'Never promise a delivery date'", "This week's returns policy", "House reply structure across 5,000 replies"]
+          ],
+          "verdict": "Start with the prompt. Add retrieval when the problem is knowledge. Fine-tune only when a stable behavior resists prompting and you have many clean examples."},
+        {"t": "callout", "kind": "insight", "title": "Diagnose before choosing the lever", "text": "Read the failing request first. If the needed fact was missing from the context, no prompt wording will fix it; that is a retrieval problem. If the fact was present and ignored, that is a prompt problem. Day 25 builds the retrieval side."},
+        {"t": "h", "text": "Prompts are code"},
+        {"t": "p", "text": "A prompt change can alter every response Relay sends, so it deserves the controls of a code change. Keep prompts in the repository, give each a version, review changes, and run the eval harness before merging. Log the prompt version with every call so any response can be traced to the exact text that produced it."},
+        {"t": "code",
+          "lang": "json",
+          "title": "One structured log record for an LLM call",
+          "code": "{\"ts\": \"2026-03-14T09:12:44Z\", \"request_id\": \"req_8c1e\", \"ticket_id\": 91802,\n \"feature\": \"agent_turn\", \"prompt_version\": \"agent-v15\",\n \"model_requested\": \"large-latest\", \"model_served\": \"provider-large-2026-03\",\n \"stop_reason\": \"end_turn\", \"attempt\": 1,\n \"input_tokens\": 9840, \"cached_tokens\": 6000, \"output_tokens\": 388,\n \"ttft_ms\": 640, \"total_ms\": 8410,\n \"user_text\": \"[redacted: 212 chars, 1 email, 1 card number]\"}",
+          "notes": [
+            "`model_requested` is an alias and `model_served` is what answered. When the two drift apart, behavior can change with no deploy on your side.",
+            "`prompt_version` ties the response to reviewed text in the repository.",
+            "Customer text is redacted before logging. The full transcript lives in a store with restricted access and a retention limit."
+          ]},
+        {"t": "list", "items": [
+          "Redact card numbers, emails, and addresses before text reaches general logs.",
+          "Keep full transcripts in a separate store with access control and a deletion schedule.",
+          "Sample full transcripts for debugging instead of keeping everything forever.",
+          "Watch template rendering: a missing variable that renders as an empty string sends a broken prompt with no error."
+        ]},
+        {"t": "h", "text": "When the model changes under you"},
+        {"t": "p", "text": "A new model version is a new function, as Day 22 put it. It may follow instructions more literally, write longer, call tools more often, or format JSON differently. If you call an alias, the provider decides when that happens. If you pin a dated version, you decide, and you must still move before the old version is retired."},
+        {"t": "tradeoff",
+          "title": "Pin a model version or follow the alias?",
+          "options": [
+            {"name": "Pin a dated version", "gain": ["Behavior changes only when you choose", "Eval results stay comparable"], "cost": ["You must schedule upgrades", "Old versions are eventually retired"], "choose": "Choose this for production paths whose behavior is tested, which is most of them."},
+            {"name": "Follow the alias", "gain": ["Improvements arrive automatically", "No upgrade work"], "cost": ["Behavior can change overnight", "Regressions surface as user complaints"], "choose": "Choose this for prototypes and internal tools where a surprise is cheap."}
+          ]},
+        {"t": "callout", "kind": "debug", "title": "Behavior changed and nobody deployed", "text": "Compare `model_served` and `prompt_version` across the change point in your logs. Then rerun the eval on the old and new versions with the same prompt and compare by category, not only the overall pass rate. The categories that dropped tell you what to fix in the prompt."},
+        {"t": "callout", "kind": "pitfall", "title": "Upgrading model and prompt together", "text": "Shipping a new prompt in the same release as a new model version makes any regression impossible to attribute. Change one, run the eval, ship; then change the other."},
+        {"t": "check",
+          "q": "Relay keeps quoting last month's restocking fee, which changed two weeks ago. The current fee is in a help article. What do you check first?",
+          "options": ["Whether to fine-tune on the new fee", "Whether the current article reached the context", "Whether a larger model knows the new fee", "Whether temperature is too high"],
+          "answer": 1,
+          "explain": "This is a knowledge problem, so first confirm what the model was shown. A stale index or a missed retrieval explains it exactly. Fine-tuning a changing fact is slow and fragile, and no model knows a private fee it has never seen."},
+        {"t": "reveal", "prompt": "The provider announces that the dated version Relay pins will be retired in 60 days. Outline the upgrade.", "answer": "Run the nightly eval against the new version with the current prompt and compare by category. Fix the prompt for the categories that dropped, as its own versioned change, and rerun. Then canary the new version on a small share of traffic, watch cost, latency, and tool-call rates, and keep the old version ready for rollback until retirement."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "JSON parse error, and the response has stop_reason 'max_tokens'",
+      "causes": ["Output hit the output-token cap mid-object", "A long free-text field placed before the decision fields"],
+      "look": "`stop_reason` and `output_tokens` against the configured `max_tokens`.",
+      "confirm": "Output tokens equal the cap on every failing call, and the text ends mid-string.",
+      "fix": "Raise the cap or shorten the output, put key fields first, and never retry a truncated call unchanged."
+    },
+    {
+      "symptom": "429s during a batch job, while live chat also slows",
+      "causes": ["Batch concurrency exceeds the tokens-per-minute budget", "Batch and live traffic share one account's limits"],
+      "look": "Rate-limit headers on failed calls: which budget is at zero, and `retry-after`.",
+      "confirm": "Remaining tokens hit zero while remaining requests stay high, only during the job.",
+      "fix": "Move the job to a batch API or a separate budget, and cap its concurrency. The job takes longer."
+    },
+    {
+      "symptom": "Latency doubled after the prompt grew",
+      "causes": ["New prompt makes the model write longer answers", "Larger input raised time to first token", "Prompt change broke the cache prefix"],
+      "look": "TTFT, total time, input, output, and cached tokens before and after the change.",
+      "confirm": "Total time tracks output tokens, or TTFT tracks input tokens and cached tokens fell to zero.",
+      "fix": "Ask for shorter output, trim or retrieve content, keep the stable prefix first."
+    },
+    {
+      "symptom": "Behavior changed after a model upgrade, or with no deploy at all",
+      "causes": ["An alias moved to a new model version", "Prompt and model changed in the same release"],
+      "look": "`model_served` and `prompt_version` in call logs around the change point.",
+      "confirm": "Eval pass rate drops on the new version with the prompt held constant.",
+      "fix": "Pin a dated version, fix the prompt per failing category, canary before full rollout."
+    },
+    {
+      "symptom": "Daily LLM spend jumped with flat traffic",
+      "causes": ["A retry loop on a deterministic failure", "An agent looping more steps per task", "Prompt caching stopped hitting"],
+      "look": "Calls per task and attempts per call, broken down by feature.",
+      "confirm": "One feature's calls per task rose sharply with repeated identical requests.",
+      "fix": "Cap retries by budget, never retry unchanged on truncation or validation, alert on calls per task."
+    },
+    {
+      "symptom": "Cached token count dropped to zero after a prompt edit",
+      "causes": ["Something per-request now appears before the stable content", "Tool definitions reordered or regenerated each call"],
+      "look": "The first few hundred tokens of two consecutive requests, side by side.",
+      "confirm": "The prefixes differ, for example by a timestamp or a customer name.",
+      "fix": "Move variable content to the end of the prompt and keep tool definitions stable."
+    },
+    {
+      "symptom": "Model forgets what the customer said earlier in the conversation",
+      "causes": ["History not resent, because the API is stateless", "History trimmed to fit the window or a budget"],
+      "look": "The `messages` array in the failing request.",
+      "confirm": "The earlier turn is absent from the request.",
+      "fix": "Resend the needed history, or summarize it deliberately and test the summary."
+    },
+    {
+      "symptom": "Requests time out at exactly the client timeout during long answers",
+      "causes": ["Timeout shorter than worst-case generation time", "Stalled stream with no idle timeout"],
+      "look": "Output token counts of successful long answers and the configured timeout.",
+      "confirm": "Timeouts cluster on requests that ask for long outputs.",
+      "fix": "Derive the timeout from `max_tokens`, stream with first-token and idle timeouts."
+    },
+    {
+      "symptom": "A customer received two refunds after an LLM outage",
+      "causes": ["An agent turn was retried and re-ran `issue_refund`"],
+      "look": "Tool execution logs for the ticket, with attempt numbers.",
+      "confirm": "Two refund calls with identical arguments seconds apart.",
+      "fix": "Give side-effecting tools idempotency keys tied to the decision, not the attempt."
+    },
+    {
+      "symptom": "During failover, tool calls fail or output format breaks",
+      "causes": ["Fallback model never ran the eval with this prompt"],
+      "look": "`model_served` on failing calls, and the fallback's eval results.",
+      "confirm": "Failures occur only on calls served by the fallback.",
+      "fix": "Eval every fallback, adapt its prompt, and limit its role until it passes."
+    }
+  ],
+  "glossary": [
+    {"term": "System prompt", "def": "Standing instructions sent with every call, separate from the conversation, setting the model's role, rules, and format."},
+    {"term": "Messages", "def": "The conversation sent in each request as alternating user and assistant turns, including tool requests and tool results."},
+    {"term": "max_tokens", "def": "The cap on output tokens for one call. Reaching it stops generation mid-output; it does not limit input."},
+    {"term": "Stop reason", "def": "The field saying why generation ended: a finished answer, a tool request, the output cap, or a stop sequence."},
+    {"term": "Usage", "def": "The token counts returned with each response, such as input, cached, and output tokens. Billing and capacity planning start here."},
+    {"term": "Time to first token (TTFT)", "def": "The delay before the first output token arrives. It grows with uncached input length."},
+    {"term": "Streaming", "def": "Sending output tokens to the client as they are generated, usually over server-sent events, so readers see progress early."},
+    {"term": "Prompt caching", "def": "Provider reuse of processing for an exactly repeated prompt prefix, which lowers cost and time to first token for later calls."},
+    {"term": "Batch API", "def": "An interface that accepts many requests and returns results later, often hours, typically at a discount. For work nobody is waiting on."},
+    {"term": "Structured output", "def": "Asking the model for output that matches a schema, often JSON, sometimes enforced by the provider. Still needs validation."},
+    {"term": "Guardrail", "def": "A rule enforced in code around the model, on inputs, outputs, or actions, such as a refund amount limit."},
+    {"term": "Fallback model", "def": "A second model or provider used when the primary fails or is overloaded. Needs its own eval."},
+    {"term": "LLM gateway", "def": "A proxy between applications and model providers that centralizes keys, routing, retries, limits, budgets, and logging."},
+    {"term": "Prompt version", "def": "An identifier for the exact prompt text used in a call, kept in source control and logged per call."}
+  ],
+  "apply": {
+    "title": "Instrument one LLM call and price a day of it",
+    "minutes": 20,
+    "steps": [
+      "Find the main LLM call in your project and print the full response once: stop reason, model served, and every usage field.",
+      "Add one structured log line per call with request ID, model served, prompt version, stop reason, token counts, TTFT if you stream, total time, and attempt number.",
+      "Run ten typical requests and compute average input and output tokens, then estimate the daily cost with your provider's real rates or the made-up rates from this lesson.",
+      "Check your retry code: list which errors it retries, whether it caps total attempts, and what it does on a `max_tokens` stop."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d24-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["statelessness", "llm-api"],
+      "diagnostic": true,
+      "q": "A chat app calls an LLM API. On the second turn the model does not know the user's name, which the user gave in the first turn. What is the most likely cause?",
+      "options": [
+        "The provider's session for this user expired",
+        "The request did not include the first turn's messages",
+        "The model's context window is too small",
+        "Temperature is too high to recall details"
+      ],
+      "answer": 1,
+      "explain": "Chat completion APIs are stateless, so the model only sees what the request contains. The app must resend the history each turn. A small context window would matter only for very long conversations, not turn two.",
+      "why": ["There is no server-side session to expire; each call stands alone.", "", "Two short turns fit easily in any modern context window.", "Temperature changes sampling, not whether information is present."]
+    },
+    {
+      "id": "d24-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["structured-output", "truncation"],
+      "context": "Relay's triage worker started failing with JSON parse errors after a teammate added a `summary` field to the requested output.",
+      "artifact": {"lang": "json", "title": "A failing response", "code": "{\n  \"stop_reason\": \"max_tokens\",\n  \"usage\": {\"input_tokens\": 1880, \"output_tokens\": 250},\n  \"content\": [{\"type\": \"text\",\n    \"text\": \"{\\\"summary\\\": \\\"Customer reports [... about 230 more tokens ...] failed and\"}]\n}"},
+      "q": "What is the best fix?",
+      "options": [
+        "Retry failed calls until one returns valid JSON",
+        "Switch to a larger model that writes better JSON",
+        "Raise the output cap or shorten the summary, and check the stop reason",
+        "Lower the temperature so the JSON is more stable"
+      ],
+      "answer": 2,
+      "explain": "Output tokens equal the cap and the stop reason confirms truncation; the new field made the output longer than 250 tokens. Retrying the identical request truncates in the same place and bills every attempt.",
+      "why": ["The truncation is deterministic, so retries fail the same way and add cost.", "The model is writing valid JSON; it is cut off by the cap.", "", "Temperature does not change the output length enough to fit under the cap."]
+    },
+    {
+      "id": "d24-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["latency", "output-tokens"],
+      "context": "After prompt v21 added 'explain your reasoning to the customer', Relay's p50 reply time doubled.",
+      "artifact": {"lang": "log", "title": "Median per prompt version", "code": "prompt  input_tok  output_tok  ttft_ms  total_ms\nv20         3,000         200      380     4,400\nv21         3,900         430      410     9,000"},
+      "q": "What explains most of the increase?",
+      "options": [
+        "The longer prompt raised time to first token",
+        "The provider got slower on the day of the change",
+        "Prompt caching stopped working with the new prompt",
+        "The replies are about twice as long"
+      ],
+      "answer": 3,
+      "explain": "TTFT rose by only 30 ms while output tokens more than doubled, and generation time tracks output length. The instruction made the model write more. Input growth and caching affect TTFT, which barely moved.",
+      "why": ["TTFT moved from 380 to 410 ms, far too little to explain 4.6 extra seconds.", "A provider slowdown would not line up exactly with a doubling of output tokens.", "Lost caching would raise TTFT, which barely changed.", ""]
+    },
+    {
+      "id": "d24-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["retries", "cost"],
+      "context": "Relay's LLM spend tripled overnight with flat ticket volume. One feature drafts refund decisions as JSON and retries until the result passes validation.",
+      "artifact": {"lang": "log", "title": "refund-drafter, one ticket", "code": "ticket=91802 attempt=1  stop=end_turn out=212 invalid: amount 940.00 > order_total 94.00\nticket=91802 attempt=2  stop=end_turn out=209 invalid: amount 940.00 > order_total 94.00\nticket=91802 attempt=3  stop=end_turn out=214 invalid: amount 940.00 > order_total 94.00\n...\nticket=91802 attempt=25 stop=end_turn out=211 invalid: amount 940.00 > order_total 94.00"},
+      "q": "What is the root problem to fix first?",
+      "options": [
+        "Unbounded retries on a failure that repeats every time",
+        "The validation rule is too strict and should be removed",
+        "The model needs a higher temperature to vary its answer",
+        "The provider is billing for failed requests by mistake"
+      ],
+      "answer": 0,
+      "explain": "The same invalid amount comes back on every attempt, so retrying cannot succeed and each attempt is billed. Cap attempts, retry at most once with the error included, then send to a human. Then investigate why the model misreads the amount.",
+      "why": ["", "The rule caught a refund ten times too large; removing it would pay it out.", "Randomness might occasionally hide the error but leaves the loop and the cost in place.", "Completed generations are billed normally; the bill reflects real calls."]
+    },
+    {
+      "id": "d24-q05",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["rate-limits", "batch-api"],
+      "q": "A nightly job sends 20,000 summarization requests and gets many 429s, which also slow down daytime-style chat traffic on the same account. Results are needed by 8 a.m. What is the best change?",
+      "options": [
+        "Retry each failed request immediately",
+        "Spread the job across more keys on the same account",
+        "Send everything to a fallback provider",
+        "Submit the job through a batch API"
+      ],
+      "answer": 3,
+      "explain": "Nobody waits on these results in real time, so a batch API fits: it is typically cheaper and keeps the job from competing with live traffic. Limits usually apply per account, so more keys on the same account rarely add capacity.",
+      "why": ["Immediate retries spend each refill and keep the job throttled.", "Rate limits typically apply to the account, so extra keys share the same budget.", "A fallback is for outages; it adds an untested model to a job that only needed pacing.", ""]
+    },
+    {
+      "id": "d24-q06",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["streaming", "latency"],
+      "q": "Where does streaming the LLM response help Relay the most?",
+      "options": [
+        "The chat reply a customer reads in the browser",
+        "The JSON refund decision checked by code before acting",
+        "The nightly ticket triage backlog job",
+        "The eval harness grading recorded tickets"
+      ],
+      "answer": 0,
+      "explain": "Streaming does not speed up generation; it lets a human start reading early. Code that must validate a complete JSON object gains nothing and has to buffer the stream anyway, and batch jobs have no reader waiting."
+    },
+    {
+      "id": "d24-q07",
+      "type": "multi",
+      "level": 2,
+      "tags": ["retries", "error-handling"],
+      "q": "Which of these LLM call failures are reasonable to retry with backoff? Select all that apply.",
+      "options": [
+        "429 with a `retry-after` header",
+        "503 or an overloaded error from the provider",
+        "A timeout before any response arrived",
+        "400 because the prompt exceeds the context window",
+        "401 because the API key is invalid"
+      ],
+      "answers": [0, 1, 2],
+      "explain": "Rate limits, overload, and timeouts are transient and may succeed later. An oversized prompt and an invalid key fail identically on every attempt, so retrying them only adds latency and noise."
+    },
+    {
+      "id": "d24-q08",
+      "type": "order",
+      "level": 2,
+      "tags": ["structured-output", "guardrails"],
+      "q": "Put the handling of a structured refund decision in order, from response received to money moving.",
+      "items": [
+        "Check the HTTP status and the stop reason",
+        "Parse the JSON text",
+        "Validate the parsed object against the schema",
+        "Check business rules such as amount not above the order total",
+        "Call `issue_refund` with an idempotency key"
+      ],
+      "explain": "Each step depends on the one before: no point parsing a truncated answer, no point checking rules on an object with missing fields. The side effect comes last, protected by an idempotency key in case the whole flow is retried."
+    },
+    {
+      "id": "d24-q09",
+      "type": "match",
+      "level": 2,
+      "tags": ["prompting-rag-finetuning", "caching"],
+      "q": "Match each Relay problem to the lever that fits it best.",
+      "pairs": [
+        ["Quotes last month's restocking fee", "Retrieve the current policy at request time"],
+        ["Ignores a rule that was never written down", "Add the rule to the system prompt"],
+        ["Reply structure drifts across thousands of replies", "Fine-tune on approved replies"],
+        ["Same store-hours question asked all day", "Cache the full response"]
+      ],
+      "explain": "Missing or changing facts call for retrieval, missing instructions for the prompt, stable style across many cases for fine-tuning, and identical non-personal questions for a response cache. Picking the lever starts with diagnosing what kind of problem it is."
+    },
+    {
+      "id": "d24-q10",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["model-versions", "regression"],
+      "context": "Relay's nightly eval dropped from 88 to 79 percent. No one on the team deployed anything. The call logs show `model_requested: large-latest` throughout, and `model_served` changed at 01:00.",
+      "q": "What do you do first?",
+      "options": [
+        "Rewrite the system prompt to restore the old behavior",
+        "Rerun the eval pinned to the old and new versions, compared by category",
+        "Switch to the fallback provider until the score recovers",
+        "Raise the temperature to recover more varied answers"
+      ],
+      "answer": 1,
+      "explain": "The alias moved to a new version, which is the leading suspect. Rerunning both pinned versions with the same prompt confirms it and shows which categories dropped, which tells you what to fix. Rewriting the prompt blind is guessing.",
+      "why": ["Editing the prompt before knowing which behaviors changed is a guess, and it mixes two changes.", "", "The fallback is untested on this eval and does not diagnose anything.", "Temperature did not change and is unrelated to a version switch."]
+    },
+    {
+      "id": "d24-q11",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["prompt-caching", "cost"],
+      "context": "After a prompt edit, the cached token count in `usage` dropped from 6,000 to 0 on every call, and TTFT rose. The edit added a line at the top of the system prompt: 'Current time: {now}'.",
+      "q": "What is the fix?",
+      "options": [
+        "Remove the system prompt and send instructions as a user message",
+        "Ask the provider to extend the cache lifetime",
+        "Move the time line to the end, after the stable content",
+        "Shorten the system prompt below the caching threshold"
+      ],
+      "answer": 2,
+      "explain": "Caching matches an exact prefix from the start of the prompt. A timestamp in the first line makes every prefix unique. Moving it after the stable content restores the shared prefix. A longer cache lifetime cannot help when no two prefixes match."
+    },
+    {
+      "id": "d24-q12",
+      "type": "open",
+      "level": 3,
+      "tags": ["reliability", "idempotency", "timeouts"],
+      "context": "During a 20-minute provider incident, Relay's chat calls hung for 60 seconds before failing, were retried three times, and two customers received duplicate refunds.",
+      "q": "Describe the changes you would make so the next incident is less damaging.",
+      "rubric": [
+        "Timeouts for first token and stream idle, and a total retry budget tied to the user's deadline",
+        "Backoff with jitter and a cap on attempts, distinguishing retryable errors",
+        "Idempotency keys on side-effecting tools such as issue_refund",
+        "A fallback model that has passed the eval, possibly with a reduced role",
+        "A circuit breaker or fast failure with a clear message instead of long hangs"
+      ],
+      "model": "I would stream with a ten-second first-token timeout and a short idle timeout, and cap retries by a total budget so users wait seconds, not minutes. Retries would use backoff with jitter, and a breaker would fail fast once errors pass a threshold. `issue_refund` would take an idempotency key derived from the ticket and decision. Finally, an evaluated fallback model would answer chat but queue refunds for a human."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d24-x1",
+      "title": "The LLM bill tripled overnight",
+      "brief": "Finance flags that yesterday's LLM spend was three times the daily average. Ticket volume was normal. Yesterday the team shipped prompt v15 for the agent, which is 4,000 tokens longer, and a triage change that adds a `summary` field to the triage worker's JSON output.",
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Revert prompt v15, since it added the most tokens",
+            "Break spend down by feature, with calls per task and attempts",
+            "Ask the provider whether billing has an error",
+            "Lower traffic by rate limiting customers"
+          ],
+          "answer": 1,
+          "explain": "Two changes shipped, and spend is a sum over features. A breakdown by feature with calls per task shows which one moved and whether it is volume per call or number of calls. Reverting the longer prompt is the obvious guess, and the numbers may not support it.",
+          "reveal": "The agent's cost per ticket rose about 30 percent, in line with the longer prompt. The triage worker's spend rose nine times: calls per ticket went from 1.0 to 8.7. A sample of its log is below.",
+          "artifact": {"lang": "log", "title": "triage worker, one ticket", "code": "job=t-55120 ticket=93011 attempt=1 stop=max_tokens out=250 err=JSONDecodeError\njob=t-55120 ticket=93011 attempt=2 stop=max_tokens out=250 err=JSONDecodeError\njob=t-55120 ticket=93011 attempt=3 stop=max_tokens out=250 err=JSONDecodeError\n...\njob=t-55120 ticket=93011 attempt=10 stop=max_tokens out=250 err=giving up"}
+        },
+        {
+          "q": "Why would triage make almost nine calls per ticket?",
+          "options": [
+            "The model returns random invalid JSON at high temperature",
+            "The worker is being rate limited and retrying 429s",
+            "Output is truncated at the cap and retried unchanged",
+            "Duplicate queue messages make each ticket processed nine times"
+          ],
+          "answer": 2,
+          "explain": "The log shows every attempt stopping at `max_tokens` with exactly 250 output tokens, then failing to parse. The new summary field made the output longer than the cap, so each identical retry truncates in the same place. No 429s appear, and attempts share one ticket and job ID.",
+          "reveal": "Tickets with short messages produce output under 250 tokens and succeed on the first try. Long tickets fail all ten attempts. The worker retries on any exception, up to ten times."
+        },
+        {
+          "q": "What is the durable fix?",
+          "options": [
+            "Raise retries to 20 so long tickets eventually succeed",
+            "Raise the cap, put decision fields first, and stop retrying on truncation",
+            "Remove the summary field and leave the retry logic as it is",
+            "Switch the triage worker to a larger model"
+          ],
+          "answer": 1,
+          "explain": "The cap must fit the new output, and short decision fields placed first survive even if the summary runs long. The retry policy must treat a truncated or invalid result as non-retryable unchanged. Removing the field fixes today and leaves the next field to cause the same bill.",
+          "reveal": "With the cap raised and truncation treated as a hard failure, calls per ticket return to 1.0. An alert on calls per task now pages when it exceeds 1.5."
+        }
+      ],
+      "debrief": "Root cause: a new output field pushed triage responses past the 250-token cap, and the worker retried every failure ten times with an identical request, multiplying spend on long tickets. The longer agent prompt was the obvious suspect and accounted for only a small part. The fix: a cap that fits, decision fields first, no unchanged retries on deterministic failures, and an alert on calls per task. Catch it earlier by running a few long tickets through the worker before merging output changes."
+    },
+    {
+      "id": "d24-x2",
+      "title": "Chat hangs, then fails, during a provider incident",
+      "brief": "At 14:10 Relay's chat error rate jumps from under 1 percent to 30 percent. Customers say the reply spinner runs for about a minute and then shows 'Something went wrong'. The on-call engineer's first instinct is to restart the API pods.",
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Restart the API pods to clear any stuck state",
+            "Group the last 30 minutes of errors by type and by dependency",
+            "Send all traffic to the fallback model right away",
+            "Scale the API deployment up to absorb the load"
+          ],
+          "answer": 1,
+          "explain": "Grouping errors by dependency tells you in a minute whether the fault is in Relay or upstream. Restarting or scaling acts on Relay's own pods before any evidence implicates them, and an immediate failover sends traffic to a path you have not yet decided to trust.",
+          "reveal": "PostgreSQL and Redis are healthy. Every error is on the LLM call: about 60 percent are overloaded errors from the provider, and 40 percent are client timeouts at exactly 60 seconds.",
+          "artifact": {"lang": "log", "title": "errors by type, 14:10 to 14:40", "code": "dependency=llm   status=503 overloaded      count=4120\ndependency=llm   status=timeout_60s         count=2710\ndependency=pg    status=ok                  errors=0\ndependency=redis status=ok                  errors=0"}
+        },
+        {
+          "q": "The client config is `timeout=60s, retries=3, backoff=none`. What change limits the damage most during the incident?",
+          "options": [
+            "Raise the timeout to 300 seconds so slow answers can finish",
+            "Retry up to ten times so more requests eventually succeed",
+            "Short first-token and idle timeouts, backoff with jitter, a total retry budget",
+            "Turn off timeouts and let requests finish on their own"
+          ],
+          "answer": 2,
+          "explain": "Four 60-second attempts with no backoff can hold a customer and a worker for four minutes, and the retries add load to an overloaded provider. Short first-token and idle timeouts detect a stuck call in seconds, and a budget ends the wait at a fixed point. More retries or longer timeouts deepen both problems.",
+          "reveal": "With a 10-second first-token timeout and a 20-second total budget, failed requests fail fast, API worker slots free up, and the error page appears in seconds instead of minutes."
+        },
+        {
+          "q": "The provider is still degraded 15 minutes later. What do you do about the 30 percent of customers who get errors?",
+          "options": [
+            "Fail over chat to the evaluated fallback model, with refunds queued for humans",
+            "Keep retrying the primary until the provider recovers",
+            "Send all traffic, refunds included, to an untested fallback",
+            "Show a maintenance page to every customer"
+          ],
+          "answer": 0,
+          "explain": "A fallback that has passed the eval keeps customers served, and limiting its role keeps money safe while it runs on a less-tested path. An untested fallback risks a second incident with refunds attached, and a maintenance page turns away the 70 percent who were being served.",
+          "reveal": "Through the gateway, chat fails over to the fallback. Errors drop to 2 percent. The provider recovers at 15:05 and traffic moves back."
+        },
+        {
+          "q": "The next day, finance finds two customers refunded twice during the incident. What prevents this?",
+          "options": [
+            "Disable retries on all LLM calls",
+            "Ask the model to check whether it already issued a refund",
+            "Lower the temperature so the model decides the same way",
+            "An idempotency key on `issue_refund` derived from the ticket and decision"
+          ],
+          "answer": 3,
+          "explain": "A retried agent turn re-ran the tool, and the payment system treated each call as new. A key derived from the ticket and decision makes the second call a no-op, whatever the cause of the retry. Disabling all retries trades one bug for many failed chats, and the model cannot reliably police side effects.",
+          "reveal": "Tool logs show both duplicates came from turns that timed out after the refund call succeeded but before the model's reply arrived."
+        }
+      ],
+      "debrief": "Root cause: a provider overload met a client with long timeouts, no backoff, and unbudgeted retries, so customers waited minutes and Relay's retries added load. Retried agent turns re-ran a non-idempotent refund tool. Restarting pods would have changed nothing. The fixes are Day 18's patterns applied to the LLM: short first-token and idle timeouts, backoff with jitter inside a total budget, an evaluated fallback with a reduced role, and idempotency keys on every side-effecting tool."
+    }
+  ]
+}

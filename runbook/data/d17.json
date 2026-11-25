@@ -1,0 +1,1130 @@
+{
+  "id": "d17",
+  "day": 17,
+  "phase": "p4",
+  "title": "Asynchronous processing: queues and streams",
+  "tagline": "Moving work out of the request, choosing between a job queue, RabbitMQ, and Kafka, and the failure modes that come with each.",
+  "minutes": 60,
+  "why": "Once work leaves the request, failures stop showing up as error responses. A job runs twice, runs never, or sits in a queue for an hour, and the API keeps returning 202. Knowing what a broker promises, and what it does when a worker dies, is how you turn 'the email never came' or 'the customer got two refunds' into a specific cause.",
+  "objectives": [
+    "Decide whether a piece of work belongs in the request or in a queue, and name what the queue costs",
+    "Compare a job queue, RabbitMQ, and Kafka by delivery model, ordering, replay, and operating cost",
+    "Read worker logs and say whether a duplicate came from redelivery, a double enqueue, or a retry",
+    "Explain why an event can be published for a database write that rolled back, and how an outbox prevents it",
+    "Read queue depth and consumer lag and say whether workers are too slow, stuck, or idle"
+  ],
+  "lessons": [
+    {
+      "id": "d17-l1",
+      "title": "Why move work off the request",
+      "minutes": 11,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "A **background job** is work the server records now and performs later, outside the request that asked for it. The API puts a message describing the job on a **queue**, a list of pending work held by another system, and replies at once. A separate **worker** process takes the message and does the slow part."
+        },
+        {
+          "t": "p",
+          "text": "Relay does this for ticket triage, which needs an LLM call that can take tens of seconds, for sending emails, and for the nightly re-indexing of help-center articles. The customer who opens a ticket gets a ticket number in a fraction of a second. The triage result appears a little later."
+        },
+        {
+          "t": "code",
+          "lang": "http",
+          "title": "Accepted now, finished later",
+          "code": "POST /api/tickets HTTP/1.1\nContent-Type: application/json\n\n{\"subject\": \"Refund for order A-7731\", \"body\": \"...\"}\n\nHTTP/1.1 202 Accepted\nLocation: /api/tickets/9921\n\n{\"id\": 9921, \"triage\": \"pending\"}\n\nGET /api/tickets/9921 HTTP/1.1\n\nHTTP/1.1 200 OK\n\n{\"id\": 9921, \"triage\": \"done\", \"category\": \"refund\", \"priority\": 2}",
+          "notes": [
+            "`202 Accepted` promises only that the work was recorded. It says nothing about whether the work will succeed.",
+            "The client learns the result by checking again, or by being notified through a webhook or a push message.",
+            "If triage fails in the worker, nothing in this exchange shows it. The failure lives in worker logs and job status."
+          ]
+        },
+        {
+          "t": "compare",
+          "caption": "Synchronous call vs queue",
+          "columns": [
+            "",
+            "Synchronous call",
+            "Queue and worker"
+          ],
+          "rows": [
+            [
+              "Caller waits",
+              "For the whole job, including slow dependencies",
+              "Only for the enqueue"
+            ],
+            [
+              "Downstream outage",
+              "Requests fail at once with 5xx or timeouts",
+              "Jobs wait and run when it recovers"
+            ],
+            [
+              "Traffic spike",
+              "Every request competes for the dependency now",
+              "The queue grows; workers drain at their own pace"
+            ],
+            [
+              "Result",
+              "In the response",
+              "Later, through polling, webhook, or notification"
+            ],
+            [
+              "Where failures show",
+              "Status codes the caller sees",
+              "Worker logs, job status, dead-letter queue"
+            ],
+            [
+              "Moving parts",
+              "Caller and callee",
+              "Caller, broker, workers, scheduler"
+            ]
+          ],
+          "verdict": "Keep work in the request when the caller needs the answer to continue. Move it to a queue when it is slow, can fail and be retried, or arrives in bursts."
+        },
+        {
+          "t": "p",
+          "text": "The queue also **decouples** the two sides: the API keeps accepting tickets while the email provider is down, and the emails go out when it returns. It **smooths load**: a burst of 2,000 tickets after a delivery delay becomes a backlog that eight workers clear over some minutes, instead of 2,000 simultaneous LLM calls."
+        },
+        {
+          "t": "p",
+          "text": "Scheduled work, such as the nightly re-index, usually runs the same way. A scheduler puts a job on the queue at a set time, and an ordinary worker runs it. When two scheduler instances run by mistake, the job is enqueued twice, which is a common source of 'the nightly job ran twice'."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "The queue hides failure",
+          "text": "The API returned 202, so every dashboard built on API status codes looks healthy while every job fails. Give each job a status the user or an operator can see, and alert on job failure rate and on the age of the oldest waiting message, not only on API errors."
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "LLM calls are a natural fit for a queue",
+          "text": "They are slow, rate limited, and fail transiently with 429 or overload errors. A queue lets the number of workers set the concurrency against the provider, and lets failed calls retry later. Provider batch APIs are themselves asynchronous jobs: you submit, then poll for results."
+        },
+        {
+          "t": "check",
+          "q": "Which of these gains the least from being moved to a background job?",
+          "options": [
+            "Sending a receipt email after a refund",
+            "Checking a password during login",
+            "Re-embedding 40,000 help-center chunks"
+          ],
+          "answer": 1,
+          "explain": "The login response depends on the password check, so the caller must wait for it anyway. The email and the re-embedding are slow or bursty and nobody is waiting on their result in the request."
+        },
+        {
+          "t": "reveal",
+          "prompt": "A customer got `202 Accepted` for a refund request, but never received the confirmation email. Where does the failure live, and what do you look at first?",
+          "answer": "After the enqueue, so the API logs will look clean. Look up the job by ticket or refund ID: its status, the worker log lines for it, and whether it landed in the dead-letter queue after repeated failures."
+        }
+      ]
+    },
+    {
+      "id": "d17-l2",
+      "title": "Job queues, brokers, and logs: RabbitMQ vs Kafka",
+      "minutes": 14,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "Three kinds of system move messages, and they make different promises. A **task queue** library, such as Celery in Python or BullMQ in Node, gives you jobs, retries, and schedules on top of a broker. A **message broker** such as RabbitMQ routes each message to queues and deletes it once a consumer acknowledges it. A **log** such as Kafka appends messages and keeps them for a set time, whether or not anyone has read them."
+        },
+        {
+          "t": "compare",
+          "caption": "Task queue, RabbitMQ, and Kafka",
+          "columns": [
+            "",
+            "Task queue (Celery, BullMQ)",
+            "RabbitMQ",
+            "Kafka"
+          ],
+          "rows": [
+            [
+              "Delivery model",
+              "Library pulls jobs from Redis or a broker",
+              "Broker pushes each message to one consumer, deletes on ack",
+              "Consumers pull and track their own offset"
+            ],
+            [
+              "After processing",
+              "Job removed, optional result stored",
+              "Message gone",
+              "Message stays until retention expires"
+            ],
+            [
+              "Ordering",
+              "Roughly first in, first out; parallel workers reorder",
+              "Per queue, but parallel consumers and redeliveries reorder",
+              "Strict within a partition, none across partitions"
+            ],
+            [
+              "Replay",
+              "No",
+              "No, once acknowledged",
+              "Yes, by resetting offsets within retention"
+            ],
+            [
+              "Many readers",
+              "Not its purpose",
+              "Fanout exchange copies to several queues",
+              "Each consumer group reads everything independently"
+            ],
+            [
+              "Operating cost",
+              "Low if Redis already runs",
+              "One moderate service to run and watch",
+              "Highest: a cluster, partitions, retention to plan"
+            ]
+          ],
+          "verdict": "For background jobs inside one application, use a task queue on Redis or RabbitMQ. Choose Kafka when many independent consumers need the same event stream, or when you need to replay history."
+        },
+        {
+          "t": "p",
+          "text": "Kafka splits a **topic**, a named stream of messages, into **partitions**. Each partition is an append-only log, and each message in it has an **offset**, its position number. A **consumer group** is a set of consumers that share the work: each partition is read by one member of the group at a time, so the partition count caps the group's parallelism."
+        },
+        {
+          "t": "p",
+          "text": "**Pub/sub**, short for publish and subscribe, means each published message reaches every subscriber, as opposed to a work queue, where each message goes to one worker. RabbitMQ does pub/sub by copying a message into one queue per subscriber. Kafka does it by letting each consumer group keep its own offset in the same log."
+        },
+        {
+          "t": "analogy",
+          "text": "RabbitMQ is a mail room: each letter goes to one recipient, who signs for it, and then the mail room no longer has it. Kafka is a ledger that every department reads at its own pace with its own bookmark. The analogy breaks on retention: Kafka eventually deletes old pages on a schedule, even if a department has not read them yet."
+        },
+        {
+          "t": "tradeoff",
+          "title": "RabbitMQ or Kafka for Relay",
+          "options": [
+            {
+              "name": "RabbitMQ",
+              "gain": [
+                "Per-message acks, retries, and dead letters built in",
+                "Flexible routing by queue and pattern",
+                "Simpler to run"
+              ],
+              "cost": [
+                "No replay once a message is acknowledged",
+                "Queues grow in broker memory and disk when consumers lag"
+              ],
+              "choose": "Choose this for job distribution, where each task should be done once by some worker and then forgotten."
+            },
+            {
+              "name": "Kafka",
+              "gain": [
+                "Replay and backfill from retained history",
+                "Many consumers read the same events independently",
+                "High throughput with ordering per key"
+              ],
+              "cost": [
+                "Parallelism capped by partition count",
+                "One slow message holds up its whole partition",
+                "A heavier cluster and more concepts to operate"
+              ],
+              "choose": "Choose this when events are a shared record that several services read, or that you will want to reprocess later."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "A list is not a queue",
+          "text": "Popping a job from a plain Redis list removes it before the work is done. If the worker dies mid-job, the job is gone with no trace. Real task queues keep the job reserved until the worker acknowledges it, which is what makes redelivery possible."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Added consumers, no speedup",
+          "text": "On Kafka, a consumer group with more members than the topic has partitions leaves the extra members idle. If throughput did not change after scaling out, compare the member count with the partition count before looking anywhere else."
+        },
+        {
+          "t": "check",
+          "q": "Relay wants a new analytics service to process every ticket event from the last two weeks, and a fraud service to read the same events separately. Which fits best?",
+          "options": [
+            "A Celery task queue on Redis",
+            "A RabbitMQ work queue shared by both services",
+            "A Kafka topic with two weeks of retention"
+          ],
+          "answer": 2,
+          "explain": "Only the log keeps events after they are read, so the analytics service can start from two weeks back and the fraud service can keep its own position. A shared work queue would split the events between the two services."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Relay already runs Redis and has one worker fleet doing triage, email, and re-indexing. Does it need Kafka?",
+          "answer": "Probably not. These are jobs to be done once each, with no other consumers and no need for replay. A task queue on Redis or RabbitMQ gives acks, retries, and dead letters at far lower operating cost. Kafka earns its cost when events become a shared stream."
+        }
+      ]
+    },
+    {
+      "id": "d17-l3",
+      "title": "Delivery guarantees, retries, and dead letters",
+      "minutes": 14,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "A **delivery guarantee** is what a messaging system promises about how many times each message is processed when something crashes. **At-most-once** never duplicates and may lose messages. **At-least-once** never loses and may duplicate. **Effectively-once** is at-least-once delivery plus a consumer that makes duplicates harmless."
+        },
+        {
+          "t": "p",
+          "text": "The guarantee is decided by when the consumer acknowledges. An **acknowledgement** (ack) tells the broker the message is done and may be deleted. Ack before doing the work and a crash loses the job. Ack after the work and a crash between the work and the ack means the broker delivers the message again."
+        },
+        {
+          "t": "tradeoff",
+          "title": "At-most-once vs at-least-once",
+          "options": [
+            {
+              "name": "At-most-once",
+              "gain": [
+                "No duplicates, ever",
+                "Simplest consumer code"
+              ],
+              "cost": [
+                "Jobs silently lost on crash or deploy",
+                "Nothing to retry from"
+              ],
+              "choose": "Choose this when a lost message costs less than a duplicate, such as a metrics sample or a typing indicator."
+            },
+            {
+              "name": "At-least-once",
+              "gain": [
+                "No lost jobs",
+                "Retries and dead letters become possible"
+              ],
+              "cost": [
+                "Every consumer must tolerate duplicates",
+                "Duplicates appear during deploys and network blips"
+              ],
+              "choose": "Choose this for anything that matters, such as emails, refunds, and triage, and make the consumer idempotent."
+            }
+          ]
+        },
+        {
+          "t": "flow",
+          "title": "One triage job under at-least-once delivery",
+          "steps": [
+            {
+              "actor": "API",
+              "label": "Enqueues the job",
+              "detail": "The API sends `triage ticket 9921` to the broker and waits for the broker to confirm it was stored.",
+              "fail": "If the API does not wait for confirmation, a broker hiccup loses the job and the API still returns 202."
+            },
+            {
+              "actor": "Broker",
+              "label": "Stores the message durably",
+              "detail": "A durable queue writes the message to disk so a broker restart does not lose it.",
+              "fail": "A non-durable queue loses every waiting job when the broker restarts."
+            },
+            {
+              "actor": "Broker",
+              "label": "Delivers to worker A and reserves it",
+              "detail": "The message is hidden from other workers until it is acked or the reservation lapses.",
+              "fail": "If the job runs longer than the reservation, the broker hands it to a second worker while the first is still working."
+            },
+            {
+              "actor": "Worker A",
+              "label": "Calls the LLM, saves triage, sends email",
+              "detail": "Side effects happen here: a database write and an email through a provider.",
+              "fail": "A crash halfway leaves some effects done and others not."
+            },
+            {
+              "actor": "Worker A",
+              "label": "Acks the message",
+              "detail": "The broker deletes the message once the ack arrives.",
+              "fail": "A dropped connection or a kill before the ack means the broker never hears it."
+            },
+            {
+              "actor": "Broker",
+              "label": "Redelivers to worker B",
+              "detail": "Unacked messages go back to the queue, marked as redelivered.",
+              "fail": "The job runs a second time, and the customer gets a second email."
+            },
+            {
+              "actor": "Worker B",
+              "label": "Checks whether the work was already done",
+              "detail": "An idempotent consumer finds the saved triage result and the sent-email record, skips them, and acks.",
+              "fail": "Without that check, every side effect repeats."
+            },
+            {
+              "actor": "Broker",
+              "label": "Dead-letters after repeated failures",
+              "detail": "After a set number of attempts, the message moves to a dead-letter queue for a person to inspect.",
+              "fail": "With no attempt limit, a message that always fails is retried forever."
+            }
+          ]
+        },
+        {
+          "t": "code",
+          "lang": "log",
+          "title": "Worker logs: one job, delivered twice",
+          "code": "14:02:11.204 worker-3 msg=m_7f1c job=triage:9921 attempt=1 redelivered=false start\n14:02:43.918 worker-3 msg=m_7f1c llm ok latency_ms=32671\n14:02:44.006 worker-3 msg=m_7f1c triage saved category=refund\n14:02:44.091 worker-3 msg=m_7f1c email sent provider_id=em_88a1\n14:02:44.102 worker-3 msg=m_7f1c ack failed: connection reset by peer\n14:02:45.530 worker-7 msg=m_7f1c job=triage:9921 attempt=2 redelivered=true start\n14:03:12.377 worker-7 msg=m_7f1c llm ok latency_ms=26790\n14:03:12.441 worker-7 msg=m_7f1c triage saved category=refund\n14:03:12.520 worker-7 msg=m_7f1c email sent provider_id=em_91f4\n14:03:12.533 worker-7 msg=m_7f1c ack ok",
+          "notes": [
+            "Same message ID `m_7f1c` on two workers, with `redelivered=true` on the second. The job was enqueued once and delivered twice.",
+            "The first attempt finished its work and lost the ack, so the broker had every reason to deliver again.",
+            "Two different `provider_id` values mean two real emails reached the customer.",
+            "The second attempt paid for a second LLM call. Redelivery costs money as well as correctness."
+          ]
+        },
+        {
+          "t": "p",
+          "text": "An **idempotent consumer** produces the same end state however many times it sees a message. Common ways: record processed message IDs in a table with a unique constraint in the same transaction as the work; use upserts keyed by a business ID; pass an idempotency key, such as the job ID, to the email or payment provider so it drops the repeat."
+        },
+        {
+          "t": "p",
+          "text": "Retry transient failures, such as a 429, an overload error, or a timeout, with exponential backoff and jitter. Do not retry permanent ones, such as a validation error or a missing record. A **poison message** is one that fails every time it is processed. Without an attempt limit it is retried forever, eating worker time, and on an ordered stream it blocks everything behind it."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Exactly-once stops at the broker's edge",
+          "text": "Some systems, Kafka among them, offer exactly-once processing for reads and writes that stay inside the system. An email sent, a card charged, or an LLM call made is outside it. For those, the only protection is an idempotent consumer."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "A job ran twice",
+          "text": "Search worker logs by job and message ID. Two message IDs means it was enqueued twice: look at the producer or the scheduler. One message ID delivered twice means redelivery: check for a worker restart, deploy, or lost connection before the ack, and compare the job's duration with the reservation or visibility timeout."
+        },
+        {
+          "t": "check",
+          "q": "A refund worker issues the refund, then is killed by a deploy before it acks. Under at-least-once delivery, what happens next?",
+          "options": [
+            "The message is lost, so the refund is never recorded",
+            "The message is redelivered and the refund runs again unless the consumer is idempotent",
+            "The broker detects the duplicate and drops the second delivery"
+          ],
+          "answer": 1,
+          "explain": "The broker never got the ack, so it redelivers. Brokers do not know whether your side effect happened; only an idempotency check in the consumer, or an idempotency key at the payment provider, prevents the second refund."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Overnight, 30 messages landed in the triage dead-letter queue. What do you look at before replaying them?",
+          "answer": "The error on each message's last attempt, grouped by type. Permanent errors, such as an oversized ticket or a missing record, will fail again on replay. Transient ones, such as rate limits during an outage, can be replayed once the cause has passed."
+        }
+      ]
+    },
+    {
+      "id": "d17-l4",
+      "title": "Ordering, the outbox, and watching lag",
+      "minutes": 12,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "Ordering and parallelism pull against each other. To process messages in order, one consumer must handle them one at a time. To go faster, many consumers handle messages at once, and the order in which they finish is no longer the order in which they were sent."
+        },
+        {
+          "t": "tradeoff",
+          "title": "Ordering vs parallelism",
+          "options": [
+            {
+              "name": "Global order",
+              "gain": [
+                "Every message processed in send order",
+                "Simplest reasoning"
+              ],
+              "cost": [
+                "One consumer at a time",
+                "One slow or failing message stops everything"
+              ],
+              "choose": "Choose this only for low volume where total order truly matters."
+            },
+            {
+              "name": "Order per key",
+              "gain": [
+                "Events for one ticket stay in order",
+                "Different tickets run in parallel"
+              ],
+              "cost": [
+                "Parallelism capped by partitions",
+                "A hot key overloads one partition"
+              ],
+              "choose": "Choose this when order matters within an entity, such as one ticket or one order, but not across entities."
+            },
+            {
+              "name": "No order",
+              "gain": [
+                "Any worker takes any message",
+                "Scales freely"
+              ],
+              "cost": [
+                "Consumers must handle stale or out-of-order events, often with version numbers"
+              ],
+              "choose": "Choose this for independent jobs, such as sending unrelated emails."
+            }
+          ]
+        },
+        {
+          "t": "p",
+          "text": "Kafka gives order per key by sending all messages with the same key to the same partition. If Relay keys ticket events by ticket ID, `ticket.created` for ticket 9921 is always processed before `ticket.closed` for 9921. The cost is head-of-line blocking: if one message on a partition fails forever, every later message on that partition waits behind it."
+        },
+        {
+          "t": "h",
+          "text": "The dual-write problem"
+        },
+        {
+          "t": "p",
+          "text": "A service that writes to its database and also publishes an event is writing to two systems with no shared transaction. One can succeed while the other fails. This is the **dual-write problem**, and it produces two classic bugs: an event for a database write that rolled back, and a database write whose event never went out."
+        },
+        {
+          "t": "compare",
+          "caption": "Three ways to save a ticket and announce it",
+          "columns": [
+            "",
+            "Publish, then commit",
+            "Commit, then publish",
+            "Transactional outbox"
+          ],
+          "rows": [
+            [
+              "If the commit fails",
+              "Event already sent for a ticket that does not exist",
+              "No event; correct",
+              "Neither row exists; correct"
+            ],
+            [
+              "If the process dies between steps",
+              "Event sent, no ticket",
+              "Ticket saved, event lost forever",
+              "Event row saved; the relay publishes it later"
+            ],
+            [
+              "Duplicates",
+              "Possible on retry",
+              "Possible on retry",
+              "Possible; the relay may publish twice"
+            ],
+            [
+              "Cost",
+              "None extra",
+              "None extra",
+              "An outbox table and a relay process"
+            ]
+          ],
+          "verdict": "Use the outbox when a missing or phantom event matters. Consumers still need to be idempotent, because the relay delivers at least once."
+        },
+        {
+          "t": "p",
+          "text": "In the **transactional outbox** pattern, the service writes the ticket and an event row in an `outbox` table in the same database transaction. Either both exist or neither does. A separate relay process reads unsent outbox rows, publishes them, and marks them sent. Change data capture, which reads the database's own change log, achieves the same thing without an outbox table."
+        },
+        {
+          "t": "code",
+          "lang": "text",
+          "title": "Triage queue, sampled every 30 minutes",
+          "code": "time   enqueued/min  completed/min   depth  oldest_age_s  workers  llm_p50_s\n08:30           95            97      40            14        8        9\n09:00          130           128      90            31        8       10\n09:30          140            70   2,190           905        8       21\n10:00          135            66   4,260         1,870        8       22",
+          "notes": [
+            "Depth grows whenever arrivals exceed completions. From 09:30, completions halved while arrivals held steady.",
+            "LLM latency doubled at the same time, so each worker finishes half as many jobs. Workers are busy, not broken.",
+            "`oldest_age_s` is what customers feel: a ticket waits half an hour for triage. Alert on it, not only on depth.",
+            "On Kafka, the equivalent is **consumer lag**: the latest offset in a partition minus the offset the group has processed."
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Queue depth grows without bound",
+          "text": "Compare arrival rate with completion rate first. If completions dropped, check per-job latency and the slowest dependency. If completions are near zero, look for crashed or stuck workers, or one message failing over and over. If arrivals jumped, look for a burst, a retry loop, or a scheduler enqueuing twice."
+        },
+        {
+          "t": "p",
+          "text": "A trace normally ends at the enqueue, because the worker runs in another process later. To keep one trace across the queue, the producer puts the trace context in the message headers, and the consumer starts its span from it. Without that, you are matching timestamps and ticket IDs by hand."
+        },
+        {
+          "t": "check",
+          "q": "A Kafka topic has 6 partitions keyed by ticket ID. Partition 3's lag climbs and its committed offset has not moved in an hour; the other five are at zero lag. What is the most likely cause?",
+          "options": [
+            "Too few consumers in the group",
+            "A message on partition 3 that fails every time",
+            "A ticket ID that receives far more events than others"
+          ],
+          "answer": 1,
+          "explain": "A frozen offset means the consumer is not getting past one message. A hot key would show the offset advancing, only more slowly than new messages arrive. Too few consumers would raise lag on several partitions."
+        }
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Job ran twice: customer got two emails, or a refund was issued twice",
+      "causes": [
+        "Worker finished the work but died or lost its connection before the ack",
+        "Job ran longer than the visibility timeout and was handed to a second worker",
+        "Producer or scheduler enqueued it twice"
+      ],
+      "look": "Worker logs searched by job ID: count distinct message IDs and look at attempt and redelivered fields.",
+      "confirm": "One message ID with two attempts means redelivery; two message IDs means a double enqueue.",
+      "fix": "Make the consumer idempotent with a processed-ID record or provider idempotency keys. Longer timeouts reduce duplicates but never remove them."
+    },
+    {
+      "symptom": "Queue depth grows without bound",
+      "causes": [
+        "Arrival rate exceeds completion rate, often because a dependency got slower",
+        "Workers crashed, stuck, or consuming the wrong queue",
+        "A retry loop re-enqueuing failures"
+      ],
+      "look": "Enqueued per minute, completed per minute, worker count, and per-job latency on one graph.",
+      "confirm": "The point where completions fell below arrivals lines up with a dependency slowdown, a deploy, or a burst.",
+      "fix": "Restore capacity or add workers, bounded by what downstream limits such as the LLM quota allow."
+    },
+    {
+      "symptom": "One bad message blocks the queue: one partition's offset frozen, same error repeating",
+      "causes": [
+        "Poison message retried forever on an ordered partition",
+        "Consumer treats a permanent error as retryable"
+      ],
+      "look": "Consumer lag per partition, and worker errors grouped by message ID or offset.",
+      "confirm": "The same message ID or offset fails over and over while its partition's committed offset stays still.",
+      "fix": "Cap attempts and send the message to a dead-letter queue, then fix the error classification."
+    },
+    {
+      "symptom": "Event published but the database write rolled back: consumers get 404 for a referenced record",
+      "causes": [
+        "Event sent inside the transaction before commit, then the commit failed"
+      ],
+      "look": "The producer code path: when the publish happens relative to the commit.",
+      "confirm": "The event's record ID is absent from the database and the producer logged a rollback at that time.",
+      "fix": "Use a transactional outbox so the event exists only if the write committed."
+    },
+    {
+      "symptom": "Record saved, but the downstream action never happened and no error was logged",
+      "causes": [
+        "Commit succeeded and the process died before publishing",
+        "Publish failed and the error was swallowed"
+      ],
+      "look": "Producer logs and restarts around the record's creation time.",
+      "confirm": "The record exists and no message with its ID was ever enqueued.",
+      "fix": "Outbox or change data capture, plus a reconciliation job that finds records without events."
+    },
+    {
+      "symptom": "Jobs are picked up by a second worker while the first is still running",
+      "causes": [
+        "Visibility timeout or reservation shorter than the job's real duration"
+      ],
+      "look": "Job duration percentiles next to the configured visibility timeout.",
+      "confirm": "Second-attempt start times sit exactly one timeout after the first attempt's start.",
+      "fix": "Raise the timeout above the slow tail, or extend the reservation while the job runs. Keep the consumer idempotent anyway."
+    },
+    {
+      "symptom": "Scaled consumers up and throughput did not change",
+      "causes": [
+        "More consumers in the group than partitions",
+        "Bottleneck is downstream, such as the LLM rate limit"
+      ],
+      "look": "Partition assignment per consumer, and downstream 429s or latency.",
+      "confirm": "Some consumers have no partitions assigned, or downstream errors rose with the scale-up.",
+      "fix": "Add partitions (which changes which partition a key maps to) or raise downstream capacity."
+    },
+    {
+      "symptom": "Ticket status goes backwards: closed, then open again",
+      "causes": [
+        "Events for one ticket processed out of order by parallel workers",
+        "A redelivered old event applied after a newer one"
+      ],
+      "look": "Event timestamps or versions for that ticket, and which workers processed them.",
+      "confirm": "The 'opened' event was applied after the 'closed' event.",
+      "fix": "Key by ticket ID for per-key order, or carry a version number and ignore events older than the stored state."
+    }
+  ],
+  "glossary": [
+    {
+      "term": "Background job",
+      "def": "Work recorded during a request and performed later by a separate worker process, so the request can return quickly."
+    },
+    {
+      "term": "Message broker",
+      "def": "A service that receives messages from producers, stores them, and delivers them to consumers. RabbitMQ is a common example."
+    },
+    {
+      "term": "Acknowledgement (ack)",
+      "def": "The consumer's signal that a message is done. The broker deletes it, or records the consumer's new position, only after the ack."
+    },
+    {
+      "term": "Visibility timeout",
+      "def": "How long a delivered message stays hidden from other consumers. If no ack arrives in time, the message becomes available again."
+    },
+    {
+      "term": "At-most-once",
+      "def": "A delivery guarantee where messages are never duplicated but may be lost, typically because the consumer acks before doing the work."
+    },
+    {
+      "term": "At-least-once",
+      "def": "A delivery guarantee where messages are never lost but may be delivered more than once, typically because the consumer acks after the work."
+    },
+    {
+      "term": "Idempotent consumer",
+      "def": "A consumer that produces the same end state however many times it receives a message, which makes at-least-once delivery safe."
+    },
+    {
+      "term": "Poison message",
+      "def": "A message that fails every time it is processed, for example because it is malformed. Without an attempt limit it is retried forever."
+    },
+    {
+      "term": "Dead-letter queue",
+      "def": "A separate queue where messages go after too many failed attempts, so they stop blocking work and a person can inspect them."
+    },
+    {
+      "term": "Partition",
+      "def": "One ordered, append-only slice of a Kafka topic. Order holds within a partition; the partition count caps consumer parallelism."
+    },
+    {
+      "term": "Offset",
+      "def": "A message's position number within a Kafka partition. Consumers record the offset they have processed so they can resume."
+    },
+    {
+      "term": "Consumer group",
+      "def": "A set of consumers sharing a topic's partitions, each partition read by one member. Separate groups read the same messages independently."
+    },
+    {
+      "term": "Consumer lag",
+      "def": "How far a consumer group is behind: the newest offset in a partition minus the offset the group has processed."
+    },
+    {
+      "term": "Transactional outbox",
+      "def": "Writing an event row in the same database transaction as the business change, then publishing it from that table, so events match committed data."
+    }
+  ],
+  "apply": {
+    "title": "Find where your project's slow work could fail silently",
+    "minutes": 15,
+    "steps": [
+      "List every piece of work in your project that takes more than a second, such as LLM calls, embedding runs, or eval cases, and note whether the caller waits for it.",
+      "For one task that runs in a loop or a job queue, kill it partway and restart it. Write down which side effects happened twice and which never happened.",
+      "For one side effect, such as writing a result file or a database row, describe how a second run would detect that the work is already done.",
+      "If you use a queue or a job runner, find where it exposes depth or the age of the oldest job, and check whether anything alerts on it."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d17-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "delivery-guarantees",
+        "acks"
+      ],
+      "diagnostic": true,
+      "q": "A consumer finishes processing a message, then crashes before acknowledging it. The broker provides at-least-once delivery. What happens to that message?",
+      "options": [
+        "It is lost, because the consumer that held it is gone",
+        "It is delivered again, so the work may run a second time",
+        "It moves straight to the dead-letter queue",
+        "It is discarded, because the broker sees the work was done"
+      ],
+      "answer": 1,
+      "explain": "Without an ack, the broker assumes the work did not happen and delivers the message again. Brokers cannot see your side effects, which is why at-least-once systems need idempotent consumers. Losing the message is what at-most-once does.",
+      "why": [
+        "Losing messages on a crash describes at-most-once, where the ack comes before the work.",
+        "",
+        "Dead-lettering happens after repeated failed attempts, not after one missing ack.",
+        "The broker knows only about acks; it has no view of whether your work finished."
+      ]
+    },
+    {
+      "id": "d17-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "delivery-guarantees",
+        "visibility-timeout",
+        "logs"
+      ],
+      "context": "Relay's re-indexing jobs run on a queue with a 300-second visibility timeout. Some articles are embedded twice.",
+      "artifact": {
+        "lang": "log",
+        "title": "worker logs for one job",
+        "code": "02:00:00.412 worker-1 msg=m_a90 job=reindex:article-311 attempt=1 start\n02:05:00.455 worker-4 msg=m_a90 job=reindex:article-311 attempt=2 start\n02:06:41.019 worker-1 msg=m_a90 done ack=ok\n02:11:37.660 worker-4 msg=m_a90 done ack=ok"
+      },
+      "q": "What is the most likely cause of the duplicate?",
+      "options": [
+        "The scheduler enqueued the re-index job twice",
+        "Worker 1 crashed and the job was redelivered",
+        "The job ran longer than the visibility timeout",
+        "The broker lost the ack from worker 1"
+      ],
+      "answer": 2,
+      "explain": "The second attempt starts exactly 300 seconds after the first, while worker 1 is still running and later acks successfully. The message became visible again when the timeout lapsed. A double enqueue would show two message IDs.",
+      "why": [
+        "A second enqueue would create a new message ID; both attempts share `m_a90`.",
+        "Worker 1 did not crash; it finished and acked at 02:06:41.",
+        "",
+        "Worker 1's ack came after attempt 2 had already started, so it could not have caused it."
+      ]
+    },
+    {
+      "id": "d17-q03",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "kafka",
+        "rabbitmq"
+      ],
+      "q": "Which requirement most clearly favors Kafka over RabbitMQ?",
+      "options": [
+        "Each job should be done once by any available worker",
+        "Failed jobs should move to a dead-letter queue",
+        "Messages should be routed to queues by a pattern",
+        "A new service must reprocess last month's events"
+      ],
+      "answer": 3,
+      "explain": "Kafka keeps messages for a retention period whether or not they were read, so a new consumer group can start from an old offset. RabbitMQ deletes messages on ack. The other three are things RabbitMQ does well, which is the tempting confusion.",
+      "why": [
+        "This is a classic work queue, which RabbitMQ handles natively.",
+        "RabbitMQ supports dead-letter exchanges directly.",
+        "Pattern routing through topic exchanges is a RabbitMQ strength.",
+        ""
+      ]
+    },
+    {
+      "id": "d17-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "queue-depth",
+        "monitoring"
+      ],
+      "context": "Relay's triage queue usually stays below 100 messages. This morning it passed 4,000 and is still growing.",
+      "artifact": {
+        "lang": "text",
+        "title": "triage queue metrics",
+        "code": "time   enqueued/min  completed/min  workers_busy  llm_p50_s  errors/min\n08:30           95            97        5 of 8          9           0\n09:30          140            70        8 of 8         21           1\n10:00          135            66        8 of 8         22           0"
+      },
+      "q": "What is the most likely cause?",
+      "options": [
+        "Workers have crashed and are not consuming",
+        "A poison message is being retried in a loop",
+        "Each job takes longer because the LLM got slower",
+        "The scheduler is enqueuing every job twice"
+      ],
+      "answer": 2,
+      "explain": "All eight workers are busy with almost no errors, and LLM latency more than doubled when completions halved. Workers are healthy but slower per job. Crashed workers would show low busy counts; a poison loop would show a high error rate.",
+      "why": [
+        "All 8 workers report busy, so they are consuming.",
+        "A poison loop produces a steady stream of errors; errors here are near zero.",
+        "",
+        "Arrivals rose only modestly from 95 to about 135; doubling would show far more."
+      ]
+    },
+    {
+      "id": "d17-q05",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "kafka",
+        "poison-message",
+        "consumer-lag"
+      ],
+      "context": "Relay's ticket-events consumer group was checked twice, ten minutes apart. Only the second sample is shown; between the samples, partition 2's current offset did not change.",
+      "artifact": {
+        "lang": "text",
+        "title": "consumer group describe, second sample",
+        "code": "GROUP     TOPIC          PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG\nanalytics ticket-events  0          55210           55210           0\nanalytics ticket-events  1          54987           54988           1\nanalytics ticket-events  2          53004           54702           1698\nanalytics ticket-events  3          55102           55102           0\n\nworker log: partition=2 offset=53004 error=KeyError('customer_id') attempt=412"
+      },
+      "q": "What should you do first?",
+      "options": [
+        "Add consumers to the group to share partition 2's load",
+        "Move the message at offset 53004 aside and let the consumer continue",
+        "Increase the topic's partition count to spread the hot key",
+        "Restart the consumer group to trigger a rebalance"
+      ],
+      "answer": 1,
+      "explain": "The offset is frozen at 53004 and that offset has failed 412 times with the same error: a poison message blocking its partition. Parking it in a dead-letter topic unblocks everything behind it. The hot-key reading is tempting, but a hot key shows the offset advancing.",
+      "why": [
+        "Only one consumer can read a partition at a time, and the blocker is a message, not load.",
+        "",
+        "A hot key would show the offset moving; this one is stuck on one failing message.",
+        "After a restart, the same consumer resumes at 53004 and fails again."
+      ]
+    },
+    {
+      "id": "d17-q06",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "outbox",
+        "dual-write"
+      ],
+      "context": "Relay's ticket service opens a transaction, inserts the ticket, publishes `ticket.created`, then commits. A few times a day, the triage worker logs 'ticket not found' for an ID that never appears in the database.",
+      "q": "What change fixes this class of bug?",
+      "options": [
+        "Retry the triage job until the ticket appears",
+        "Publish after the commit instead of before it",
+        "Write the event to an outbox table in the same transaction",
+        "Read the ticket from the primary instead of a replica"
+      ],
+      "answer": 2,
+      "explain": "The event goes out before the commit, and some commits fail, so consumers see tickets that never existed. An outbox row commits or rolls back with the ticket. Publishing after commit is tempting but swaps phantom events for lost ones when the process dies between the steps.",
+      "why": [
+        "The ticket will never appear, because its transaction rolled back.",
+        "This fixes phantom events but loses the event if the process dies after the commit.",
+        "",
+        "Replica lag would delay the ticket, not make it permanently absent."
+      ]
+    },
+    {
+      "id": "d17-q07",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "ordering",
+        "kafka"
+      ],
+      "q": "Relay must process events for each ticket in order, and wants twelve consumers working in parallel. Which setup gives both?",
+      "options": [
+        "Key events by ticket ID on a topic with at least twelve partitions",
+        "A single partition with twelve consumers in the same group",
+        "Random keys across twelve partitions, sorted later by timestamp",
+        "Twelve separate consumer groups reading one shared topic"
+      ],
+      "answer": 0,
+      "explain": "Keying by ticket ID puts each ticket's events on one partition, which keeps their order, and twelve partitions let twelve consumers work at once. A single partition allows only one active consumer in the group, the tempting mistake.",
+      "why": [
+        "",
+        "Only one consumer in a group can read a partition; eleven would sit idle.",
+        "Random keys scatter one ticket's events, and timestamps from different producers are not a reliable order.",
+        "Each group would read every event, so all work would be done twelve times."
+      ]
+    },
+    {
+      "id": "d17-q08",
+      "type": "mcq",
+      "level": 1,
+      "tags": [
+        "dead-letter-queue",
+        "poison-message"
+      ],
+      "q": "What is a dead-letter queue for?",
+      "options": [
+        "Holding messages that failed too many times, for later inspection",
+        "Storing messages while the broker is restarting",
+        "Delaying messages until their scheduled time arrives",
+        "Keeping a copy of every message for audit and replay"
+      ],
+      "answer": 0,
+      "explain": "After a set number of failed attempts, a message is moved aside so it stops consuming worker time or blocking an ordered stream, and a person can see why it failed. It is not a general archive, which is what a retained log provides."
+    },
+    {
+      "id": "d17-q09",
+      "type": "multi",
+      "level": 2,
+      "tags": [
+        "idempotency",
+        "delivery-guarantees"
+      ],
+      "q": "Which of these make a consumer safe under at-least-once delivery? Select all that apply.",
+      "options": [
+        "Recording each processed message ID under a unique constraint, in the same transaction as the work",
+        "Passing the job ID as an idempotency key to the email provider",
+        "Acknowledging the message before starting the work",
+        "Writing results with an upsert keyed by ticket ID",
+        "Raising the visibility timeout to an hour",
+        "Retrying failed messages immediately without backoff"
+      ],
+      "answers": [
+        0,
+        1,
+        3
+      ],
+      "explain": "Each correct option makes a repeated delivery produce the same end state. Acking first turns the system into at-most-once and loses jobs. A longer timeout reduces duplicates from slow jobs but does nothing about crashes before the ack, so it does not make the consumer safe."
+    },
+    {
+      "id": "d17-q10",
+      "type": "order",
+      "level": 2,
+      "tags": [
+        "delivery-guarantees",
+        "acks"
+      ],
+      "q": "Put the life of one message under at-least-once delivery in order.",
+      "items": [
+        "The producer sends the message and the broker confirms it is stored",
+        "The broker delivers it to a worker and hides it from others",
+        "The worker performs the work and its side effects",
+        "The worker sends an acknowledgement",
+        "The broker deletes the message"
+      ],
+      "explain": "The ack comes after the work, which is what makes this at-least-once: any crash before the fourth step leads to redelivery. Moving the ack before the work would make it at-most-once."
+    },
+    {
+      "id": "d17-q11",
+      "type": "match",
+      "level": 3,
+      "tags": [
+        "diagnosis",
+        "queue-depth",
+        "consumer-lag"
+      ],
+      "q": "Match each observation to its most likely cause.",
+      "pairs": [
+        [
+          "Duplicate emails during every deploy",
+          "Workers killed mid-job before they ack"
+        ],
+        [
+          "Half the consumers have no work",
+          "More consumers in the group than partitions"
+        ],
+        [
+          "One partition's offset frozen, same error repeating",
+          "A poison message at that offset"
+        ],
+        [
+          "Consumers see IDs that are not in the database",
+          "Event published before a commit that rolled back"
+        ],
+        [
+          "Depth climbs steadily while errors stay at zero",
+          "Arrival rate exceeds completion rate"
+        ]
+      ],
+      "explain": "Each symptom points at one step of the pipeline: the ack, partition assignment, a single message, the producer's transaction, or capacity. Asking 'which step's promise broke' resolves most queue incidents."
+    },
+    {
+      "id": "d17-q12",
+      "type": "open",
+      "level": 3,
+      "tags": [
+        "idempotency",
+        "delivery-guarantees"
+      ],
+      "context": "Relay's 'send refund confirmation' job sometimes sends a customer two identical emails. The job is enqueued once per refund.",
+      "q": "Explain why this happens and what you would change.",
+      "rubric": [
+        "Identifies redelivery under at-least-once: the email was sent but the ack never reached the broker",
+        "Names likely triggers: deploys, worker crashes, connection resets, or jobs exceeding the visibility timeout",
+        "Proposes an idempotent consumer: a sent-email record or a provider idempotency key derived from the refund ID",
+        "Rejects at-most-once acking as a fix because it would lose confirmations"
+      ],
+      "model": "The queue delivers at least once. The worker sends the email and is then killed or loses its connection before the ack, so the broker redelivers and a second worker sends it again. Deploys and jobs that outlast the visibility timeout are the usual triggers. Record a sent marker keyed by refund ID, checked before sending, or pass the refund ID as the provider's idempotency key. Acking before sending would stop duplicates by losing some emails instead."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d17-x1",
+      "title": "Two refund confirmations, every afternoon",
+      "brief": "Several customers report receiving two identical refund-confirmation emails. Support thinks customers are double-clicking the refund button. The reports cluster in the early afternoon. The worker fleet is deployed with a rolling update most days around 14:00.",
+      "artifact": {
+        "lang": "text",
+        "title": "Support ticket",
+        "code": "Customer c_4410: I got two emails saying my refund of 39.00 is on its way.\nDid you refund me twice? Received 14:03 and 14:04."
+      },
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Add a double-click guard to the refund button in the web app",
+            "Search worker logs for this refund's job and count message IDs and attempts",
+            "Scale the worker fleet up so jobs finish faster",
+            "Check the email provider's status page for incidents"
+          ],
+          "answer": 1,
+          "explain": "Counting message IDs separates a double enqueue, which would support the double-click theory, from a redelivery. It costs one log search. Building a button guard first fixes a cause nobody has confirmed.",
+          "reveal": "One message ID, `m_c2e0`, with two attempts. Attempt 1 ran on worker-3 and has no ack line; attempt 2 ran on worker-7 a minute later with `redelivered=true`. The API logged one refund request.",
+          "artifact": {
+            "lang": "log",
+            "code": "14:02:31 worker-3 msg=m_c2e0 job=refund_email:r_8812 attempt=1 start\n14:03:05 worker-3 msg=m_c2e0 email sent provider_id=em_51a\n14:04:02 worker-7 msg=m_c2e0 job=refund_email:r_8812 attempt=2 redelivered=true start\n14:04:19 worker-7 msg=m_c2e0 email sent provider_id=em_5c9\n14:04:19 worker-7 msg=m_c2e0 ack ok"
+          }
+        },
+        {
+          "q": "How do you find out why worker-3 never acked?",
+          "options": [
+            "Look at worker-3's lifecycle events around 14:03",
+            "Check whether the broker's disk was full",
+            "Check the LLM provider's latency at 14:03",
+            "Check whether the email provider rejected the first send"
+          ],
+          "answer": 0,
+          "explain": "A missing ack right after the work finished, at the usual deploy time, points at the worker process itself. The email went out, so the provider accepted it, and this job makes no LLM call that could explain a stop.",
+          "reveal": "The rolling deploy sent SIGTERM to worker-3 at 14:02:40 with a 30-second grace period. Worker-3 was killed at 14:03:10, after sending the email and before acking. The job had been slowed by a database lock wait.",
+          "artifact": {
+            "lang": "log",
+            "code": "14:02:40 worker-3 received SIGTERM, finishing current job\n14:03:10 worker-3 grace period exceeded, process killed"
+          }
+        },
+        {
+          "q": "What is the most durable fix?",
+          "options": [
+            "Raise the deploy grace period to five minutes",
+            "Ack each message before sending the email",
+            "Record a sent marker keyed by refund ID and check it before sending",
+            "Stop deploying workers during business hours"
+          ],
+          "answer": 2,
+          "explain": "Redelivery will also happen after crashes, out-of-memory kills, and network resets, so the consumer has to tolerate it. A longer grace period helps and is worth doing too, but it does not cover those cases. Acking first would lose confirmations instead.",
+          "reveal": "With a sent marker in place, a redelivered job finds the record, skips the send, and acks. The duplicate stops being visible to customers."
+        },
+        {
+          "q": "Which other job deserves the same review first?",
+          "options": [
+            "The nightly re-index of help-center articles",
+            "The ticket triage job that saves a category",
+            "The `issue_refund` job that calls the payment provider",
+            "The job that refreshes a cached dashboard count"
+          ],
+          "answer": 2,
+          "explain": "Every job is redelivered the same way, so the priority is the one whose duplicate costs most. A second refund is real money. Re-indexing, saving a category, and refreshing a count are naturally idempotent overwrites.",
+          "reveal": "The refund job already passes the refund ID as an idempotency key to the payment provider. A test that kills a worker mid-job now runs in CI for both jobs."
+        }
+      ],
+      "debrief": "Root cause: rolling deploys killed workers after they sent the email and before they acked, and the broker correctly redelivered. The double-click theory was plausible and wrong; one message ID proved a single enqueue. The fix is an idempotent consumer, with a longer grace period as a secondary measure. Testing by killing a worker mid-job would have caught it. Under at-least-once delivery, design every side effect for a second delivery."
+    },
+    {
+      "id": "d17-x2",
+      "title": "Triage has stalled and the queue keeps growing",
+      "brief": "Tickets have shown 'triage pending' for over an hour. The triage queue holds 6,000 messages and is growing. The on-call engineer's first idea is that the LLM provider is slow and the fleet needs more workers. Yesterday a customer imported their entire email history through a bulk-import feature.",
+      "artifact": {
+        "lang": "text",
+        "title": "triage queue",
+        "code": "time   enqueued/min  completed/min  workers_busy  errors/min\n09:00          110           112        6 of 8           0\n10:00          115             4        8 of 8       1,940\n11:00          112             3        8 of 8       2,010"
+      },
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Double the worker count to drain the backlog",
+            "Group the worker errors by message ID and error type",
+            "Check the LLM provider's status page",
+            "Restart the broker to clear any stuck state"
+          ],
+          "answer": 1,
+          "explain": "About 2,000 errors a minute with almost no completions means workers are failing fast, not waiting on a slow provider. Grouping errors shows what they are failing on. More workers would just fail faster.",
+          "reveal": "Nearly all errors come from 8 message IDs, each attempted thousands of times. The error is a 400 from the LLM API: the prompt exceeds the model's context window. All 8 tickets come from yesterday's bulk import.",
+          "artifact": {
+            "lang": "log",
+            "code": "11:02:14 worker-2 msg=m_901 ticket=20411 attempt=3112 error=400 prompt too long, requeue\n11:02:14 worker-5 msg=m_904 ticket=20417 attempt=3098 error=400 prompt too long, requeue\n11:02:14 worker-1 msg=m_903 ticket=20416 attempt=3105 error=400 prompt too long, requeue"
+          }
+        },
+        {
+          "q": "Why do 8 bad messages stall a queue of 6,000?",
+          "options": [
+            "They exhaust the LLM rate limit for everyone",
+            "They are requeued at once and keep landing back in front of every worker",
+            "They cause the broker to run out of memory",
+            "They hold database locks that block other jobs"
+          ],
+          "answer": 1,
+          "explain": "The worker treats every error as retryable and requeues immediately, and the broker puts a requeued message back near the front. With 8 poison messages and 8 workers, each worker keeps picking one up again. The errors are fast 400s, not 429s, so the rate limit is not what is failing.",
+          "reveal": "The worker catches every exception and rejects with requeue. There is no attempt limit and no dead-letter queue configured."
+        },
+        {
+          "q": "What restores flow fastest without losing customer tickets?",
+          "options": [
+            "Purge the triage queue and ask customers to resubmit",
+            "Move the 8 failing messages to a dead-letter queue",
+            "Raise the model's maximum output tokens",
+            "Scale workers to 32 until the backlog clears"
+          ],
+          "answer": 1,
+          "explain": "Removing the 8 blockers frees every worker for the 6,000 healthy messages, and the parked messages are kept for later handling. Purging throws away real tickets, and scaling only adds more workers to loop on the same 8.",
+          "reveal": "Within a minute, completions return to about 110 per minute and the backlog starts falling. It clears over the following hours."
+        },
+        {
+          "q": "What is the lasting fix?",
+          "options": [
+            "Retry every error again, with a longer exponential backoff",
+            "Autoscale the worker fleet on queue depth and message age",
+            "Ack and drop any message that fails, logging the error text",
+            "Retry transient errors only, dead-letter the rest, alert on DLQ depth"
+          ],
+          "answer": 3,
+          "explain": "A 400 for an oversized prompt will never succeed, so retrying it at any speed wastes capacity. Classifying errors, capping attempts, and watching the dead-letter queue stops one bad input from stalling everyone. Dropping silently loses tickets with no trace.",
+          "reveal": "The team also truncates or summarizes oversized tickets at import, so they never reach triage in a form that cannot fit."
+        }
+      ],
+      "debrief": "Root cause: eight oversized tickets became poison messages, and a worker that requeued every error without limit kept them in front of every worker. The slow-provider theory was wrong; the error rate showed fast failure. The fix is error classification, an attempt cap with a dead-letter queue, and an alert on its depth. The general lesson: when a queue stalls, look at errors per message before adding capacity."
+    }
+  ]
+}

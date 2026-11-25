@@ -1,0 +1,1189 @@
+{
+  "id": "d01",
+  "day": 1,
+  "phase": "p1",
+  "title": "The life of a request",
+  "tagline": "What happens between pressing Enter and seeing a response, hop by hop, and what each hop's failure looks like from outside.",
+  "minutes": 55,
+  "why": "Every bug report you will ever triage starts as 'it doesn't work', and the first job is to find which hop broke. A request passes through DNS, a TCP connection, TLS, a load balancer, a proxy, an app, and a database, and each one fails with a different signature. If you can read that signature, you skip straight to the right logs instead of guessing.",
+  "objectives": [
+    "Name every hop a request to Relay passes through, in order, and say what each one adds",
+    "Tell a DNS error, a refused connection, a connection timeout, a TLS error, and a 5xx apart, and say how far the request got in each case",
+    "Explain why stateless app servers scale and restart cleanly, and spot state hidden in process memory",
+    "Read `curl -v` output and browser timing phases to decide which hop is slow or broken",
+    "Choose where to terminate TLS and whether to reuse connections, and state what each choice costs"
+  ],
+  "lessons": [
+    {
+      "id": "d01-l1",
+      "title": "Clients, servers, and the contract between them",
+      "minutes": 12,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "A **client** is the program that asks, and a **server** is the program that answers. The client sends a **request**, the server sends back exactly one **response**, and the exchange is over. Everything you will debug this month is some version of this cycle, repeated across many machines."
+        },
+        {
+          "t": "p",
+          "text": "For Relay, the client is the customer's browser running the chat widget. The server side is everything behind the address `relay.example.com`: the load balancer, nginx, the FastAPI service, Postgres, Redis, the workers, and the LLM API that Relay itself calls. The word **backend** covers all of that."
+        },
+        {
+          "t": "p",
+          "text": "Note that a server is often a client too. When Relay's API calls the LLM provider, Relay is the client and the provider is the server. Most backend incidents happen in these server-to-server calls, where no human sees the error message."
+        },
+        {
+          "t": "h",
+          "text": "Protocol, process, code: three different things"
+        },
+        {
+          "t": "layers",
+          "title": "What actually answers a request to Relay",
+          "layers": [
+            {
+              "name": "Protocol (HTTP)",
+              "role": "The agreed format of the messages: a method, a path, headers, a body, and a status code back. Both sides must follow it.",
+              "breaks": "A malformed message or a mismatched expectation, such as JSON sent where a form was expected, produces a 4xx before any business logic runs."
+            },
+            {
+              "name": "Server process (uvicorn)",
+              "role": "A running program that listens on a port, accepts connections, parses the bytes into HTTP requests, and hands them to the application.",
+              "breaks": "If the process is not running, connections are refused. If all its workers are busy, requests queue and time out."
+            },
+            {
+              "name": "Application code (FastAPI)",
+              "role": "Relay's handlers: the code that checks the user, reads the ticket, calls the model, and builds the response body.",
+              "breaks": "An unhandled exception becomes a 500 with a traceback in the app log. A wrong result is a 200 with bad data, the hardest kind to notice."
+            },
+            {
+              "name": "Dependencies (Postgres, Redis, LLM API)",
+              "role": "Other servers the application calls while handling the request.",
+              "breaks": "A slow dependency makes the handler slow, and the timeout fires at whichever hop has the shortest limit."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "insight",
+          "title": "Name the layer before you name the bug",
+          "text": "'The API is broken' can mean the process is down, the code threw an exception, or Postgres is slow. Each of these leaves evidence in a different place: the process manager, the app log, or the database's slow query log. Deciding the layer first tells you which log to open."
+        },
+        {
+          "t": "h",
+          "text": "Stateless and stateful servers"
+        },
+        {
+          "t": "p",
+          "text": "A **stateless** server keeps nothing in its own memory between requests. Everything it needs arrives with the request, such as a session token, or lives in a shared store such as Postgres or Redis. A **stateful** server remembers something locally, such as a logged-in user or a half-finished conversation, so the next request must reach that same process."
+        },
+        {
+          "t": "tradeoff",
+          "title": "Where Relay keeps per-user state",
+          "options": [
+            {
+              "name": "Stateless app, state in Redis or Postgres",
+              "gain": [
+                "Any worker can serve any request",
+                "Add or restart servers freely",
+                "A crash loses no user data"
+              ],
+              "cost": [
+                "Every request pays a network hop to the store",
+                "The store becomes a shared dependency that can fail"
+              ],
+              "choose": "Choose this when you run more than one process or deploy often, which is almost always."
+            },
+            {
+              "name": "Stateful app, state in process memory",
+              "gain": [
+                "Fastest possible reads",
+                "Simple to write on a laptop"
+              ],
+              "cost": [
+                "Users must stick to one process",
+                "A restart or deploy erases the state",
+                "Scaling out splits users across processes that disagree"
+              ],
+              "choose": "Choose this when the state is a disposable cache, or the data is tied to one long-lived connection such as a WebSocket."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "State hidden in a Python dict",
+          "text": "A module-level dict that stores sessions works with one uvicorn worker on your laptop. In production with four workers, each worker has its own dict, so a user logged in on worker 1 looks logged out on worker 3. The symptom is random logouts that nobody can reproduce locally."
+        },
+        {
+          "t": "check",
+          "q": "Relay runs four uvicorn worker processes. A teammate caches each conversation's message history in a global variable. What will customers notice?",
+          "options": [
+            "Nothing, because the workers share memory",
+            "The agent sometimes forgets earlier messages in the same chat",
+            "Every request fails with a 500 error",
+            "Responses become slower but stay correct"
+          ],
+          "answer": 1,
+          "explain": "Separate processes do not share memory. Each message lands on whichever worker is free, so the agent sees the history only when it happens to reach the worker that stored it."
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "LLM chat APIs are usually stateless too",
+          "text": "A typical LLM chat API keeps no memory of your conversation between calls. Relay resends the system prompt and the whole message history on every call, which is why long conversations cost more tokens and take longer. When the agent 'forgets' something, check what was actually sent in that call."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Relay's API keeps no state in memory and stores everything in Postgres and Redis. Before you read on, predict what happens to an in-flight chat when the deploy restarts every API process.",
+          "answer": "The requests being handled at that moment may fail or be cut off, but the conversation itself survives, because its history lives in Postgres. The next message goes to a fresh process that reads the history back. Statelessness turns a restart into a brief blip instead of lost data."
+        }
+      ]
+    },
+    {
+      "id": "d01-l2",
+      "title": "From URL to bytes: DNS, TCP, TLS",
+      "minutes": 13,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "Before a single byte of HTTP is sent, the client must do three things. It finds the server's IP address (**DNS**), opens a connection to it (**TCP**), and sets up encryption and checks the server's identity (**TLS**). Each step can fail on its own, and each fails with a distinct error."
+        },
+        {
+          "t": "code",
+          "lang": "text",
+          "title": "Anatomy of a URL",
+          "code": "https://relay.example.com:443/api/tickets/42?include=messages#latest\n\\___/   \\_______________/ \\_/\\____________/ \\______________/ \\_____/\nscheme        host        port    path          query         fragment",
+          "notes": [
+            "The **scheme** `https` tells the client to use TLS. It also implies port 443 when no port is written.",
+            "The **host** is what DNS resolves to an IP address. It is also the name the TLS certificate must match.",
+            "The **path** and **query** are what the server's routing sees. The **fragment** after `#` never leaves the browser."
+          ]
+        },
+        {
+          "t": "h",
+          "text": "The three setup steps"
+        },
+        {
+          "t": "p",
+          "text": "**DNS** (Domain Name System) turns `relay.example.com` into an IP address. Your machine asks a **resolver**, usually run by your ISP, your company, or a public service, which asks the authoritative servers for the domain. Every answer carries a **TTL** (time to live), the number of seconds anyone may cache it. Caching makes DNS fast, and it also means changes spread slowly."
+        },
+        {
+          "t": "p",
+          "text": "**TCP** opens a reliable connection to an IP address and a **port**, a number that picks which program on the machine receives the traffic. The opening **handshake** costs one round trip between client and server. **TLS** then runs its own handshake over that connection: the server presents a **certificate** proving it owns the name, and both sides agree on keys. With TLS 1.3 that is one more round trip; older TLS 1.2 needs two."
+        },
+        {
+          "t": "compare",
+          "caption": "What each setup step does, costs, and how it fails",
+          "columns": [
+            "",
+            "DNS",
+            "TCP connect",
+            "TLS handshake"
+          ],
+          "rows": [
+            [
+              "Job",
+              "Name to IP address",
+              "Reliable channel to IP and port",
+              "Encryption and proof of identity"
+            ],
+            [
+              "Cost",
+              "Near zero if cached, one or more round trips if not",
+              "One round trip",
+              "One round trip with TLS 1.3, two with 1.2"
+            ],
+            [
+              "Failure seen",
+              "Could not resolve host",
+              "Connection refused, or connection timed out",
+              "Certificate expired, name mismatch, or untrusted issuer"
+            ],
+            [
+              "What it proves",
+              "Nothing reached any server",
+              "The address was reached, or nothing answered at all",
+              "A server answered, but no HTTP was exchanged"
+            ]
+          ],
+          "verdict": "Read the error word for word. These three failures happen before the request exists, so no app or proxy log will ever mention them."
+        },
+        {
+          "t": "p",
+          "text": "Round trips add up. If the server is 80 milliseconds away, a fresh HTTPS connection spends roughly 160 to 240 milliseconds on TCP and TLS before the request is even sent. That is why clients try hard to keep a connection open and reuse it."
+        },
+        {
+          "t": "tradeoff",
+          "title": "One long-lived connection or many short ones",
+          "options": [
+            {
+              "name": "Reuse connections (keep-alive, pooling)",
+              "gain": [
+                "Handshake cost paid once",
+                "Lower latency on every later request",
+                "Less CPU spent on TLS"
+              ],
+              "cost": [
+                "Idle connections hold memory and file descriptors",
+                "A connection the server already closed can fail on reuse",
+                "Traffic sticks to the backend it first reached"
+              ],
+              "choose": "Choose this when one client makes many requests to the same host, such as Relay calling the LLM API or Postgres."
+            },
+            {
+              "name": "New connection per request",
+              "gain": [
+                "Simple, with no stale connection state",
+                "Each request can land on any backend"
+              ],
+              "cost": [
+                "Pays DNS, TCP, and TLS every time",
+                "Can exhaust local ports under heavy load"
+              ],
+              "choose": "Choose this when requests are rare, or a client must spread its load evenly across backends."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "A new SDK client per call is a hidden tax",
+          "text": "If your eval script builds a new HTTP or SDK client for every LLM call, each call pays for DNS, TCP, and TLS again and loses connection reuse. Create the client once and share it. The difference is small per call and large across a few thousand calls."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "When the name will not resolve",
+          "text": "`Could not resolve host` means no address was found, so no server was contacted. Check the spelling, then ask DNS directly with `dig` or `nslookup`, then compare answers from two resolvers. If they differ after a recent change, you are seeing a cached old answer that will last until its TTL runs out."
+        },
+        {
+          "t": "check",
+          "q": "Relay moved to a new load balancer, and the DNS record was updated an hour ago. The record's TTL is 86,400 seconds. Some customers still reach the old address. Why?",
+          "options": [
+            "Their resolvers cached the old answer and may keep it for up to a day",
+            "The new load balancer is rejecting their traffic",
+            "DNS changes require the old server to be shut down first",
+            "Their browsers do not support the new IP address"
+          ],
+          "answer": 0,
+          "explain": "86,400 seconds is one day. A resolver that cached the old record just before the change may serve it until the TTL expires. This is why teams lower the TTL days before a planned move."
+        },
+        {
+          "t": "reveal",
+          "prompt": "curl prints `Connection refused` for one host and `Connection timed out` for another. Predict the difference in what happened on the network.",
+          "answer": "Refused means a machine at that address answered and actively rejected the connection, usually because nothing listens on that port. Timed out means nothing answered at all, which points to a firewall dropping packets, a wrong address, or a machine that is down."
+        }
+      ]
+    },
+    {
+      "id": "d01-l3",
+      "title": "Inside the datacenter: proxy, app, database",
+      "minutes": 13,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "Once the connection exists, the request still crosses several machines before your code runs. Each hop exists for a reason, adds a little time, and has its own timeout and its own way of failing. Knowing the order of the hops is the map you will use for the rest of the course."
+        },
+        {
+          "t": "flow",
+          "title": "One chat message through Relay, end to end",
+          "steps": [
+            {
+              "actor": "Browser",
+              "label": "Resolves relay.example.com to an IP",
+              "detail": "The browser asks its resolver for the address. A cached answer returns almost instantly; an uncached one walks the DNS hierarchy.",
+              "fail": "DNS error such as `ERR_NAME_NOT_RESOLVED` or `Could not resolve host`. Nothing reached Relay, so every Relay log is silent."
+            },
+            {
+              "actor": "Browser",
+              "label": "Opens a TCP connection to port 443",
+              "detail": "The address belongs to the cloud load balancer. The three-way handshake costs one round trip.",
+              "fail": "Connection refused if the machine answers but nothing listens. Connection timed out if packets are dropped by a firewall or sent to a dead address."
+            },
+            {
+              "actor": "Load balancer",
+              "label": "Completes the TLS handshake",
+              "detail": "The load balancer holds Relay's certificate and decrypts the traffic. Behind it, traffic may travel unencrypted inside the private network.",
+              "fail": "TLS error such as an expired certificate or a name mismatch. The connection worked, but no HTTP request was ever sent."
+            },
+            {
+              "actor": "Load balancer",
+              "label": "Picks a healthy nginx instance",
+              "detail": "It forwards only to instances passing health checks and adds headers such as `X-Forwarded-For` with the client's real IP.",
+              "fail": "With no healthy instance, the load balancer itself answers with a 502 or 503, and nginx and app logs show nothing for that request."
+            },
+            {
+              "actor": "nginx",
+              "label": "Proxies the request to a uvicorn worker",
+              "detail": "nginx applies size limits and timeouts, then opens or reuses a connection to the app server.",
+              "fail": "nginx answers 502 if it cannot connect to uvicorn or the connection drops, and 504 if uvicorn does not answer within its read timeout. Look in nginx's error log."
+            },
+            {
+              "actor": "API",
+              "label": "Runs the FastAPI handler",
+              "detail": "The handler authenticates the user, validates the body, and runs Relay's logic.",
+              "fail": "An unhandled exception becomes a 500 with a traceback in the app log. A validation problem becomes a 4xx such as 422."
+            },
+            {
+              "actor": "Postgres / Redis",
+              "label": "Reads the session, ticket, and history",
+              "detail": "Redis answers in about a millisecond; a Postgres query takes from a millisecond to much longer if it scans a large table.",
+              "fail": "A slow query makes the whole request slow and can end as a 504 at nginx. A dead database shows up as a 500 with a connection error in the traceback."
+            },
+            {
+              "actor": "LLM API",
+              "label": "Generates the agent's reply",
+              "detail": "Relay calls the model, often the slowest hop by far, measured in seconds rather than milliseconds.",
+              "fail": "A slow provider pushes the request past nginx's timeout, producing a 504. A provider 429 or 5xx surfaces however Relay's code translates it."
+            },
+            {
+              "actor": "nginx",
+              "label": "Returns the response to the browser",
+              "detail": "The response travels back through nginx and the load balancer, which log the status and the total time.",
+              "fail": "If the browser gives up first, nginx logs status 499, meaning the client closed the connection, while the app may log a 200 that nobody received."
+            }
+          ]
+        },
+        {
+          "t": "p",
+          "text": "Notice which hops can answer on their own. The load balancer and nginx can both produce a status code without ever reaching Relay's code. That is why a 502 or 504 often has no matching line in the app log: the app never finished, or never started, that request."
+        },
+        {
+          "t": "compare",
+          "caption": "What each hop adds, and what it can break",
+          "columns": [
+            "",
+            "Adds",
+            "Can break by",
+            "Its own evidence"
+          ],
+          "rows": [
+            [
+              "CDN",
+              "Cached static files near the user",
+              "Serving stale or wrong cached content",
+              "Cache status headers on the response"
+            ],
+            [
+              "Load balancer",
+              "TLS, health checks, spreading load",
+              "Expired certificate, no healthy targets",
+              "Load balancer access logs and target health"
+            ],
+            [
+              "nginx",
+              "Timeouts, size limits, routing, buffering",
+              "Timeouts shorter than the app needs",
+              "nginx access and error logs"
+            ],
+            [
+              "App server and code",
+              "The actual work",
+              "Exceptions, busy workers, slow handlers",
+              "App logs and tracebacks"
+            ],
+            [
+              "Postgres and Redis",
+              "Durable and fast state",
+              "Slow queries, exhausted connections",
+              "Slow query log, connection counts"
+            ]
+          ],
+          "verdict": "When a request fails, find the innermost hop that has a record of it. The fault is at that hop or just past it."
+        },
+        {
+          "t": "h",
+          "text": "Where to terminate TLS"
+        },
+        {
+          "t": "tradeoff",
+          "title": "Terminating TLS at the load balancer or at the app",
+          "options": [
+            {
+              "name": "At the load balancer",
+              "gain": [
+                "Certificates managed in one place",
+                "App servers skip encryption work",
+                "The load balancer can read and route on HTTP"
+              ],
+              "cost": [
+                "Traffic behind it is plain text unless re-encrypted",
+                "The app must trust forwarded headers to learn the original scheme and client IP"
+              ],
+              "choose": "Choose this when the network behind the load balancer is private and trusted, which is the common setup."
+            },
+            {
+              "name": "At the app, end to end",
+              "gain": [
+                "Encrypted all the way to the process",
+                "Meets strict compliance rules"
+              ],
+              "cost": [
+                "Certificates on every instance to rotate",
+                "More CPU per app server",
+                "The load balancer cannot inspect HTTP"
+              ],
+              "choose": "Choose this when policy requires encryption inside the datacenter or the network is shared with untrusted tenants."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "The app thinks it is on plain HTTP",
+          "text": "When TLS ends at the load balancer, FastAPI receives a plain HTTP request. If the proxy headers such as `X-Forwarded-Proto` are not passed and trusted, the app builds redirect URLs and links with `http://`, and users see redirect loops or mixed-content warnings."
+        },
+        {
+          "t": "p",
+          "text": "**Time to first byte** (TTFB) is the time from sending the request to receiving the first byte of the response. It bundles every hop after the connection is set up: proxying, the handler, the database, and the model. A high TTFB with fast DNS, TCP, and TLS means the time is being spent on the server side."
+        },
+        {
+          "t": "callout",
+          "kind": "rule",
+          "title": "Timeouts nest, and the shortest one speaks",
+          "text": "Each hop has a timeout: the browser, the load balancer, nginx, the app's call to the LLM. The hop with the shortest limit gives up first and is the one that emits the error. Set inner timeouts shorter than outer ones, so the app can return a clear error before the proxy returns a bare 504."
+        },
+        {
+          "t": "check",
+          "q": "A Relay request fails after exactly 60 seconds with a 504, and the app log shows the handler is still waiting on the LLM call. Which hop produced the 504?",
+          "options": [
+            "The FastAPI handler",
+            "The LLM provider",
+            "nginx, whose read timeout expired",
+            "The browser"
+          ],
+          "answer": 2,
+          "explain": "A 504 Gateway Timeout comes from a proxy that waited on its upstream too long. nginx's read timeout is 60 seconds by default. The app was still working, so it never sent a status at all."
+        }
+      ]
+    },
+    {
+      "id": "d01-l4",
+      "title": "Which hop is lying? A map for debugging",
+      "minutes": 12,
+      "blocks": [
+        {
+          "t": "p",
+          "text": "The kind of failure tells you how far the request got. A DNS error proves it never left the client. A 500 proves it reached your code. Everything in between narrows the search to one or two hops, and the right first move is to read that signal before touching anything."
+        },
+        {
+          "t": "compare",
+          "caption": "Read the failure, then know how far the request got",
+          "columns": [
+            "What you see",
+            "How far it got",
+            "Look first at"
+          ],
+          "rows": [
+            [
+              "Could not resolve host",
+              "Nowhere; no address found",
+              "The DNS record and resolver answers"
+            ],
+            [
+              "Connection refused",
+              "A machine answered; nothing listening on that port",
+              "Is the process or listener up, right port?"
+            ],
+            [
+              "Connection timed out",
+              "No answer at all",
+              "Firewall rules, security groups, the IP itself"
+            ],
+            [
+              "TLS or certificate error",
+              "Connected; identity check failed",
+              "Certificate expiry, name, chain"
+            ],
+            [
+              "502 or 504 from a proxy",
+              "Reached the proxy; upstream failed or was slow",
+              "The proxy's error log, then the app"
+            ],
+            [
+              "500 from the app",
+              "Reached your code, which threw",
+              "App log traceback for that request ID"
+            ],
+            [
+              "4xx",
+              "Reached a server that refused the request",
+              "The request itself: auth, body, path"
+            ]
+          ],
+          "verdict": "Move one row at a time. Never debug the database for a DNS error, and never debug DNS for a 500."
+        },
+        {
+          "t": "code",
+          "lang": "shell",
+          "title": "curl -v, read as evidence",
+          "code": "$ curl -v https://relay.example.com/api/health\n* Host relay.example.com:443 was resolved.\n* IPv4: 203.0.113.10\n*   Trying 203.0.113.10:443...\n* Connected to relay.example.com (203.0.113.10) port 443\n* SSL connection using TLSv1.3 / TLS_AES_128_GCM_SHA256\n* Server certificate:\n*  subject: CN=relay.example.com\n*  expire date: Mar  3 23:59:59 2027 GMT\n> GET /api/health HTTP/1.1\n> Host: relay.example.com\n> Accept: */*\n>\n< HTTP/1.1 502 Bad Gateway\n< Server: nginx\n< Content-Type: text/html\n<\n<html><head><title>502 Bad Gateway</title></head>...",
+          "notes": [
+            "Lines starting with `*` are curl's own narration. Resolved, Connected, and SSL connection mean DNS, TCP, and TLS all succeeded.",
+            "Lines with `>` are what curl sent; lines with `<` are what came back.",
+            "`Server: nginx` and an HTML error page mean nginx wrote this response. Relay's API returns JSON, so the app did not.",
+            "Next stop: nginx's error log, which says whether it failed to connect to uvicorn or the connection dropped."
+          ]
+        },
+        {
+          "t": "h",
+          "text": "Where the time went"
+        },
+        {
+          "t": "code",
+          "lang": "text",
+          "title": "Timing phases for one slow request, seconds from start",
+          "code": "dns_lookup        0.004\ntcp_connect       0.021\ntls_done          0.058\nfirst_byte        2.941\ntotal             2.952",
+          "notes": [
+            "Each value is cumulative from the start, as curl's `-w` timing variables report them.",
+            "DNS, TCP, and TLS together took under 60 milliseconds, so the network setup is healthy.",
+            "About 2.9 seconds passed between TLS finishing and the first byte arriving. That time belongs to the server side: proxy, handler, database, or model."
+          ]
+        },
+        {
+          "t": "p",
+          "text": "Browser devtools show the same phases. In the Network tab, open one request and its Timing view: it splits the request into DNS lookup, initial connection, SSL, waiting for the server response (the TTFB), and content download. A long wait for the server points inward; a long DNS or connection phase points at the network."
+        },
+        {
+          "t": "list",
+          "style": "number",
+          "items": [
+            "Reproduce the failure with curl from your own machine and save the full `-v` output.",
+            "Read which phase failed or was slow: resolve, connect, TLS, or the response.",
+            "If a status came back, find who wrote it: the `Server` header, an HTML or JSON body, and whether the app log has the request ID.",
+            "Bisect by moving closer: curl the app from inside the network, then from the same host, skipping the proxy.",
+            "The hop where the request first succeeds is just past the fault."
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Bisect the path from the inside",
+          "text": "If the public URL returns 502 but a curl to uvicorn's port on the same host returns 200, the app is fine and the fault is between nginx and the app: wrong upstream address, wrong port, or a dropped connection. If the direct curl also fails, the problem is in the app process itself."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Trusting the error message in the browser",
+          "text": "Browsers and front-end code often replace real errors with friendly text such as 'Something went wrong'. Open devtools and read the actual status code and response body before forming a theory, or you may spend an hour on the wrong hop."
+        },
+        {
+          "t": "check",
+          "q": "A customer's request fails. Relay's app log has no line with that request's ID, and the browser shows a 504. What is the most likely situation?",
+          "options": [
+            "The request never left the customer's browser",
+            "A proxy timed out before the app finished or logged the request",
+            "DNS returned the wrong address",
+            "The app raised an exception and returned an error"
+          ],
+          "answer": 1,
+          "explain": "A 504 can only come from a proxy, so the request reached the datacenter. An app that logs at the end of each request writes nothing if it never finishes. A DNS failure would produce no status code, and an exception would produce a 500 with a log line."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Your laptop gets a 200 from Relay's health endpoint, but a customer reports a certificate error. Predict two reasons the same URL could behave differently for the two of you.",
+          "answer": "The customer may resolve the name to a different address, such as a stale cached IP pointing at an old load balancer with an expired certificate. Or a network device in the customer's office intercepts TLS with its own certificate that their machine does not trust. Comparing the resolved IP and the certificate's issuer settles it."
+        }
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Could not resolve host, or ERR_NAME_NOT_RESOLVED in the browser",
+      "causes": [
+        "The DNS record is missing or misspelled",
+        "A typo in the hostname or environment config",
+        "The resolver itself is down or unreachable"
+      ],
+      "look": "Run `dig` or `nslookup` for the exact hostname from the failing machine, then from a different resolver.",
+      "confirm": "No answer, or an NXDOMAIN response, for the name the client used.",
+      "fix": "Correct the record or the configured hostname. New records can take minutes to appear, and cached negative answers can linger."
+    },
+    {
+      "symptom": "Some users reach the old server for hours after a DNS change",
+      "causes": [
+        "Resolvers cached the old record and the TTL has not expired"
+      ],
+      "look": "The record's TTL value, and `dig` answers from several resolvers.",
+      "confirm": "Different resolvers return different IP addresses, and the stale one shows a TTL counting down.",
+      "fix": "Keep the old endpoint serving until the old TTL has passed. Next time, lower the TTL well before the change."
+    },
+    {
+      "symptom": "Connection refused on a port that should be open",
+      "causes": [
+        "The server process is not running or crashed",
+        "It listens on a different port",
+        "It listens only on 127.0.0.1, not on the external interface"
+      ],
+      "look": "Whether the process is up, and which address and port it is bound to.",
+      "confirm": "Nothing is listening on that address and port on the target machine.",
+      "fix": "Start the process, or correct the port or bind address. Then find out why it stopped."
+    },
+    {
+      "symptom": "Connection timed out with no response at all",
+      "causes": [
+        "A firewall or security group drops the packets",
+        "The IP address points at nothing",
+        "The host is down"
+      ],
+      "look": "Firewall and security group rules for that port, and whether the IP is the one you expect.",
+      "confirm": "Connections from inside the same network succeed while connections from outside hang.",
+      "fix": "Open the specific port to the specific source that needs it, and no wider."
+    },
+    {
+      "symptom": "Certificate has expired, or the name does not match the certificate",
+      "causes": [
+        "Automatic renewal failed",
+        "The client reached a different host than intended",
+        "A missing intermediate certificate"
+      ],
+      "look": "The certificate details in `curl -v` or the browser: subject, issuer, expiry date.",
+      "confirm": "The expiry date is in the past, or the subject does not cover the hostname used.",
+      "fix": "Renew or replace the certificate where TLS terminates, and alert on expiry well in advance."
+    },
+    {
+      "symptom": "502 Bad Gateway with an HTML page and Server: nginx",
+      "causes": [
+        "The app process is down or restarting",
+        "nginx points at the wrong upstream address or port",
+        "The app closed the connection mid-request"
+      ],
+      "look": "nginx's error log line for that time, which names the upstream and the reason.",
+      "confirm": "The error log says connect() failed, or upstream prematurely closed connection.",
+      "fix": "Restore the app process or fix the upstream address, then find out why the app died."
+    },
+    {
+      "symptom": "504 Gateway Timeout after a round number of seconds, such as 60",
+      "causes": [
+        "The app handler is slower than nginx's read timeout",
+        "A slow dependency such as the LLM API or a slow query"
+      ],
+      "look": "App logs for that request ID: where the handler was when nginx gave up.",
+      "confirm": "The handler started but finished after the proxy timeout, or never finished.",
+      "fix": "Make the slow call faster or stream the response. Raising the proxy timeout hides the symptom and holds workers longer."
+    },
+    {
+      "symptom": "Users randomly logged out, or the agent forgets earlier messages",
+      "causes": [
+        "Session or conversation state is kept in one process's memory",
+        "Multiple workers or instances each have their own copy"
+      ],
+      "look": "Where sessions and history are stored, and how many processes serve the API.",
+      "confirm": "The problem disappears with a single worker and returns with several.",
+      "fix": "Move the state to Redis or Postgres so every process sees the same data."
+    },
+    {
+      "symptom": "Redirect loop, or links generated with http:// behind an HTTPS site",
+      "causes": [
+        "TLS terminates at the load balancer and the app does not trust forwarded headers"
+      ],
+      "look": "Whether `X-Forwarded-Proto` reaches the app and whether the app is configured to trust it.",
+      "confirm": "The app logs the request scheme as http for requests that arrived over https.",
+      "fix": "Pass and trust the forwarded headers from the proxy only, never from arbitrary clients."
+    },
+    {
+      "symptom": "nginx logs status 499 while the app logged a success",
+      "causes": [
+        "The client gave up waiting before the response was sent"
+      ],
+      "look": "Request duration in nginx's access log against the client's timeout.",
+      "confirm": "499 entries cluster on slow requests just past the client's timeout.",
+      "fix": "Speed up the handler or stream early bytes. The work done for these requests was wasted."
+    }
+  ],
+  "glossary": [
+    {
+      "term": "Client",
+      "def": "The program that sends a request and waits for the response, such as a browser, curl, or Relay's API when it calls the LLM."
+    },
+    {
+      "term": "Server",
+      "def": "A program that listens for requests on a port and sends responses."
+    },
+    {
+      "term": "Stateless server",
+      "def": "A server that keeps nothing in its own memory between requests, so any instance can handle any request."
+    },
+    {
+      "term": "DNS",
+      "def": "The system that turns a hostname such as relay.example.com into an IP address."
+    },
+    {
+      "term": "TTL",
+      "def": "Time to live. How many seconds a DNS answer may be cached before it must be looked up again."
+    },
+    {
+      "term": "TCP",
+      "def": "The protocol that gives two machines a reliable, ordered byte stream. Opening a connection takes a handshake of one round trip."
+    },
+    {
+      "term": "Port",
+      "def": "A number that identifies which program on a machine receives a connection, such as 443 for HTTPS."
+    },
+    {
+      "term": "TLS",
+      "def": "The protocol that encrypts a connection and lets the server prove its identity with a certificate."
+    },
+    {
+      "term": "Certificate",
+      "def": "A signed document that binds a hostname to a public key, issued by an authority that clients trust, with an expiry date."
+    },
+    {
+      "term": "Load balancer",
+      "def": "A component that receives incoming connections and spreads them across healthy backend servers."
+    },
+    {
+      "term": "Reverse proxy",
+      "def": "A server such as nginx that accepts requests on behalf of an application and forwards them to it."
+    },
+    {
+      "term": "TTFB",
+      "def": "Time to first byte. The time from sending a request until the first byte of the response arrives."
+    },
+    {
+      "term": "Keep-alive",
+      "def": "Keeping a connection open after a response so later requests can reuse it and skip the handshakes."
+    },
+    {
+      "term": "TLS termination",
+      "def": "The point where encrypted traffic is decrypted. Behind it, traffic is plain unless it is encrypted again."
+    }
+  ],
+  "apply": {
+    "title": "Map the hops of one of your own LLM calls",
+    "minutes": 15,
+    "steps": [
+      "Pick the hostname of the LLM API your project calls and run `dig` or `nslookup` on it. Note the IP address and the TTL.",
+      "Run `curl -v` against that host's base URL and label each line of output as DNS, TCP, TLS, request, or response.",
+      "Run curl with `-w` printing `time_namelookup`, `time_connect`, `time_appconnect`, `time_starttransfer`, and `time_total`, and say which phase dominates.",
+      "Check your code: is the HTTP or SDK client created once and reused, or created for every call? Write down which, and what it costs."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d01-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "connection-errors",
+        "request-path"
+      ],
+      "diagnostic": true,
+      "q": "A client trying to reach an API gets `Connection refused`. What does this prove about how far the request got?",
+      "options": [
+        "The hostname could not be turned into an IP address",
+        "A machine answered at that address, but nothing accepted the connection on that port",
+        "The connection opened, but the server's certificate failed verification",
+        "The application received the request and crashed while handling it"
+      ],
+      "answer": 1,
+      "explain": "Refused is an active rejection, so the address was reachable and a machine replied, but nothing was listening on that port. A name failure gives a resolve error, a certificate failure needs a connection first, and an app crash returns a 500.",
+      "why": [
+        "A name that cannot be resolved produces a DNS error, and no connection is attempted.",
+        "",
+        "Certificate checks happen after the TCP connection succeeds, and give a TLS error.",
+        "A crash inside the app needs an accepted connection and returns a 500 or a dropped response."
+      ]
+    },
+    {
+      "id": "d01-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "timing",
+        "ttfb"
+      ],
+      "context": "A customer says Relay's chat feels slow. You time one request from your laptop.",
+      "artifact": {
+        "lang": "text",
+        "title": "curl timing, cumulative seconds",
+        "code": "dns_lookup    0.003\ntcp_connect   0.019\ntls_done      0.052\nfirst_byte    4.870\ntotal         4.884"
+      },
+      "q": "Where should you look next?",
+      "options": [
+        "The DNS record and its TTL",
+        "The firewall rules in front of the load balancer",
+        "The server side: proxy, handler, database, and LLM timings",
+        "The size of the response body and the download speed"
+      ],
+      "answer": 2,
+      "explain": "Connection setup finished in about 50 milliseconds, then 4.8 seconds passed before the first byte. That gap is spent behind the proxy. Download took 14 milliseconds, so the body size is irrelevant.",
+      "why": [
+        "DNS took 3 milliseconds, so it is not the problem.",
+        "The TCP connection completed in about 16 milliseconds, so packets are flowing.",
+        "",
+        "The gap between first byte and total is only 14 milliseconds."
+      ]
+    },
+    {
+      "id": "d01-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "dns",
+        "ttl"
+      ],
+      "context": "At 22:00 Relay moved to a new load balancer and updated the DNS record. The old load balancer was deleted at 22:05. The next morning, customers on one corporate network cannot connect at all, while everyone else is fine.",
+      "q": "What is the most likely cause?",
+      "options": [
+        "The new load balancer blocks that company's IP range",
+        "The certificate on the new load balancer does not cover their hostname",
+        "Their browsers cached the old TLS session and refuse to renegotiate",
+        "That network's resolver still serves the cached old address, which now leads nowhere"
+      ],
+      "answer": 3,
+      "explain": "One network failing while others work points at something shared by that network, and its resolver is the obvious candidate. If the record's TTL was long, the resolver may still hand out the deleted address. A certificate problem would affect everyone and would show a TLS error, not a failure to connect.",
+      "why": [
+        "Possible in principle, but nothing changed in the access rules, and a block would look like a connection problem for an unchanged address.",
+        "A certificate problem would hit every customer and would surface as a TLS error after connecting.",
+        "Browsers handle TLS session resumption failures by doing a full handshake; this would not prevent connecting.",
+        ""
+      ]
+    },
+    {
+      "id": "d01-q04",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "stateless",
+        "scaling"
+      ],
+      "context": "Relay stores each user's login session in a Python dictionary inside the API process. It worked in testing. In production there are three API instances behind the load balancer.",
+      "q": "What will happen, and what is the fix?",
+      "options": [
+        "Users are logged out at random; store sessions in Redis",
+        "Logins become slower; add a fourth instance",
+        "Every login fails; restart the instances together",
+        "Nothing changes; the load balancer shares memory across instances"
+      ],
+      "answer": 0,
+      "explain": "Each instance has its own dictionary, so a user's next request may land on an instance that has never seen their session. Moving the session to a shared store makes the instances stateless. Adding instances makes the problem worse, because the chance of landing on the right one shrinks.",
+      "why": [
+        "",
+        "Speed is not the problem; correctness is, and more instances spread sessions thinner.",
+        "Logins succeed on the instance that handled them; failures appear only on later requests.",
+        "Load balancers forward traffic and never share process memory between instances."
+      ]
+    },
+    {
+      "id": "d01-q05",
+      "type": "multi",
+      "level": 2,
+      "tags": [
+        "request-path",
+        "status-codes"
+      ],
+      "q": "Which of these observations prove that the request reached Relay's FastAPI code? Select all that apply.",
+      "options": [
+        "A 500 response, with a traceback for that request ID in the app log",
+        "A 422 response whose JSON body lists the invalid fields",
+        "curl reports `Connection refused`",
+        "The browser shows a certificate expiry warning",
+        "A 502 HTML page with `Server: nginx`"
+      ],
+      "answers": [
+        0,
+        1
+      ],
+      "explain": "A traceback and FastAPI's structured validation error can only be produced by the application. A refused connection and a certificate error stop before any HTTP exists, and nginx's HTML 502 page is written by the proxy when it could not get a good answer from the app."
+    },
+    {
+      "id": "d01-q06",
+      "type": "order",
+      "level": 1,
+      "tags": [
+        "request-path",
+        "connection-setup"
+      ],
+      "q": "Put these events of a first HTTPS request to Relay in the order they happen.",
+      "items": [
+        "The browser resolves relay.example.com to an IP address",
+        "A TCP connection opens to port 443",
+        "The TLS handshake verifies the certificate and sets up keys",
+        "The browser sends the HTTP request",
+        "nginx forwards the request to a uvicorn worker",
+        "The first byte of the response reaches the browser"
+      ],
+      "explain": "An address is needed before a connection, a connection before encryption, and encryption before any HTTP is sent. The proxy only sees the request after all three, which is why setup failures never appear in nginx or app logs."
+    },
+    {
+      "id": "d01-q07",
+      "type": "match",
+      "level": 3,
+      "tags": [
+        "request-path",
+        "diagnosis"
+      ],
+      "q": "Match each observation to the hop where the fault most likely lies.",
+      "pairs": [
+        [
+          "ERR_NAME_NOT_RESOLVED in the browser",
+          "DNS record or resolver"
+        ],
+        [
+          "Certificate expired warning",
+          "TLS at the load balancer"
+        ],
+        [
+          "nginx error log: connect() failed (111: Connection refused)",
+          "The uvicorn process is not listening"
+        ],
+        [
+          "504 after exactly 60 seconds, app still working",
+          "The handler is slower than nginx's read timeout"
+        ],
+        [
+          "nginx access log shows 499",
+          "The client gave up before the response was ready"
+        ]
+      ],
+      "explain": "Each signal is produced by a specific hop. Reading which component wrote the error, and what it says, narrows the search to one place before you open any other log."
+    },
+    {
+      "id": "d01-q08",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "tls-termination",
+        "proxy-headers"
+      ],
+      "context": "Relay moved TLS termination from nginx to the cloud load balancer. Since then, logging in sends users into an endless redirect loop between http and https.",
+      "q": "What is the most likely cause?",
+      "options": [
+        "The load balancer's new certificate is invalid for the hostname",
+        "The app sees plain HTTP and keeps redirecting to HTTPS, unaware the client already used it",
+        "DNS still sends some users to the old nginx instance and its certificate",
+        "Session cookies were cleared when TLS moved, so every login starts over"
+      ],
+      "answer": 1,
+      "explain": "Behind the load balancer the app receives plain HTTP. Without a trusted `X-Forwarded-Proto` header it believes every request is insecure and redirects to HTTPS, which arrives as HTTP again. An invalid certificate would produce a TLS error before any redirect could happen.",
+      "why": [
+        "An invalid certificate stops the connection with a TLS error, so no redirect would be served.",
+        "",
+        "Stale DNS would give some users different behavior, not a loop for everyone.",
+        "Lost cookies log users out once; they do not cause repeated redirects."
+      ]
+    },
+    {
+      "id": "d01-q09",
+      "type": "mcq",
+      "level": 2,
+      "tags": [
+        "connection-reuse",
+        "llm-api"
+      ],
+      "context": "Your eval script makes 2,000 LLM calls. It builds a new HTTP client for each call. A teammate's version, which creates one client and reuses it, finishes noticeably faster with the same model and prompts.",
+      "q": "What best explains the difference?",
+      "options": [
+        "Each new client repeats DNS, TCP, and TLS setup instead of reusing an open connection",
+        "The provider ranks reused clients higher in its queue",
+        "Reused clients compress prompts, so fewer tokens are sent",
+        "New clients are rate limited separately and wait longer"
+      ],
+      "answer": 0,
+      "explain": "A reused client keeps connections open, so later calls skip the handshakes. Each fresh client pays a few round trips of setup per call, which adds up across thousands of calls. Rate limits apply to the API key, so the number of client objects does not change them.",
+      "why": [
+        "",
+        "Providers schedule requests by account and load, not by client object.",
+        "Connection reuse does not change what is sent in the request body.",
+        "Rate limits follow the API key or account, so every client shares the same budget."
+      ]
+    },
+    {
+      "id": "d01-q10",
+      "type": "mcq",
+      "level": 3,
+      "tags": [
+        "connection-errors",
+        "firewall"
+      ],
+      "context": "A teammate set up a new staging environment for Relay and cannot reach it from their laptop.",
+      "artifact": {
+        "lang": "shell",
+        "code": "$ curl -v --connect-timeout 10 https://staging.relay.example.com/api/health\n* Host staging.relay.example.com:443 was resolved.\n* IPv4: 198.51.100.24\n*   Trying 198.51.100.24:443...\n* Connection timed out after 10002 milliseconds\n* Closing connection\ncurl: (28) Connection timed out after 10002 milliseconds"
+      },
+      "q": "What is the most likely cause?",
+      "options": [
+        "The DNS record for staging is missing",
+        "The staging certificate has not been issued yet",
+        "A firewall or security group is dropping traffic to port 443",
+        "The FastAPI app is throwing an exception on startup"
+      ],
+      "answer": 2,
+      "explain": "The name resolved, so DNS works. The connection attempt got no answer at all for ten seconds, which is what dropped packets look like. A missing certificate would fail after connecting, and an app that is down behind a reachable host would give a refused connection or a 502.",
+      "why": [
+        "The first line shows the name resolved to an address.",
+        "TLS starts only after TCP connects, which never happened here.",
+        "",
+        "A crashed app on a reachable host gives a quick refusal or a 502, not silence."
+      ]
+    },
+    {
+      "id": "d01-q11",
+      "type": "open",
+      "level": 3,
+      "tags": [
+        "diagnosis",
+        "request-path"
+      ],
+      "context": "At 09:10 a support agent posts 'Relay is down!' in the team chat with no other detail.",
+      "q": "Describe how you would find which hop is failing in the first five minutes, and what each result would tell you.",
+      "rubric": [
+        "Starts by reproducing with curl -v or devtools instead of restarting anything",
+        "Reads the failure type: resolve, connect, TLS, or a status code",
+        "Uses who wrote the response (Server header, HTML vs JSON body, request ID in app log) to place a 5xx",
+        "Bisects inward by calling the app directly, bypassing the proxy",
+        "Names the specific log to open for each outcome"
+      ],
+      "model": "I would run curl -v against the public URL and read where it stops. A resolve error means DNS, a refused or timed-out connection means the listener or firewall, and a certificate error means TLS at the load balancer. If a status comes back, I check who wrote it: an nginx HTML 502 or 504 sends me to nginx's error log, while a JSON 500 sends me to the app log for that request ID. Then I curl uvicorn directly from inside the network; if that works, the fault is between the proxy and the app."
+    },
+    {
+      "id": "d01-q12",
+      "type": "mcq",
+      "level": 1,
+      "tags": [
+        "server-process",
+        "layers"
+      ],
+      "q": "In Relay's stack, which description fits uvicorn?",
+      "options": [
+        "The protocol that defines the format of requests and responses",
+        "The application code that decides how to answer each ticket",
+        "The proxy that terminates TLS and spreads load across instances",
+        "The process that listens on a port and hands parsed requests to FastAPI"
+      ],
+      "answer": 3,
+      "explain": "uvicorn is the server process: it owns the socket, parses HTTP, and calls the FastAPI application. HTTP is the protocol, FastAPI handlers are the application code, and the load balancer and nginx are the proxies in front.",
+      "why": [
+        "That is HTTP itself, which uvicorn implements.",
+        "That is Relay's FastAPI handler code, which uvicorn calls.",
+        "That is the load balancer's job, and nginx's to a degree.",
+        ""
+      ]
+    }
+  ],
+  "drills": [
+    {
+      "id": "d01-x1",
+      "title": "The chat widget spins, then fails",
+      "brief": "Since about 14:10, support has received a stream of reports: customers type a message, the widget spins for a long time, then shows 'Something went wrong'. Other pages of the help site load fine. A deploy went out at 13:50 that changed how help-center search results are formatted.",
+      "artifact": {
+        "lang": "log",
+        "title": "nginx access log, 14:21",
+        "code": "14:21:02 GET  /api/tickets/8812        200 0.041s\n14:21:03 POST /api/messages            504 60.001s\n14:21:04 GET  /api/health              200 0.002s\n14:21:05 POST /api/messages            504 60.000s\n14:21:07 GET  /api/tickets/8840        200 0.038s\n14:21:09 POST /api/messages            200 41.877s"
+      },
+      "steps": [
+        {
+          "q": "What does this log already tell you, and what do you do first?",
+          "options": [
+            "The 13:50 deploy broke the API, so roll it back before anything else",
+            "Only message posts fail, as 504s at 60 seconds; check what the app was doing during one",
+            "nginx itself looks unhealthy, so restart nginx on every instance right away",
+            "Customers' own networks are slow today, so ask them to retry in a few minutes"
+          ],
+          "answer": 1,
+          "explain": "Ticket and health requests are fast, so nginx, the network, and the app process are working. Only the endpoint that calls the model fails, at exactly nginx's 60-second read timeout. Rolling back first is guessing, and the deploy touched a different feature.",
+          "reveal": "The app log for one failing request shows the handler started at 14:21:03, loaded the ticket in 12 ms, sent the LLM call at 14:21:03.1, and was still waiting when nginx closed the connection."
+        },
+        {
+          "q": "What does the 504 prove about the hops involved?",
+          "options": [
+            "The app crashed while handling the request",
+            "nginx could not open a connection to uvicorn",
+            "nginx reached the app, then gave up waiting for its response",
+            "The load balancer found no healthy backends"
+          ],
+          "answer": 2,
+          "explain": "A 504 comes from a proxy whose upstream did not answer in time. A refused connection to uvicorn would give a 502, a crash would give a 500 or a 502, and no healthy backends would fail every endpoint, not one.",
+          "reveal": "Grouping app logs by step shows LLM call durations jumped from about 4 seconds to 35 to 70 seconds at 14:08, across all model calls. The 13:50 deploy ran for 18 minutes with normal latency.",
+          "artifact": {
+            "lang": "log",
+            "code": "14:02:11 req=a91 llm_call model=default dur=3.9s\n14:05:40 req=b07 llm_call model=default dur=4.4s\n14:08:52 req=c33 llm_call model=default dur=38.2s\n14:12:10 req=d18 llm_call model=default dur=61.5s\n14:15:27 req=e40 llm_call model=default dur=44.0s"
+          }
+        },
+        {
+          "q": "The deploy is cleared. Which next check is most useful?",
+          "options": [
+            "Check the LLM provider's status page and the latency of Relay's model calls",
+            "Run EXPLAIN on the ticket queries to find a slow database plan",
+            "Increase the number of uvicorn workers so more requests run at once",
+            "Renew the TLS certificate in case the handshake is slowing things down"
+          ],
+          "answer": 0,
+          "explain": "The slow step is the model call, so the next evidence is about the provider. The database queries took milliseconds, and more workers would only let more requests wait on the same slow call.",
+          "reveal": "The provider's status page reports elevated latency for the model Relay uses, starting at 14:05."
+        },
+        {
+          "q": "What is the best change to make Relay handle this better next time?",
+          "options": [
+            "Raise nginx's read timeout to ten minutes so slow replies can finish",
+            "Give the LLM call a timeout shorter than nginx's, and return a clear error or fallback",
+            "Roll back the 13:50 deploy anyway, to be safe, and watch the error rate",
+            "Add a second nginx tier in front of the first to absorb the slow requests"
+          ],
+          "answer": 1,
+          "explain": "An inner timeout shorter than the proxy's lets the app decide what the user sees: a clear message, a retry, or a fallback model. A ten-minute proxy timeout keeps workers stuck and customers staring at a spinner. Streaming the reply would also get bytes to the browser sooner."
+        }
+      ],
+      "debrief": "Root cause: the LLM provider's latency rose sharply, and Relay's model calls had no timeout of their own, so nginx's 60-second read timeout fired first and returned bare 504s. The deploy at 13:50 was a coincidence, which the 18 minutes of normal latency after it showed. Splitting the access log by endpoint cleared most of the stack in one step. The general lesson: let the evidence pick the hop, and make inner timeouts shorter than outer ones."
+    },
+    {
+      "id": "d01-x2",
+      "title": "Some customers cannot reach Relay after the migration",
+      "brief": "Last night at 22:00 the team moved Relay to a new load balancer and updated the DNS record. The old load balancer was deleted at 22:10. This morning a handful of customers, all from two large companies, report the site never loads. Everyone else, including the whole team, can use Relay normally.",
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Restart the new load balancer and all of its targets to clear any bad state",
+            "Ask an affected customer which IP address their machine resolves relay.example.com to",
+            "Search Relay's app logs for errors from requests made by those two companies",
+            "Roll the DNS record back to the old address until the cause is understood"
+          ],
+          "answer": 1,
+          "explain": "The failure is limited to certain networks, and the change was a DNS change, so the cheapest high-value check is what those networks resolve the name to. App logs cannot help if the requests never arrive, and rolling DNS back points everyone at a deleted load balancer.",
+          "reveal": "The affected customers resolve the name to the old address. A public resolver returns the new one.",
+          "artifact": {
+            "lang": "shell",
+            "code": "# from an affected customer's machine\n$ dig +noall +answer relay.example.com\nrelay.example.com.   61200   IN   A   198.51.100.7\n\n# from a public resolver\n$ dig +noall +answer relay.example.com @1.1.1.1\nrelay.example.com.   86400   IN   A   203.0.113.10"
+          }
+        },
+        {
+          "q": "Their curl to the old address hangs and then reports `Connection timed out`. What does that tell you?",
+          "options": [
+            "The new load balancer is overloaded and cannot accept more connections",
+            "Nothing answers at the old address any more, so the packets go unanswered",
+            "The customers' corporate firewalls block outgoing HTTPS to this site",
+            "The certificate served at the old address expired during the night"
+          ],
+          "answer": 1,
+          "explain": "A timeout with no answer at all fits a deleted endpoint. The request never touches the new load balancer, so its load is irrelevant. A certificate problem would require a successful connection first.",
+          "reveal": "The record's TTL was 86,400 seconds, one day. The companies' resolvers cached the old answer shortly before 22:00, and the countdown of 61,200 seconds left means they will keep serving it for about 17 more hours."
+        },
+        {
+          "q": "What restores service for these customers soonest?",
+          "options": [
+            "Lower the TTL on the DNS record to 60 seconds right now",
+            "If the old address can still be claimed, serve it with a load balancer that forwards to the healthy backends",
+            "Ask every affected user to clear their browser cache and reload the page",
+            "Move Relay to a brand new hostname such as relay2.example.com and announce it"
+          ],
+          "answer": 1,
+          "explain": "The stale answer lives in the companies' resolvers, which will not ask again until their cached TTL runs out. Changing the TTL now only affects future lookups. Browser caches are not where this answer lives. Serving traffic at the old address works regardless of what the resolver has cached.",
+          "reveal": "The team reattaches the old reserved address to a temporary load balancer pointing at the current backends. Affected customers recover within minutes."
+        },
+        {
+          "q": "How should the next migration be run?",
+          "options": [
+            "Lower the TTL days before the move, and keep the old endpoint serving until the old TTL passes",
+            "Delete the old load balancer before switching DNS, so traffic is never split between the two",
+            "Keep the TTL at one day during the move, so resolver caches stay warm and lookups stay fast",
+            "Announce the change in advance and ask customers to restart their computers that morning"
+          ],
+          "answer": 0,
+          "explain": "Lowering the TTL in advance means caches hold the old answer for minutes instead of a day when the switch happens. Keeping the old endpoint alive covers anyone who still has a stale answer. Deleting first guarantees an outage for every cached resolver."
+        }
+      ],
+      "debrief": "Root cause: a DNS change with a one-day TTL, followed ten minutes later by deleting the old endpoint. Resolvers that cached the old answer kept sending customers to an address where nothing answered, which shows up as a connection timeout. The new load balancer was healthy the whole time. Catch it earlier by lowering the TTL ahead of a move and keeping the old endpoint up until the old TTL expires. The general lesson: when failures cluster by network, suspect something cached on that network."
+    }
+  ]
+}

@@ -1,0 +1,583 @@
+{
+  "id": "d23",
+  "day": 23,
+  "phase": "p5",
+  "title": "Neural networks, transformers, and LLMs",
+  "tagline": "From layers and embeddings to why a language model answers the way it does, and why it sometimes answers wrong.",
+  "minutes": 58,
+  "why": "Relay's hardest bugs are not crashes. They are a model that answers differently twice, ignores an instruction, or states a refund rule that does not exist. Each of those follows from how a language model is built and how it generates text. Knowing the mechanism turns 'the model is weird' into a hypothesis you can test.",
+  "objectives": [
+    "Explain backpropagation as blame assignment and embeddings as coordinates of meaning, and name one way embedding similarity misleads",
+    "Describe what attention and the context window do, and predict where a long prompt loses instructions",
+    "Place pretraining, instruction tuning, preference tuning, LoRA, distillation, and quantization on one pipeline",
+    "Choose a temperature for a task and explain why the same prompt can return different answers",
+    "Tell a hallucination, a truncated output, and a context problem apart from the evidence in a response"
+  ],
+  "lessons": [
+    {
+      "id": "d23-l1",
+      "title": "From neurons to embeddings",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "A **neural network** is a model built from layers. Each layer takes a list of numbers, multiplies them by its weights, adds them up, and passes the result through a simple non-linear function. Stack enough layers and the network can represent very complicated functions, such as 'text in, next word out'."},
+        {"t": "p", "text": "The non-linear step is called the **activation**. It matters more than it looks. Without it, ten stacked layers would collapse into the same thing as one layer, because a chain of plain multiply-and-add steps is still a single multiply-and-add. The activation is what lets depth add power."},
+        {"t": "layers",
+          "title": "A small network that classifies a Relay ticket",
+          "layers": [
+            {"name": "Input", "role": "The ticket turned into numbers, for example one vector per word.", "breaks": "Inputs prepared differently from training, the skew from Day 22."},
+            {"name": "Hidden layer 1", "role": "Combines inputs into simple features, such as 'mentions a delivery'.", "breaks": "Activations saturate or die, so gradients stop flowing and this layer stops learning."},
+            {"name": "Hidden layer 2", "role": "Combines features into higher-level ones, such as 'delivery complaint with an order number'.", "breaks": "Too many parameters for the data, which overfits."},
+            {"name": "Output layer", "role": "Produces one score per category, turned into probabilities that sum to one.", "breaks": "Category order differs from the code that reads it."}
+          ]},
+        {"t": "h", "text": "Backpropagation is blame assignment"},
+        {"t": "p", "text": "Day 22 said training nudges every parameter against its gradient. **Backpropagation** is how those gradients are computed efficiently. It starts from the loss at the output and works backward through the layers, asking of each weight how much it contributed to the error. Weights that contributed more get adjusted more."},
+        {"t": "analogy", "text": "Backpropagation is like a postmortem that walks back through a chain of handoffs and assigns each team a share of the blame in proportion to its effect on the outcome. Each team then changes its process a little. The analogy breaks at speed and scale: the network runs this for every one of millions of weights, on every batch, with no meeting."},
+        {"t": "h", "text": "Embeddings: coordinates of meaning"},
+        {"t": "p", "text": "An **embedding** is a list of numbers, a vector, that a model learns to represent an item such as a word, a sentence, or a ticket. Training places items used in similar ways near each other. Closeness is measured with **cosine similarity**, which compares the direction of two vectors: near 1 means very similar, near 0 means unrelated."},
+        {"t": "code",
+          "lang": "text",
+          "title": "Cosine similarity between sentence embeddings (illustrative values)",
+          "code": "                                    parcel never   refund was   refund was\n                                    arrived        approved     denied\npackage not delivered                   0.86          0.31         0.33\nrefund was approved                     0.29          1.00         0.89\nreset my password                       0.12          0.18         0.17",
+          "notes": [
+            "'Package not delivered' and 'parcel never arrived' share no keywords and score 0.86. That is why Relay retrieves help articles by embedding instead of keyword match.",
+            "'Refund was approved' and 'refund was denied' score 0.89. They are about the same topic, and they say opposite things.",
+            "Exact values depend on the embedding model. Vectors from two different embedding models cannot be compared with each other at all."
+          ]},
+        {"t": "compare",
+          "caption": "Keyword match vs embedding similarity for finding related text",
+          "columns": ["", "Keyword match", "Embedding similarity"],
+          "rows": [
+            ["Finds paraphrases", "No, needs shared words", "Yes, 'parcel' finds 'package'"],
+            ["Exact IDs and codes", "Strong: order `A-10482` matches exactly", "Weak: IDs carry little meaning"],
+            ["Negation and polarity", "Sees the word 'not'", "Often blurs approved and denied"],
+            ["Explaining a result", "Easy: the matched words", "Hard: a distance between vectors"]
+          ],
+          "verdict": "Use embeddings for meaning and keywords for exact identifiers. Day 25 combines them as hybrid search."},
+        {"t": "callout", "kind": "pitfall", "title": "Similar is not the same as correct", "text": "Embedding similarity measures topic, not truth or agreement. A retrieval step that returns 'refunds are not available for digital goods' for a question about refunding a physical order is working as designed. Judge retrieval by whether the right document came back, never by the similarity score alone."},
+        {"t": "callout", "kind": "debug", "title": "Search quality dropped after a reindex", "text": "Check whether the stored vectors and the query vectors came from the same embedding model and version. Mixing two models gives scores that look normal and rank nonsense. Embed a few known pairs with both and compare."},
+        {"t": "check",
+          "q": "Why does a network need a non-linear activation between layers?",
+          "options": ["It makes training faster on GPUs", "Without it, stacked layers act like one layer", "It keeps weights from growing too large", "It converts outputs into probabilities"],
+          "answer": 1,
+          "explain": "Multiply-and-add layers composed together are still one multiply-and-add, so depth would add nothing. Turning scores into probabilities is a separate step at the output, which is the tempting confusion."},
+        {"t": "reveal", "prompt": "A customer writes 'I do NOT want a refund, I want a replacement'. Relay retrieves the refund how-to article first. Using the table above, why?", "answer": "The message is mostly about refunds, and embeddings capture topic far better than negation. The vector lands near refund content. A reranking step, a keyword signal, or letting the model read several candidates fixes this better than tuning the similarity threshold."}
+      ]
+    },
+    {
+      "id": "d23-l2",
+      "title": "Transformers and attention, conceptually",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "A **transformer** is the network design behind today's language models. It reads text as a sequence of **tokens**, small chunks of text, and at every layer lets each token gather information from other tokens. The mechanism that does the gathering is called **attention**."},
+        {"t": "p", "text": "**Attention** answers one question for each token: which other tokens matter for understanding this one, and how much. In 'The customer returned the blender because it was broken', attention lets the token 'it' draw mostly on 'blender'. In a model that generates text, each token may only look at tokens before it, never after."},
+        {"t": "flow",
+          "title": "One pass through a transformer, predicting the next token",
+          "steps": [
+            {"actor": "Tokenizer", "label": "Splits text into tokens", "detail": "The prompt becomes a list of token IDs from a fixed vocabulary.", "fail": "Unusual text, such as long IDs or rare languages, becomes many small tokens and uses more context."},
+            {"actor": "Embedding", "label": "Looks up a vector per token", "detail": "Each token ID maps to a learned vector, and position information is added so word order is known.", "fail": "Without position, 'refund before shipping' and 'shipping before refund' would look the same."},
+            {"actor": "Attention", "label": "Each token gathers context", "detail": "Each token takes a weighted mix of earlier tokens, with weights learned from what proved useful in training.", "fail": "Over very long inputs, relevant tokens get a small share of attention and are effectively missed."},
+            {"actor": "Feed-forward", "label": "Each token is transformed", "detail": "A per-token network turns the gathered context into a richer representation.", "fail": "Facts are stored diffusely in weights, so there is no single place to look one up or correct it."},
+            {"actor": "Stack", "label": "Repeat for many layers", "detail": "Attention and feed-forward blocks repeat dozens of times, each refining the representation."},
+            {"actor": "Output head", "label": "Scores every possible next token", "detail": "The last position yields a probability for each token in the vocabulary.", "fail": "The highest-probability token is fluent, which does not make it true."}
+          ]},
+        {"t": "h", "text": "Scale and the context window"},
+        {"t": "p", "text": "A model's size is usually stated as its **parameter count**, the number of learned weights. Larger models, trained on more data, have generally been more capable. They also need more memory and more computation per token, so they are slower and cost more to run."},
+        {"t": "p", "text": "The **context window** is the maximum number of tokens the model can take in at once, prompt and output together. Everything the model knows about this conversation must fit inside it. In the standard design, attention compares tokens with each other, so the work grows faster than the length of the input."},
+        {"t": "tradeoff",
+          "title": "Bigger model or smaller, faster model?",
+          "options": [
+            {"name": "Larger model", "gain": ["Better on multi-step reasoning and ambiguous requests", "Follows long, complex instructions more reliably"], "cost": ["Higher latency per token", "Higher cost per call", "Often tighter rate limits"], "choose": "Choose this when the task is hard and each error is costly, such as deciding refund eligibility from messy history."},
+            {"name": "Smaller, faster model", "gain": ["Low latency and cost", "Higher throughput for batch work"], "cost": ["Misses subtle cases", "Weaker on long or tricky instructions"], "choose": "Choose this when the task is narrow and checkable, such as tagging a ticket's category, and an eval shows it is good enough."}
+          ]},
+        {"t": "compare",
+          "caption": "What usually happens as the prompt gets longer",
+          "columns": ["", "Short prompt", "Very long prompt"],
+          "rows": [
+            ["Latency before first token", "Low", "Higher, because every input token must be processed first"],
+            ["Cost per call", "Low", "Grows with input tokens on every call"],
+            ["Attention to any one instruction", "Concentrated", "Diluted; middle sections are the easiest to miss"],
+            ["Room left for output", "Plenty", "Can squeeze the output limit"]
+          ],
+          "verdict": "Put only what the current step needs into the context, and put critical instructions where they are hardest to miss."},
+        {"t": "callout", "kind": "pitfall", "title": "An instruction buried in the middle", "text": "Models tend to use the start and the end of a long context more reliably than the middle. A rule placed after twenty pages of pasted policy is the one most likely to be ignored. Keep core rules in the system prompt, keep the context short, and test that the rule is followed."},
+        {"t": "callout", "kind": "debug", "title": "When a long prompt starts misbehaving", "text": "Count the tokens in the failing request and find where the ignored instruction sits. Then replay the same case with the instruction moved to the top, or with the bulky material cut. If behavior recovers, the problem is placement and length, not the model."},
+        {"t": "check",
+          "q": "In a model that generates text, which tokens can the token at position 50 attend to?",
+          "options": ["Only tokens 1 through 50", "Every token in the full context, including later ones", "Only the token directly before it", "Only tokens in the system prompt"],
+          "answer": 0,
+          "explain": "Generation runs left to right, so a token may use itself and everything before it. Seeing later tokens would let the model peek at the answer during training. Attention is also not limited to the previous token or to the system prompt."},
+        {"t": "reveal", "prompt": "Relay's agent prompt grew from 2,000 tokens to 30,000 when a teammate pasted the full returns policy into it. Predict two effects that users or dashboards will see.", "answer": "Time to first token rises because every input token is processed before output starts, and cost per call rises with input tokens. A third, quieter effect: rules buried in the pasted text are followed less reliably."}
+      ]
+    },
+    {
+      "id": "d23-l3",
+      "title": "How an LLM is made",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "A large language model is a transformer trained in stages. The first stage makes it knowledgeable and fluent. The later stages make it useful and safe as an assistant. Most of its behavior you will debug comes from these later stages."},
+        {"t": "flow",
+          "title": "From raw text to an assistant",
+          "steps": [
+            {"actor": "Pretraining", "label": "Predict the next token on huge text", "detail": "Self-supervised: the label is simply the next token in the text. This is where language, facts, and patterns come from, and it uses most of the compute.", "fail": "The model learns whatever the data says, including errors, and nothing after the data's end date."},
+            {"actor": "Instruction tuning", "label": "Learn from example conversations", "detail": "Supervised fine-tuning on prompts paired with good responses teaches the assistant format and to follow instructions.", "fail": "Narrow or low-quality examples teach narrow or sloppy habits."},
+            {"actor": "Preference tuning", "label": "Learn which answers people prefer", "detail": "**Reinforcement learning from human feedback** (RLHF) trains a reward signal from people's comparisons of answers, then tunes the model to score well on it.", "fail": "The model learns to please the reward, for example by sounding confident or agreeing too readily."},
+            {"actor": "Compression", "label": "Make it cheaper to serve", "detail": "Distillation trains a smaller model to imitate a larger one. Quantization stores weights with fewer bits.", "fail": "Small quality losses, often on the rare or hard cases your eval may not cover."}
+          ]},
+        {"t": "p", "text": "**Fine-tuning** means continuing to train an already trained model on your own, smaller dataset. Full fine-tuning updates every weight. **LoRA** (low-rank adaptation) freezes the original weights and trains a small add-on set of weights instead, so it needs far less memory and produces a small file that can be swapped in and out."},
+        {"t": "compare",
+          "caption": "Ways to make a model behave differently",
+          "columns": ["", "Prompting", "LoRA fine-tune", "Full fine-tune"],
+          "rows": [
+            ["What changes", "The input only", "A small add-on to the weights", "All the weights"],
+            ["Time to try a change", "Minutes", "Hours to days, plus data prep", "Days, plus much more compute"],
+            ["Good at teaching", "Facts in context, task framing", "Format, tone, a narrow task", "Deep shifts in behavior or domain"],
+            ["Risk", "Long prompts, cost per call", "Overfits a small dataset", "Loses general skills"]
+          ],
+          "verdict": "Exhaust prompting first. Fine-tune when the behavior is stable, the examples are plentiful, and the prompt has become long or unreliable."},
+        {"t": "tradeoff",
+          "title": "Fine-tuning vs prompting for Relay's reply style",
+          "options": [
+            {"name": "Prompt with instructions and examples", "gain": ["Change ships in minutes", "Easy to read and diff", "Works with any model version"], "cost": ["Examples add tokens to every call", "Style drifts on unusual tickets"], "choose": "Choose this when requirements still change weekly or you have fewer than a few hundred good examples."},
+            {"name": "Fine-tune on approved replies", "gain": ["Consistent style without long prompts", "Lower cost per call"], "cost": ["Needs a curated dataset", "Must be redone or rechecked when the base model changes", "Poor at teaching changing facts"], "choose": "Choose this when the behavior is stable, the examples are many and clean, and prompting has hit its limit."}
+          ]},
+        {"t": "callout", "kind": "insight", "title": "Facts belong in context, behavior in weights", "text": "Fine-tuning reliably teaches how to respond. It is an unreliable way to teach facts that change, such as this week's refund policy. For facts, put the source in the prompt or retrieve it at request time, so updating a fact does not need a training run."},
+        {"t": "callout", "kind": "pitfall", "title": "Catastrophic forgetting", "text": "Fine-tuning hard on one narrow task can degrade skills the model had before, such as following general instructions or answering in other languages. Run your broad eval set, not only the new task's eval, before shipping a fine-tuned model."},
+        {"t": "callout", "kind": "rule", "title": "Compressed models need their own eval", "text": "A quantized or distilled model is a different model. Treat it like an upgrade: rerun the eval harness, and look closely at the rare and hard cases where small losses hide."},
+        {"t": "check",
+          "q": "Relay wants replies that always follow a fixed three-part structure, and has 5,000 approved examples. The prompt with examples is now 6,000 tokens long. Which option fits best?",
+          "options": ["Pretrain a new model on support transcripts", "A LoRA fine-tune on the approved examples", "Raise the temperature so the model varies less", "Paste all 5,000 examples into the prompt"],
+          "answer": 1,
+          "explain": "A stable format with thousands of clean examples is what fine-tuning teaches well, and LoRA does it cheaply. Pretraining is vastly more expensive and unnecessary. Higher temperature increases variation, the opposite of the goal."},
+        {"t": "reveal", "prompt": "After preference tuning, why might a model state a wrong refund window with full confidence instead of saying it is unsure?", "answer": "Pretraining rewarded fluent continuation, and preference tuning rewarded answers people rated well, which often means confident and helpful-sounding. Neither stage directly rewards admitting ignorance unless the training data did so. Confidence in the wording carries no signal about accuracy."}
+      ]
+    },
+    {
+      "id": "d23-l4",
+      "title": "Generation: sampling, context, and hallucination",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "A language model generates one token at a time. At each step it produces a probability for every possible next token, a sampler picks one, the token is appended, and the loop repeats. Every property of the output, including its randomness and its length, comes from this loop."},
+        {"t": "code",
+          "lang": "text",
+          "title": "One tokenization of a Relay message (illustrative; tokenizers differ)",
+          "code": "text:   Where is order #A-10482? It's been 9 days.\ntokens: [Where] [ is] [ order] [ #] [A] [-] [104] [82] [?]\n        [ It] ['s] [ been] [ 9] [ days] [.]\ncount:  15 tokens for 42 characters",
+          "notes": [
+            "Common words are single tokens, often including the space before them.",
+            "The order ID breaks into several pieces. That is why models are unreliable at copying long IDs or counting characters.",
+            "Limits, latency, and cost are all counted in tokens. A rough rule for English is about four characters per token, and other languages and code often use more."
+          ]},
+        {"t": "h", "text": "Temperature and top-p"},
+        {"t": "p", "text": "**Temperature** reshapes the probabilities before sampling. Low temperature sharpens them so the top token nearly always wins. High temperature flattens them so less likely tokens get picked more often. **Top-p** sampling keeps only the smallest set of top tokens whose probabilities add up to p, then samples among those."},
+        {"t": "code",
+          "lang": "text",
+          "title": "Next-token probabilities after 'Your order has been' at three temperatures",
+          "code": "token        T=0.2   T=1.0   T=1.5\nshipped       0.97    0.50    0.40\ndelivered     0.03    0.25    0.25\ndelayed       0.00    0.12    0.15\nrefunded      0.00    0.08    0.12\nlost          0.00    0.05    0.09\n\ntop-p=0.9 at T=1.0 keeps: shipped, delivered, delayed, refunded (sum 0.95)",
+          "notes": [
+            "At T=0.2 the sampler picks 'shipped' about 97 times in 100. At T=1.5, 'lost' or 'refunded' appears about one time in five.",
+            "Top-p cut 'lost' entirely at T=1.0, because the first four tokens already pass 0.9.",
+            "These probabilities come from the model. Sampling settings only decide how adventurously to pick from them."
+          ]},
+        {"t": "tradeoff",
+          "title": "Temperature: low or high?",
+          "options": [
+            {"name": "Low (near 0)", "gain": ["Repeatable answers", "Easier to eval and debug"], "cost": ["Repetitive phrasing", "Can lock into one wrong path every time"], "choose": "Choose this when there is one right answer: classification, extraction, policy answers, tool arguments."},
+            {"name": "High (around 1 or above)", "gain": ["Varied wording and ideas", "Useful when you sample several candidates"], "cost": ["Run-to-run differences", "More odd or wrong tokens"], "choose": "Choose this for brainstorming or drafting variants that a person or a grader will filter."}
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "Temperature 0 is not a determinism guarantee", "text": "Even at temperature 0, many hosted APIs do not promise identical output for identical input, since server-side computation can differ slightly between calls. Do not build a test that compares raw model text for equality. Compare extracted fields, or grade the answer."},
+        {"t": "h", "text": "Context limits, hallucination, and cutoffs"},
+        {"t": "list", "items": [
+          "The output limit is separate from the context window. When generation reaches it, the text stops mid-sentence and the response reports that the token limit was the stop reason.",
+          "When a conversation outgrows the context window, something must be dropped or summarized, usually by your code. Whatever is cut, the model cannot see.",
+          "A **hallucination** is fluent, confident output that is false. The model produces likely-sounding text, and has no built-in step that checks a fact against a source.",
+          "A **knowledge cutoff** is the date the training data ends. The model knows nothing after it unless you put it in the context.",
+          "Some models generate **reasoning tokens**, intermediate working before the final answer. They usually improve hard tasks, and they count toward output tokens, latency, and cost."
+        ]},
+        {"t": "tradeoff",
+          "title": "Long context or retrieval?",
+          "options": [
+            {"name": "Put everything in the context", "gain": ["Simple, no index to build", "Nothing relevant is missed by a search step"], "cost": ["Cost and latency on every call", "Middle content is easy to miss", "Hits the window as data grows"], "choose": "Choose this when the material is small, changes often, and fits comfortably, such as one order's history."},
+            {"name": "Retrieve the relevant parts", "gain": ["Short, focused prompts", "Scales to large document sets"], "cost": ["A retrieval step that can miss", "An index to keep fresh"], "choose": "Choose this when the corpus is large, like Relay's help center, and each question needs a small slice of it."}
+          ]},
+        {"t": "callout", "kind": "debug", "title": "Wrong answer: which kind?", "text": "Check the stop reason first: a token-limit stop means truncation, not a reasoning error. Then check whether the fact the model needed was in the context at all. If it was absent, that is a hallucination to fix with retrieval or tools. If it was present and ignored, look at placement and prompt length."},
+        {"t": "check",
+          "q": "Relay asks the model for a ticket's category with temperature 1.0 and gets three different categories in ten runs. What is the first change to make?",
+          "options": ["Raise top-p to 1.0", "Lower the temperature close to 0", "Switch to a model with a larger context", "Increase the output token limit"],
+          "answer": 1,
+          "explain": "Classification has one right answer, so sampling should almost always take the top token. Raising top-p widens the pool of tokens, which adds variety. Context size and output limit do not affect which token is picked."},
+        {"t": "reveal", "prompt": "Relay confidently tells a customer that orders can be returned within 60 days. The real window is 30 days, and the policy was not in the prompt. Name the failure and the fix.", "answer": "A hallucination: without the policy in context, the model produced a plausible return window from patterns in its training data. The fix is to supply the source, by retrieval or a tool call, and to instruct the model to say it does not know when the source is missing."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Same prompt, different answers on each run",
+      "causes": ["Temperature or top-p set for creative output", "A model alias now points at a new version", "Small server-side nondeterminism even at temperature 0"],
+      "look": "The sampling settings actually sent, and the model identifier returned in each response.",
+      "confirm": "Ten replays at the same settings disagree, and agreement rises sharply at low temperature.",
+      "fix": "Use low temperature for single-answer tasks, pin the model version, and compute business decisions in code."
+    },
+    {
+      "symptom": "Model ignores an instruction that is clearly in the prompt",
+      "causes": ["Instruction buried mid-context under bulky material", "Conflicting instructions elsewhere in the prompt"],
+      "look": "Token position of the instruction in the failing request, and any other text that contradicts it.",
+      "confirm": "Replaying with the instruction moved to the top, or the bulk removed, fixes most failures.",
+      "fix": "Keep core rules in the system prompt, cut or retrieve the bulk, and add an eval case for the rule."
+    },
+    {
+      "symptom": "Confident, specific, and wrong: a policy or fact that does not exist",
+      "causes": ["The needed fact was not in context, so the model filled the gap", "Fact is newer than the knowledge cutoff"],
+      "look": "The full prompt of the failing call: was the source document there?",
+      "confirm": "The fact appears nowhere in the request, or the source says something else.",
+      "fix": "Retrieve or look up the source and require answers grounded in it, with permission to say 'I don't know'."
+    },
+    {
+      "symptom": "Response ends mid-sentence",
+      "causes": ["Output hit the maximum output tokens setting", "Reasoning tokens used up the output budget"],
+      "look": "The stop reason and the output token count in the response.",
+      "confirm": "Output tokens equal the configured limit and the stop reason names the token limit.",
+      "fix": "Raise the limit or ask for shorter output. Day 24 covers truncated JSON."
+    },
+    {
+      "symptom": "Retrieval returns on-topic documents that say the opposite of what was asked",
+      "causes": ["Embeddings capture topic, and blur negation and polarity"],
+      "look": "The top retrieved chunks next to the query, read by a human.",
+      "confirm": "Correct document is present but ranked below near-topic ones.",
+      "fix": "Add reranking or keyword signals, and let the model read several candidates."
+    },
+    {
+      "symptom": "Similarity scores look normal but search results are nonsense after a reindex",
+      "causes": ["Query and stored vectors come from different embedding models or versions"],
+      "look": "The embedding model recorded with the index and the one used at query time.",
+      "confirm": "Known similar pairs score low when embedded across the two models.",
+      "fix": "Re-embed everything with one model and record the model version with each vector."
+    },
+    {
+      "symptom": "Time to first token rose after the prompt grew",
+      "causes": ["More input tokens must be processed before output starts"],
+      "look": "Input token counts per call before and after the change.",
+      "confirm": "Latency to first token tracks input length across calls.",
+      "fix": "Trim or retrieve instead of pasting, or cache the stable prefix (Day 24)."
+    },
+    {
+      "symptom": "Fine-tuned model aces its task and got worse at everything else",
+      "causes": ["Catastrophic forgetting from narrow, aggressive fine-tuning"],
+      "look": "Scores on the broad eval set before and after fine-tuning.",
+      "confirm": "General instruction-following or other languages dropped while the target task improved.",
+      "fix": "Mix general data into tuning, use a lighter method such as LoRA, and gate on the broad eval."
+    }
+  ],
+  "glossary": [
+    {"term": "Neural network", "def": "A model made of stacked layers, each multiplying its input by weights and applying a non-linear activation."},
+    {"term": "Backpropagation", "def": "The method that computes each weight's share of the error by working backward from the loss, so gradient descent knows how to adjust it."},
+    {"term": "Embedding", "def": "A learned vector representing an item such as a word or document, placed so that items used in similar ways are close together."},
+    {"term": "Cosine similarity", "def": "A measure of how closely two vectors point in the same direction. Near 1 means very similar, near 0 means unrelated."},
+    {"term": "Token", "def": "The unit a language model reads and writes: a word, part of a word, or a symbol. Limits, latency, and cost are counted in tokens."},
+    {"term": "Attention", "def": "The transformer mechanism that lets each token draw a weighted mix of information from other tokens, in a generating model only earlier ones."},
+    {"term": "Context window", "def": "The maximum number of tokens a model can process at once, counting the prompt and the generated output."},
+    {"term": "Pretraining", "def": "Self-supervised training on very large text to predict the next token. It gives the model language, knowledge, and a knowledge cutoff."},
+    {"term": "RLHF", "def": "Reinforcement learning from human feedback: tuning a model toward answers people prefer, using a reward learned from their comparisons."},
+    {"term": "LoRA", "def": "Low-rank adaptation: fine-tuning by training a small add-on set of weights while the original weights stay frozen."},
+    {"term": "Quantization", "def": "Storing a model's weights with fewer bits to cut memory and speed up serving, at some cost in quality."},
+    {"term": "Distillation", "def": "Training a smaller student model to imitate a larger teacher's outputs, to get much of the quality at lower cost."},
+    {"term": "Temperature", "def": "A sampling setting that sharpens (low) or flattens (high) next-token probabilities, trading consistency for variety."},
+    {"term": "Hallucination", "def": "Fluent, confident output that is false, usually because the needed fact was not in the context."}
+  ],
+  "apply": {
+    "title": "Measure how stable one of your prompts really is",
+    "minutes": 20,
+    "steps": [
+      "Pick one prompt in your project that should have a single correct answer, such as a classification or an extraction.",
+      "Send it ten times at your current settings and record each answer, the model identifier returned, and the stop reason.",
+      "Repeat ten times at temperature 0 and compare how many answers agree in each batch.",
+      "Count the tokens in the prompt and note where your most important instruction sits. If it is past the middle, move it to the top and rerun the ten calls."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d23-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["temperature", "sampling"],
+      "diagnostic": true,
+      "q": "A model classifies support tickets into four categories. At temperature 1.0 the same ticket gets different categories across runs. Which change most directly makes the output consistent?",
+      "options": [
+        "Raising top-p from 0.9 to 1.0",
+        "Increasing the maximum output tokens",
+        "Lowering the temperature close to 0",
+        "Adding a longer system prompt"
+      ],
+      "answer": 2,
+      "explain": "Low temperature concentrates sampling on the most likely token, which is what a single-answer task needs. Raising top-p does the opposite and widens the pool of candidate tokens. The output limit only controls length.",
+      "why": ["Raising top-p lets more low-probability tokens into the pool, adding variety.", "The output limit decides when generation stops, not which token is picked.", "", "A longer prompt may shift the probabilities, but sampling at 1.0 still varies."]
+    },
+    {
+      "id": "d23-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["truncation", "output-limit"],
+      "context": "Relay's weekly summary job asks the model to summarize a customer's 40-ticket history. Some summaries end mid-sentence.",
+      "artifact": {"lang": "json", "title": "End of a failing response", "code": "{\n  \"content\": \"...the customer was promised a replacement on March 3, but the\",\n  \"stop_reason\": \"max_tokens\",\n  \"usage\": {\"input_tokens\": 18402, \"output_tokens\": 800}\n}"},
+      "q": "What is the most likely cause?",
+      "options": [
+        "The input exceeded the context window and was cut",
+        "The output reached the configured output-token limit",
+        "The model hallucinated and stopped when unsure",
+        "The connection dropped while streaming"
+      ],
+      "answer": 1,
+      "explain": "The stop reason names the token limit and output tokens equal a round configured value, so generation was cut off by the setting. An oversized input is rejected or truncated before generation starts, and a dropped connection would not return a stop reason.",
+      "why": ["An input too large for the window fails at the start or loses early text; it does not stop the output mid-sentence with this stop reason.", "", "Models do not stop mid-sentence because they are unsure; the stop reason says why it stopped.", "A dropped stream would end with a network error and no final stop reason."]
+    },
+    {
+      "id": "d23-q03",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["context-window", "instructions"],
+      "context": "Relay's system prompt begins with persona and tone, then 25,000 tokens of pasted returns policy, then the rule 'Never promise a delivery date', then tool instructions. Since the policy was added, about one reply in five promises a delivery date.",
+      "q": "What is the best next step?",
+      "options": [
+        "Switch to a model with a larger context window",
+        "Replay failing cases with the rule moved to the top and the policy trimmed",
+        "Raise the temperature so the model explores other phrasings",
+        "Repeat the rule five times inside the pasted policy"
+      ],
+      "answer": 1,
+      "explain": "The rule sits deep in a long prompt, the position most likely to be missed. Replaying with the rule moved and the bulk cut tests that hypothesis cheaply. A larger window does not help, because the prompt already fits.",
+      "why": ["The prompt already fits; a bigger window leaves the rule buried in the same place.", "", "Higher temperature adds randomness and would make rule-following less reliable.", "Repetition might help a little, but it keeps the prompt long and does not test the cause."]
+    },
+    {
+      "id": "d23-q04",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["fine-tuning", "prompting"],
+      "context": "Relay's refund policy changes most weeks. A teammate proposes fine-tuning the model on the current policy so that it 'just knows' the rules.",
+      "q": "What is the best response?",
+      "options": [
+        "Fine-tune weekly, since the model will then know the rules",
+        "Supply the current policy at request time, in the prompt or by retrieval",
+        "Raise the temperature so the model adapts to new rules",
+        "Use a larger model, which will infer the policy itself"
+      ],
+      "answer": 1,
+      "explain": "Facts that change often belong in the context, where updating them is a data change, not a training run. Fine-tuning teaches behavior and style well, and teaches changing facts unreliably, with a slow update cycle.",
+      "why": ["Fine-tuning is slow to update and unreliable at storing exact, changing facts.", "", "Temperature changes randomness, not knowledge.", "No model can infer an internal policy it has never been shown."]
+    },
+    {
+      "id": "d23-q05",
+      "type": "mcq",
+      "level": 1,
+      "tags": ["attention", "transformers"],
+      "q": "What does attention do inside a transformer?",
+      "options": [
+        "Lets each token draw on the other tokens that matter for it",
+        "Stores facts so the model can look them up by name",
+        "Splits the input text into tokens before processing",
+        "Picks the next token from the output probabilities"
+      ],
+      "answer": 0,
+      "explain": "Attention gives each token a weighted mix of information from other tokens, in a generating model only earlier ones. Tokenizing happens before the network, and picking the next token is the sampler's job after it. Facts are spread across weights, not stored by name."
+    },
+    {
+      "id": "d23-q06",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["embeddings", "retrieval"],
+      "q": "The embeddings of 'refund was approved' and 'refund was denied' have cosine similarity 0.89. What does this mean for Relay's retrieval?",
+      "options": [
+        "The embedding model is broken and should be replaced",
+        "The two sentences mean nearly the same thing",
+        "Similarity reflects topic, so opposite statements can rank close",
+        "The vectors need to be normalized before comparing"
+      ],
+      "answer": 2,
+      "explain": "Embeddings place text by topic and usage, and the two sentences share almost everything except polarity. This is normal behavior. The fix is to read or rerank retrieved text, not to replace the model or reinterpret the score as agreement.",
+      "why": ["This is expected behavior from typical embedding models, not a defect.", "They are about the same topic and state opposite outcomes.", "", "Normalization changes the scale of vectors, not the fact that both are about refunds."]
+    },
+    {
+      "id": "d23-q07",
+      "type": "multi",
+      "level": 2,
+      "tags": ["nondeterminism", "sampling"],
+      "q": "Which of these can make the same prompt return different answers on different days? Select all that apply.",
+      "options": [
+        "Sampling at a temperature well above 0",
+        "A model alias that now points to a newer version",
+        "The prompt includes the current date or time",
+        "The model learned from your previous API calls",
+        "A higher output-token limit than yesterday"
+      ],
+      "answers": [0, 1, 2],
+      "explain": "Sampling randomness, a different model behind the same name, and a prompt that changes with the clock all change the output. Inference does not update the weights, so the model does not learn from your calls, and the output limit only changes where long answers stop."
+    },
+    {
+      "id": "d23-q08",
+      "type": "order",
+      "level": 2,
+      "tags": ["llm-training", "pipeline"],
+      "q": "Put these stages of making and shipping an assistant model in the usual order.",
+      "items": [
+        "Pretrain on next-token prediction over very large text",
+        "Fine-tune on example instructions and good responses",
+        "Tune toward preferred answers using human feedback",
+        "Quantize the weights for cheaper serving"
+      ],
+      "explain": "Pretraining builds knowledge and fluency; instruction tuning teaches the assistant format; preference tuning shapes which answers it favors; compression happens last because it applies to the finished weights."
+    },
+    {
+      "id": "d23-q09",
+      "type": "match",
+      "level": 1,
+      "tags": ["fine-tuning", "compression"],
+      "q": "Match each technique to what it does.",
+      "pairs": [
+        ["LoRA", "Trains a small add-on set of weights while the base stays frozen"],
+        ["Distillation", "Trains a smaller model to imitate a larger one"],
+        ["Quantization", "Stores weights in fewer bits to cut memory and cost"],
+        ["Instruction tuning", "Supervised training on prompts paired with good responses"]
+      ],
+      "explain": "LoRA and instruction tuning change behavior; distillation and quantization make serving cheaper. Each compressed or tuned model is a new model and needs its own eval run."
+    },
+    {
+      "id": "d23-q10",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["hallucination", "grounding"],
+      "context": "A customer asks whether gift cards can be refunded. Relay answers confidently that gift cards are refundable within 14 days. The store's policy says gift cards are never refundable.",
+      "artifact": {"lang": "log", "title": "Relay request log for the turn", "code": "turn=7 model=assistant-large-2025-06 temp=0.2\nsystem_prompt_tokens=1840 retrieved_chunks=3\n  chunk 1: help/returns-electronics   score=0.81\n  chunk 2: help/refund-timelines      score=0.79\n  chunk 3: help/shipping-damage       score=0.74\nstop_reason=end_turn output_tokens=96"},
+      "q": "What is the most likely cause?",
+      "options": [
+        "Temperature was too high, so the model picked unlikely tokens",
+        "The output limit cut the answer before it could correct itself",
+        "The model upgrade introduced a regression in policy answers",
+        "The gift-card policy was never retrieved, so the model filled the gap"
+      ],
+      "answer": 3,
+      "explain": "None of the retrieved chunks is about gift cards, so the model answered from general patterns and produced a plausible, specific falsehood. Temperature is already low and the response ended normally. Fix retrieval for this question first, then require answers grounded in retrieved text.",
+      "why": ["Temperature 0.2 is low; the wrong answer is a likely continuation, not an unlikely one.", "The stop reason is a normal end of turn with only 96 output tokens.", "Nothing points to the model; the needed source was absent from the context.", ""]
+    },
+    {
+      "id": "d23-q11",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["model-size", "routing"],
+      "q": "Relay tags 50,000 tickets a day into one of six categories, with a 300 ms latency budget. A small model scores within one point of a large model on the tagging eval. Which do you use?",
+      "options": [
+        "The large model, because bigger models are always safer",
+        "The large model, but with a lower temperature",
+        "The small model, keeping the eval to catch regressions",
+        "The small model, with a higher temperature for robustness"
+      ],
+      "answer": 2,
+      "explain": "The task is narrow and checkable, the small model is nearly as good on the eval, and latency and volume favor it. Keep the eval running so a drop shows up. Higher temperature adds randomness to a single-answer task."
+    },
+    {
+      "id": "d23-q12",
+      "type": "open",
+      "level": 3,
+      "tags": ["long-context", "retrieval"],
+      "context": "A teammate proposes putting Relay's entire help center, about 400 articles, into every prompt now that the model's context window is large enough to hold it. Today Relay retrieves the top five chunks per question.",
+      "q": "Argue for or against the change, naming what you would measure.",
+      "rubric": [
+        "Notes cost and time to first token grow with input tokens on every call",
+        "Notes that content in the middle of long contexts is followed less reliably",
+        "Acknowledges what long context fixes: retrieval misses",
+        "Proposes measuring answer quality, latency, and cost on the eval set for both designs",
+        "Considers a middle path such as retrieving more chunks or caching a stable prefix"
+      ],
+      "model": "Against as a default. Every call would pay for and wait on the whole help center, and instructions and facts in the middle of a huge context are easier to miss. The real gain is that retrieval can no longer miss an article. I would run the eval set both ways and compare grounded accuracy, time to first token, and cost per call, and also try retrieving twenty chunks instead of five."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d23-x1",
+      "title": "Relay gives two answers to the same refund question",
+      "brief": "A customer screenshot shows Relay saying an order is eligible for a refund, and the same question asked again a minute later getting 'not eligible'. Support leads say it has happened several times this week. On Monday the team merged a config refactor that moved model settings into one shared file.",
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Open a ticket with the provider about a model change",
+            "Replay the case ten times, logging settings and returned model ID",
+            "Rewrite the prompt to tell the model to be consistent",
+            "Switch to the largest available model"
+          ],
+          "answer": 1,
+          "explain": "You need to know whether the answers really vary and under which settings, which ten cheap replays show. A provider ticket or a model switch assumes a cause the evidence has not shown yet.",
+          "reveal": "Six replays say eligible and four say not. Every response reports the same model ID. The request log shows `temperature=0.9`.",
+          "artifact": {"lang": "diff", "title": "config refactor, model settings", "code": " relay_agent:\n   model: assistant-large-2025-06\n-  temperature: 0.1\n+  temperature: 0.9   # shared default, from the marketing copy generator"}
+        },
+        {
+          "q": "What do you change, and what do you expect to see?",
+          "options": [
+            "Raise top-p as well, so the model has more options",
+            "Set temperature near 0 for the agent, and expect most replays to agree",
+            "Leave temperature, and add 'be consistent' to the prompt",
+            "Pin a newer model version, and expect identical answers"
+          ],
+          "answer": 1,
+          "explain": "Refund eligibility has one right answer, so the agent needs a low temperature. The refactor gave it a setting meant for creative copy. Raising top-p adds variety, and instructions cannot remove randomness that the sampler adds afterward.",
+          "reveal": "At temperature 0.1, nine of ten replays say eligible. One still says not eligible. The order was placed 29 days ago and the return window is 30 days."
+        },
+        {
+          "q": "One replay in ten still disagrees, on an order one day from the deadline. What is the durable fix?",
+          "options": [
+            "Run more replays and take the majority answer",
+            "Fine-tune the model on refund eligibility examples",
+            "Have `lookup_order` return eligibility, and let the model explain it",
+            "Raise the output token limit so the model can reason longer"
+          ],
+          "answer": 2,
+          "explain": "Date arithmetic against a policy is a deterministic rule, so code should decide it and the model should only communicate the result. Majority voting multiplies cost and still leaves a chance of error. Fine-tuning does not make arithmetic exact.",
+          "reveal": "With eligibility computed in the tool, 50 of 50 replays agree, including orders on the deadline."
+        }
+      ],
+      "debrief": "Root cause: a config refactor gave the agent a temperature of 0.9 meant for creative writing, so a single-answer question was sampled with wide variety. Lowering the temperature fixed most of it, and the remaining edge case showed that a business rule should never depend on sampling. Catch this earlier with an eval case that replays a few prompts several times and fails on disagreement. The general lesson: decide facts in code, and let the model phrase them."
+    },
+    {
+      "id": "d23-x2",
+      "title": "The rule Relay stopped following",
+      "brief": "Since Wednesday, about one Relay reply in five promises a delivery date, which the system prompt forbids. Two things changed on Wednesday: the provider moved the model alias Relay uses to a newer version, and a teammate pasted the full 40-page returns policy into the system prompt.",
+      "artifact": {"lang": "text", "title": "System prompt layout since Wednesday", "code": "tokens      section\n0-600       persona and tone\n600-27,400  full returns policy (pasted)\n27,400      rule: never promise a delivery date\n27,450-28k  tool instructions"},
+      "steps": [
+        {
+          "q": "Two changes landed the same day. What do you do first?",
+          "options": [
+            "Roll back to the previous model version and close the incident",
+            "Write each change as a hypothesis and pick a replay that separates them",
+            "Raise the temperature so the model reconsiders its answers",
+            "Add the rule in capital letters at the same position"
+          ],
+          "answer": 1,
+          "explain": "Two simultaneous changes mean any single fix is a guess. A replay that varies one change at a time on the same failing cases halves the search space. The model upgrade is the obvious suspect, which is why it deserves a test rather than a rollback on instinct.",
+          "reveal": "You collect 30 failing conversations from the logs and plan two replays: old model with the new prompt, and new model with the old prompt."
+        },
+        {
+          "q": "Which result would point to the prompt change?",
+          "options": [
+            "Old model with new prompt still fails; new model with old prompt passes",
+            "Old model with new prompt passes; new model with old prompt fails",
+            "Both replays pass on all thirty cases",
+            "Both replays fail at about the current rate"
+          ],
+          "answer": 0,
+          "explain": "If the failure follows the new prompt across models and disappears with the old prompt, the prompt is the cause. The reverse pattern would implicate the model. Both failing would suggest both changes contribute.",
+          "reveal": "Old model with the new prompt: 17 of 30 still promise a date. New model with the old prompt: 1 of 30. The model upgrade is cleared.",
+          "artifact": {"lang": "log", "title": "replay results, 30 failing cases", "code": "old model + new prompt   violations=17/30\nnew model + old prompt   violations=1/30\nnew model + new prompt   violations=18/30"}
+        },
+        {
+          "q": "What is the best fix?",
+          "options": [
+            "Move to a model with a larger context window",
+            "Fine-tune the model on the returns policy",
+            "Retrieve only relevant policy sections and keep the rules up top",
+            "Repeat the rule five times inside the pasted policy"
+          ],
+          "answer": 2,
+          "explain": "The rule failed because it sat after 27,000 tokens of policy. Keeping core rules near the start and bringing in only the relevant policy sections shortens the prompt and protects the rule. A bigger window changes nothing because the prompt already fits, and fine-tuning facts that change is slow and unreliable.",
+          "reveal": "With the rule moved up and the policy retrieved per question, violations on the 30 cases drop to 0, and time to first token falls back to its old level."
+        }
+      ],
+      "debrief": "Root cause: pasting the full policy pushed a core rule deep into a long system prompt, where it was followed far less reliably. The model upgrade landed the same day and looked guilty, and a replay that changed one thing at a time cleared it. The fix: rules first, retrieve the policy per question, and add an eval case that checks the no-delivery-date rule on every prompt change."
+    }
+  ]
+}
