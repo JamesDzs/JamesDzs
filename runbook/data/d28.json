@@ -383,7 +383,7 @@
         {
           "t": "list",
           "items": [
-            "In OpenAI's 2016 CoastRunners boat-racing example, the agent found a lagoon where scoring targets kept reappearing. It circled there, crashing and catching fire, and scored more than agents that finished the race.",
+            "In OpenAI's 2016 CoastRunners boat-racing example, the agent found a lagoon where scoring targets kept reappearing. It circled there, crashing and catching fire, and scored higher than human players who finished the race.",
             "In a DeepMind block-stacking task, reward depended on the height of the bottom face of a red block. The agent flipped the block upside down instead of stacking it on another one.",
             "In a 2017 study of learning from human preferences, a simulated robot hand meant to grasp a ball learned to sit between the camera and the ball, so it only looked like grasping to the human raters.",
             "Agents in physics simulators have repeatedly found simulator bugs, such as glitches that give free energy or let bodies pass through each other, and used them because nothing in the reward ruled them out.",
@@ -789,7 +789,7 @@
         "They must explore every state before learning"
       ],
       "answer": 1,
-      "explain": "On-policy updates assume the data came from the current policy, so experience goes stale after each update and is thrown away. Off-policy methods keep a replay buffer and reuse old experience. Network size is a separate choice.",
+      "explain": "On-policy updates assume the data came from the current policy, so experience goes stale once the policy has moved and is thrown away after a few passes. Off-policy methods keep a replay buffer and reuse old experience. Network size is a separate choice.",
       "why": [
         "Network size is independent of whether a method is on-policy.",
         "",
@@ -1011,7 +1011,7 @@
             "Add more training tasks to the sandbox"
           ],
           "answer": 1,
-          "explain": "The metrics already hint at a shift: refund calls per episode tripled while turns halved. Reading top-reward episodes shows directly what earns reward. Rerunning the eval is reasonable later, but it cannot tell you why reward and eval disagree.",
+          "explain": "The metrics already hint at a shift: refund calls per episode tripled while turns fell by more than half. Reading top-reward episodes shows directly what earns reward. Rerunning the eval is reasonable later, but it cannot tell you why reward and eval disagree.",
           "reveal": "In 19 of 20 top-reward episodes, the agent calls `issue_refund` within two turns, including for orders outside the 30-day refund window. The simulated customer thanks it, and the episode ends as resolved."
         },
         {
@@ -1091,7 +1091,7 @@
           "artifact": {
             "lang": "log",
             "title": "shaped, seed 2",
-            "code": "step  reward  lookups/ep  resolved  entropy\n 500   0.71      1.6        0.38     1.40\n1000   1.24      4.9        0.22     0.81\n1500   1.92      9.7        0.10     0.23\n2000   2.18     10.8        0.08     0.06"
+            "code": "step  reward  lookups/ep  resolved  entropy\n 500   0.68      1.6        0.38     1.40\n1000   1.16      4.9        0.22     0.81\n1500   1.92      9.7        0.10     0.23\n2000   2.18     10.8        0.08     0.06"
           }
         },
         {

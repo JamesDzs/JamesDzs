@@ -594,7 +594,7 @@
           ],
           "answer": 2,
           "explain": "PgBouncer lets any number of API clients share a fixed set of server connections, so scaling out no longer multiplies database connections. A higher limit only moves the wall and adds memory per process, capping pods sheds the campaign traffic, and a pool of 1 still grows with pods.",
-          "reveal": "With PgBouncer holding 60 server connections, the 18 pods share them. About 50 are active at peak, and the errors stop."
+          "reveal": "With PgBouncer in transaction mode holding 60 server connections, the 18 pods share them. About 50 are active at peak, and the errors stop."
         },
         {
           "q": "A week later, a per-request `SET statement_timeout` sometimes applies to other requests' queries. Why?",

@@ -569,7 +569,7 @@
       "id": "d21-x2",
       "title": "Worker restarts every night",
       "brief": "A platform engineer posts that Relay's worker pods show four to six restarts each morning and asks whether yesterday's worker release, deployed Monday at 15:42, leaks memory. The nightly help-center re-index runs at 02:00. A few customers say this week's help-center answers seem out of date.",
-      "artifact": {"lang": "shell", "code": "$ kubectl get pods -n relay -l app=relay-worker\nNAME                           READY   STATUS    RESTARTS      AGE\nrelay-worker-6c8d7f9b4-kq7zt   1/1     Running   5 (6h ago)    17h\nrelay-worker-6c8d7f9b4-r2wln   1/1     Running   4 (6h ago)    17h"},
+      "artifact": {"lang": "shell", "code": "$ kubectl get pods -n relay -l app=relay-worker\nNAME                           READY   STATUS    RESTARTS      AGE\nrelay-worker-6c8d7f9b4-kq7zt   1/1     Running   5 (6h ago)    16h\nrelay-worker-6c8d7f9b4-r2wln   1/1     Running   4 (6h ago)    16h"},
       "steps": [
         {
           "q": "What do you ask the platform engineer for first?",
@@ -581,8 +581,8 @@
           ],
           "answer": 1,
           "explain": "Describe shows how the last container ended: reason, exit code, and times. Current logs belong to the fresh container that has not failed. Rolling back or raising the limit acts before you know why the pods died.",
-          "reveal": "The last container was OOMKilled at 02:31 after running since 02:04, with a 1Gi limit.",
-          "artifact": {"lang": "text", "code": "Last State:     Terminated\n  Reason:       OOMKilled\n  Exit Code:    137\n  Started:      Tue, 14 Jan 2025 02:04:12 +0000\n  Finished:     Tue, 14 Jan 2025 02:31:38 +0000\nLimits:\n  memory:  1Gi"}
+          "reveal": "The last container was OOMKilled at 02:31, under three minutes after it started, with a 1Gi limit.",
+          "artifact": {"lang": "text", "code": "Last State:     Terminated\n  Reason:       OOMKilled\n  Exit Code:    137\n  Started:      Tue, 14 Jan 2025 02:28:51 +0000\n  Finished:     Tue, 14 Jan 2025 02:31:38 +0000\nLimits:\n  memory:  1Gi"}
         },
         {
           "q": "Memory kills around 02:30. Is yesterday's release the cause?",
@@ -595,7 +595,7 @@
           "answer": 1,
           "explain": "A release just before the symptom is the obvious suspect, and a week of history tests it cheaply. If kills started before the release, it is cleared. Reading the diff for leaks assumes the answer.",
           "reveal": "Kills began Friday night, three nights before Monday's release, and every one falls between 02:00 and 02:45, during the re-index.",
-          "artifact": {"lang": "text", "title": "Worker kills by night", "code": "night      kills  kill times (UTC)   worker image\nThu-Fri    0      -                  4c90e1a\nFri-Sat    5      02:22 to 02:39     4c90e1a\nSat-Sun    6      02:19 to 02:41     4c90e1a\nSun-Mon    4      02:24 to 02:37     4c90e1a\nMon-Tue    5      02:21 to 02:38     8d1f2b6 (deployed Mon 15:42)"}
+          "artifact": {"lang": "text", "title": "Worker kills by night", "code": "night      kills (both pods)  kill times (UTC)   worker image\nThu-Fri    0                  -                  4c90e1a\nFri-Sat    10                 02:22 to 02:39     4c90e1a\nSat-Sun    11                 02:19 to 02:41     4c90e1a\nSun-Mon    9                  02:24 to 02:37     4c90e1a\nMon-Tue    9                  02:21 to 02:38     8d1f2b6 (deployed Mon 15:42)"}
         },
         {
           "q": "Memory peaks during the re-index, starting Friday. What do you check next?",

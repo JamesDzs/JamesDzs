@@ -458,11 +458,11 @@
         "Packages installed by hand on the laptop",
         "A different OpenSSL version",
         "An API key that CI does not have",
-        "An ARM laptop versus x86 servers",
+        "A newer Linux kernel on the laptop than on the servers",
         "A local database seeded with test data"
       ],
       "answers": [0, 1, 2],
-      "explain": "The image fixes the runtime, the installed packages, and the system libraries. Secrets and data are injected or reached at run time, and CPU architecture belongs to the host, so those differences remain."
+      "explain": "The image fixes the runtime, the installed packages, and the system libraries. Secrets and data are injected or reached at run time, and the kernel belongs to the host, so those differences remain."
     },
     {
       "id": "d20-q09",
