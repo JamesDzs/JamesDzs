@@ -19,9 +19,16 @@
       "title": "Logs worth reading",
       "minutes": 11,
       "blocks": [
-        {"t": "p", "text": "A **log** is a timestamped record of one event, written by the code that saw it happen. A **structured log** writes each event as named fields, usually one JSON object per line, so a machine can filter and count lines as easily as you can read them."},
-        {"t": "p", "text": "Logs answer the question *what happened to this one request*. When a Relay customer says a reply never made sense, the log lines for that request are the closest thing you have to a recording of it."},
-        {"t": "code",
+        {
+          "t": "p",
+          "text": "A **log** is a timestamped record of one event, written by the code that saw it happen. A **structured log** writes each event as named fields, usually one JSON object per line, so a machine can filter and count lines as easily as you can read them."
+        },
+        {
+          "t": "p",
+          "text": "Logs answer the question *what happened to this one request*. When a Relay customer says a reply never made sense, the log lines for that request are the closest thing you have to a recording of it."
+        },
+        {
+          "t": "code",
           "lang": "log",
           "title": "Relay logs filtered on one request ID",
           "code": "{\"ts\":\"10:15:02.114Z\",\"lvl\":\"info\",\"svc\":\"api\",\"request_id\":\"req_7f3a\",\"msg\":\"reply started\"}\n{\"ts\":\"10:15:04.447Z\",\"lvl\":\"info\",\"svc\":\"api\",\"request_id\":\"req_7f3a\",\"msg\":\"llm call\",\"ms\":2310}\n{\"ts\":\"10:15:09.453Z\",\"lvl\":\"warn\",\"svc\":\"api\",\"request_id\":\"req_7f3a\",\"msg\":\"tool timeout\"}\n{\"ts\":\"10:15:11.895Z\",\"lvl\":\"info\",\"svc\":\"api\",\"request_id\":\"req_7f3a\",\"msg\":\"llm call\",\"ms\":2440}\n{\"ts\":\"10:15:11.984Z\",\"lvl\":\"info\",\"svc\":\"api\",\"request_id\":\"req_7f3a\",\"msg\":\"reply done\",\"status\":200}\n{\"ts\":\"10:15:12.630Z\",\"lvl\":\"info\",\"svc\":\"worker\",\"request_id\":\"req_7f3a\",\"msg\":\"email sent\"}",
@@ -30,46 +37,134 @@
             "The tool timeout is a warning, and the request still finished with status 200. A dashboard of 5xx errors would never show this failure.",
             "Every field is queryable. You can count `msg=\"tool timeout\"` per hour without writing a regular expression.",
             "No line contains the prompt, the customer's email, or the order details. The IDs are enough to find those in the database when you need them."
-          ]},
-        {"t": "compare",
+          ]
+        },
+        {
+          "t": "compare",
           "caption": "The same event, two ways",
-          "columns": ["", "Plain text line", "Structured line"],
-          "rows": [
-            ["Example", "`ERROR refund failed for ana@example.com order 1942`", "`{\"lvl\":\"error\",\"msg\":\"refund failed\",\"order_id\":1942}`"],
-            ["Find one request", "Search text and hope the wording is consistent", "Filter on an exact field value"],
-            ["Count by category", "A regex per message format, which breaks when wording changes", "Group by a field"],
-            ["Reading by eye", "Easy", "Noisier, though log viewers render the fields"],
-            ["Typical surprise", "Personal data embedded in free text", "Different field names for the same thing across services"]
+          "columns": [
+            "",
+            "Plain text line",
+            "Structured line"
           ],
-          "verdict": "Use structured logs in any service you will debug in production. Agree on field names (`request_id`, `user_id`, `route`) across services so one filter works everywhere."},
-        {"t": "list", "style": "bullet", "items": [
-          "`debug`: detail for development, usually off in production because of volume.",
-          "`info`: normal milestones, such as a request finished or a job completed.",
-          "`warning`: something failed but was handled, such as a retried call or a tool timeout the agent worked around.",
-          "`error`: the operation failed and someone may need to act. If everything is logged as an error, nothing is."
-        ]},
-        {"t": "h", "text": "The request ID is the thread"},
-        {"t": "p", "text": "A **request ID** is a unique string assigned when a request enters the system and attached to every log line written while handling it. Create it at the edge, in nginx or the first service, and return it to the client in a response header such as `X-Request-ID`. Pass it to every downstream call and copy it into every queued job."},
-        {"t": "callout", "kind": "debug", "title": "You cannot find the logs for a failed request", "text": "Check the three places an ID gets lost. The entry point never created one, a background job did not carry it, or a library logged through a logger that does not add it. Each gap turns an exact filter into a guess based on timestamps."},
-        {"t": "h", "text": "What never goes in a log"},
-        {"t": "list", "style": "bullet", "items": [
-          "Secrets: API keys, passwords, session cookies, `Authorization` headers, signed URLs.",
-          "Personal data: emails, addresses, phone numbers, card numbers. Log an internal ID instead.",
-          "Full prompts and model responses that contain customer text, unless they go to a store with the same access rules as the database."
-        ]},
-        {"t": "callout", "kind": "pitfall", "title": "Logging the whole request object", "text": "A debug line that prints the incoming request also prints its `Authorization` header. Logs are copied to more systems, kept longer, and read by more people than your database, so one such deploy spreads every caller's token widely. Redact in the logging setup, so no single call site has to remember."},
-        {"t": "p", "text": "Logs are stored and often billed by volume. A service that logs every SQL statement or every streamed token can produce far more log data than useful signal, and some pipelines start dropping lines when they fall behind."},
-        {"t": "tradeoff",
+          "rows": [
+            [
+              "Example",
+              "`ERROR refund failed for ana@example.com order 1942`",
+              "`{\"lvl\":\"error\",\"msg\":\"refund failed\",\"order_id\":1942}`"
+            ],
+            [
+              "Find one request",
+              "Search text and hope the wording is consistent",
+              "Filter on an exact field value"
+            ],
+            [
+              "Count by category",
+              "A regex per message format, which breaks when wording changes",
+              "Group by a field"
+            ],
+            [
+              "Reading by eye",
+              "Easy",
+              "Noisier, though log viewers render the fields"
+            ],
+            [
+              "Typical surprise",
+              "Personal data embedded in free text",
+              "Different field names for the same thing across services"
+            ]
+          ],
+          "verdict": "Use structured logs in any service you will debug in production. Agree on field names (`request_id`, `user_id`, `route`) across services so one filter works everywhere."
+        },
+        {
+          "t": "list",
+          "style": "bullet",
+          "items": [
+            "`debug`: detail for development, usually off in production because of volume.",
+            "`info`: normal milestones, such as a request finished or a job completed.",
+            "`warning`: something failed but was handled, such as a retried call or a tool timeout the agent worked around.",
+            "`error`: the operation failed and someone may need to act. If everything is logged as an error, nothing is."
+          ]
+        },
+        {
+          "t": "h",
+          "text": "The request ID is the thread"
+        },
+        {
+          "t": "p",
+          "text": "A **request ID** is a unique string assigned when a request enters the system and attached to every log line written while handling it. Create it at the edge, in nginx or the first service, and return it to the client in a response header such as `X-Request-ID`. Pass it to every downstream call and copy it into every queued job."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "You cannot find the logs for a failed request",
+          "text": "Check the three places an ID gets lost. The entry point never created one, a background job did not carry it, or a library logged through a logger that does not add it. Each gap turns an exact filter into a guess based on timestamps."
+        },
+        {
+          "t": "h",
+          "text": "What never goes in a log"
+        },
+        {
+          "t": "list",
+          "style": "bullet",
+          "items": [
+            "Secrets: API keys, passwords, session cookies, `Authorization` headers, signed URLs.",
+            "Personal data: emails, addresses, phone numbers, card numbers. Log an internal ID instead.",
+            "Full prompts and model responses that contain customer text, unless they go to a store with the same access rules as the database."
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Logging the whole request object",
+          "text": "A debug line that prints the incoming request also prints its `Authorization` header. Logs are copied to more systems, kept longer, and read by more people than your database, so one such deploy spreads every caller's token widely. Redact in the logging setup, so no single call site has to remember."
+        },
+        {
+          "t": "p",
+          "text": "Logs are stored and often billed by volume. A service that logs every SQL statement or every streamed token can produce far more log data than useful signal, and some pipelines start dropping lines when they fall behind."
+        },
+        {
+          "t": "tradeoff",
           "title": "Keep every log line, or sample",
           "options": [
-            {"name": "Full capture", "gain": ["Every request can be reconstructed", "No guessing about what was dropped"], "cost": ["Cost grows with traffic", "Searches get slower as volume grows"], "choose": "Choose this for errors, warnings, and anything touching money, such as refunds."},
-            {"name": "Sample routine lines", "gain": ["Much lower volume and cost", "Keeps a representative picture of normal traffic"], "cost": ["The one successful request you need may be gone", "Counts from logs must be scaled back up"], "choose": "Choose this for high-volume `info` and `debug` lines on healthy requests, while keeping every warning and error."}
-          ]},
-        {"t": "check",
+            {
+              "name": "Full capture",
+              "gain": [
+                "Every request can be reconstructed",
+                "No guessing about what was dropped"
+              ],
+              "cost": [
+                "Cost grows with traffic",
+                "Searches get slower as volume grows"
+              ],
+              "choose": "Choose this for errors, warnings, and anything touching money, such as refunds."
+            },
+            {
+              "name": "Sample routine lines",
+              "gain": [
+                "Much lower volume and cost",
+                "Keeps a representative picture of normal traffic"
+              ],
+              "cost": [
+                "The one successful request you need may be gone",
+                "Counts from logs must be scaled back up"
+              ],
+              "choose": "Choose this for high-volume `info` and `debug` lines on healthy requests, while keeping every warning and error."
+            }
+          ]
+        },
+        {
+          "t": "check",
           "q": "A customer's failed request returned the header `X-Request-ID: req_91bc`. What is the fastest way to see what happened?",
-          "options": ["Filter all services' logs on `request_id=req_91bc`", "Search the logs for the customer's email address", "Scroll the API logs around the time of the complaint", "Open the error rate dashboard for that hour"],
+          "options": [
+            "Filter all services' logs on `request_id=req_91bc`",
+            "Search the logs for the customer's email address",
+            "Scroll the API logs around the time of the complaint",
+            "Open the error rate dashboard for that hour"
+          ],
           "answer": 0,
-          "explain": "An exact filter on the request ID returns that request's lines from every service and nothing else. Searching by email depends on personal data you should not be logging, and scrolling by time mixes in thousands of other requests."}
+          "explain": "An exact filter on the request ID returns that request's lines from every service and nothing else. Searching by email depends on personal data you should not be logging, and scrolling by time mixes in thousands of other requests."
+        }
       ]
     },
     {
@@ -77,49 +172,136 @@
       "title": "Metrics and percentiles",
       "minutes": 11,
       "blocks": [
-        {"t": "p", "text": "A **metric** is a number recorded at regular intervals and stored as a time series. Metrics are aggregated before they are stored, so they stay cheap however much traffic you serve. They answer *how much* and *how often* across all requests, and never what happened to one."},
-        {"t": "compare",
+        {
+          "t": "p",
+          "text": "A **metric** is a number recorded at regular intervals and stored as a time series. Metrics are aggregated before they are stored, so they stay cheap however much traffic you serve. They answer *how much* and *how often* across all requests, and never what happened to one."
+        },
+        {
+          "t": "compare",
           "caption": "The three basic metric types",
-          "columns": ["", "Counter", "Gauge", "Histogram"],
-          "rows": [
-            ["Records", "A total that only goes up", "A current value that rises and falls", "How many observations fell into each value range, called a bucket"],
-            ["Relay example", "`http_requests_total`, `llm_tokens_total`", "Queue depth, database connections in use", "Reply duration, LLM call duration"],
-            ["You read", "Its rate per second", "Its level right now", "Percentiles and the shape of the distribution"],
-            ["Common mistake", "Graphing the raw total, which rises forever", "Sampling too rarely and missing short spikes", "Bucket edges that do not match your latency targets"]
+          "columns": [
+            "",
+            "Counter",
+            "Gauge",
+            "Histogram"
           ],
-          "verdict": "Count events with counters, measure levels with gauges, and record durations with histograms so percentiles can be computed later."},
-        {"t": "compare",
+          "rows": [
+            [
+              "Records",
+              "A total that only goes up",
+              "A current value that rises and falls",
+              "How many observations fell into each value range, called a bucket"
+            ],
+            [
+              "Relay example",
+              "`http_requests_total`, `llm_tokens_total`",
+              "Queue depth, database connections in use",
+              "Reply duration, LLM call duration"
+            ],
+            [
+              "You read",
+              "Its rate per second",
+              "Its level right now",
+              "Percentiles and the shape of the distribution"
+            ],
+            [
+              "Common mistake",
+              "Graphing the raw total, which rises forever",
+              "Sampling too rarely and missing short spikes",
+              "Bucket edges that do not match your latency targets"
+            ]
+          ],
+          "verdict": "Count events with counters, measure levels with gauges, and record durations with histograms so percentiles can be computed later."
+        },
+        {
+          "t": "compare",
           "caption": "Two checklists for what to measure",
-          "columns": ["", "RED", "USE"],
-          "rows": [
-            ["Applies to", "Anything that handles requests: the API, a worker", "Resources: CPU, memory, a connection pool, a disk"],
-            ["Stands for", "Rate, Errors, Duration", "Utilization, Saturation, Errors"],
-            ["Relay example", "Replies per second, share that fail, reply latency percentiles", "Pool connections in use, requests waiting for one, connection errors"],
-            ["Answers", "Are callers getting good service?", "Is this resource the bottleneck?"]
+          "columns": [
+            "",
+            "RED",
+            "USE"
           ],
-          "verdict": "Use RED for every service and dependency, and USE for the resources behind them. **Saturation** means work waiting because the resource is full, such as requests queued for a database connection."},
-        {"t": "h", "text": "Percentiles, and why averages hide problems"},
-        {"t": "p", "text": "The **p95** is the value that 95 percent of measurements fall below; the **p99** is the value 99 percent fall below. Latency is skewed: most requests are fast and a few are very slow. An average blends both into a number that describes nobody."},
-        {"t": "code",
+          "rows": [
+            [
+              "Applies to",
+              "Anything that handles requests: the API, a worker",
+              "Resources: CPU, memory, a connection pool, a disk"
+            ],
+            [
+              "Stands for",
+              "Rate, Errors, Duration",
+              "Utilization, Saturation, Errors"
+            ],
+            [
+              "Relay example",
+              "Replies per second, share that fail, reply latency percentiles",
+              "Pool connections in use, requests waiting for one, connection errors"
+            ],
+            [
+              "Answers",
+              "Are callers getting good service?",
+              "Is this resource the bottleneck?"
+            ]
+          ],
+          "verdict": "Use RED for every service and dependency, and USE for the resources behind them. **Saturation** means work waiting because the resource is full, such as requests queued for a database connection."
+        },
+        {
+          "t": "h",
+          "text": "Percentiles, and why averages hide problems"
+        },
+        {
+          "t": "p",
+          "text": "The **p95** is the value that 95 percent of measurements fall below; the **p99** is the value 99 percent fall below. Latency is skewed: most requests are fast and a few are very slow. An average blends both into a number that describes nobody."
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "Relay latency by route, last hour",
-          "code": "route                   count     avg     p50     p95     p99\nPOST /tickets/{id}/reply   12,400  640 ms  310 ms  2.1 s   9.8 s\nGET  /orders/{id}         48,000   45 ms   30 ms   90 ms  410 ms\nGET  /health             360,000    2 ms    1 ms    3 ms    5 ms",
+          "code": "route                   count     avg     p50     p95     p99\nPOST /tickets/{id}/reply    2,800   3.1 s   2.4 s   6.9 s   9.8 s\nGET  /orders/{id}         48,000   45 ms   30 ms   90 ms  410 ms\nGET  /health             360,000    2 ms    1 ms    3 ms    5 ms",
           "notes": [
-            "For replies, the average of 640 ms sits between the typical request at 310 ms and the slow tail, and describes neither.",
-            "A p99 of 9.8 s means about 124 replies in this hour took longer than that.",
-            "The average across all routes is about 26 ms, because health checks make up most of the count. That is the number that looks fine while customers complain.",
+            "For replies, the average of 3.1 s sits between the typical request at 2.4 s and the slow tail, and describes neither.",
+            "A p99 of 9.8 s means about 28 replies in this hour took longer than that.",
+            "The average across all routes is about 28 ms, because health checks make up most of the count. That is the number that looks fine while customers complain.",
             "Percentiles cannot be averaged. The p99 of two servers is not the mean of their two p99s; it must be computed from the combined histogram buckets."
-          ]},
-        {"t": "callout", "kind": "insight", "title": "The tail reaches more users than it seems", "text": "A Relay session makes many requests. If each has a 1 percent chance of landing beyond the p99, a session of 20 requests sees at least one slow request about 18 percent of the time. Day 13 returns to tail latency in depth."},
-        {"t": "h", "text": "Cardinality"},
-        {"t": "p", "text": "Each unique combination of label values on a metric is a separate time series, and the number of combinations is its **cardinality**. `http_requests_total` labeled by route (20 values) and status (8 values) has at most 160 series. Add a `user_id` label with 50,000 users and it can reach 8 million."},
-        {"t": "callout", "kind": "pitfall", "title": "A metric with exploding cardinality", "text": "Labels such as user ID, ticket ID, request ID, raw URL path, or full error message create a new series for almost every request. The metrics system slows down, its memory and bill climb, and some backends start dropping series. Keep labels to small fixed sets such as route template, status class, and model name, and put per-request detail in logs and traces."},
-        {"t": "check",
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "insight",
+          "title": "The tail reaches more users than it seems",
+          "text": "A Relay session makes many requests. If each has a 1 percent chance of landing beyond the p99, a session of 20 requests sees at least one slow request about 18 percent of the time. Day 13 returns to tail latency in depth."
+        },
+        {
+          "t": "h",
+          "text": "Cardinality"
+        },
+        {
+          "t": "p",
+          "text": "Each unique combination of label values on a metric is a separate time series, and the number of combinations is its **cardinality**. `http_requests_total` labeled by route (20 values) and status (8 values) has at most 160 series. Add a `user_id` label with 50,000 users and it can reach 8 million."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "A metric with exploding cardinality",
+          "text": "Labels such as user ID, ticket ID, request ID, raw URL path, or full error message create a new series for almost every request. The metrics system slows down, its memory and bill climb, and some backends start dropping series. Keep labels to small fixed sets such as route template, status class, and model name, and put per-request detail in logs and traces."
+        },
+        {
+          "t": "check",
           "q": "Which label is safe to add to Relay's LLM call duration histogram?",
-          "options": ["The model name", "The conversation ID", "A hash of the prompt text", "The customer's account ID"],
+          "options": [
+            "The model name",
+            "The conversation ID",
+            "A hash of the prompt text",
+            "The customer's account ID"
+          ],
           "answer": 0,
-          "explain": "Model names form a small fixed set, so the series count stays bounded. The other three take a new value for nearly every call, which multiplies the series count by the number of conversations, prompts, or customers."},
-        {"t": "reveal", "prompt": "During an incident, customers report 30-second waits, yet Relay's average latency graph stays near 600 ms. Name two ways both can be true.", "answer": "A small share of slow requests barely moves an average, especially one diluted by fast routes such as health checks. And if the duration is recorded only when a request completes normally, the requests that timed out never reach the histogram at all."}
+          "explain": "Model names form a small fixed set, so the series count stays bounded. The other three take a new value for nearly every call, which multiplies the series count by the number of conversations, prompts, or customers."
+        },
+        {
+          "t": "reveal",
+          "prompt": "During an incident, customers report 30-second waits, yet Relay's average latency graph stays near 600 ms. Name two ways both can be true.",
+          "answer": "A small share of slow requests barely moves an average, especially one diluted by fast routes such as health checks. And if the duration is recorded only when a request completes normally, the requests that timed out never reach the histogram at all."
+        }
       ]
     },
     {
@@ -127,9 +309,16 @@
       "title": "Traces and spans",
       "minutes": 12,
       "blocks": [
-        {"t": "p", "text": "A **trace** is the record of one request's whole journey, built as a tree of **spans**. A span is one timed operation, such as an HTTP call, a database query, or an LLM call, with a start time, a duration, a parent span, and attributes. Every span in a trace shares one trace ID."},
-        {"t": "p", "text": "Logs say what happened and metrics say how often. A trace says *where the time went* inside one request, which is the question you have after a metric shows that something got slow."},
-        {"t": "code",
+        {
+          "t": "p",
+          "text": "A **trace** is the record of one request's whole journey, built as a tree of **spans**. A span is one timed operation, such as an HTTP call, a database query, or an LLM call, with a start time, a duration, a parent span, and attributes. Every span in a trace shares one trace ID."
+        },
+        {
+          "t": "p",
+          "text": "Logs say what happened and metrics say how often. A trace says *where the time went* inside one request, which is the question you have after a metric shows that something got slow."
+        },
+        {
+          "t": "code",
           "lang": "trace",
           "title": "One slow Relay reply as a waterfall",
           "code": "trace 4bf92f35  POST /tickets/812/reply  9870 ms  status 200\nstart(ms)  dur(ms)  span\n        0     9870  api POST /tickets/812/reply\n        1        2    redis GET session\n        4       18    postgres SELECT ticket, messages\n       23     9790    agent.run\n       23     2310      llm.call #1  in=5120 tok  out=96 tok  stop=tool_use\n     2335     5004      tool lookup_order  ERROR timeout after 5000 ms\n     2336     5000        postgres SELECT orders  (canceled)\n     7341     2440      llm.call #2  in=5300 tok  out=310 tok  stop=end_turn\n     9815        9    postgres INSERT message\n     9826        3    queue publish send_email",
@@ -139,44 +328,165 @@
             "The child span shows where the tool spent its time: a Postgres query that ran until the tool gave up. Day 9 explains why such a query can be slow.",
             "The request returned 200. The model received the tool error and answered without the order. Only the span status shows the failure.",
             "The 41 ms after the last child span is time in the handler itself, such as building the response."
-          ]},
-        {"t": "h", "text": "Context propagation"},
-        {"t": "p", "text": "For spans from different processes to join one trace, each call must carry the trace ID and the parent span ID. This is **context propagation**. Between HTTP services it travels in a header, standardized by W3C as `traceparent`. Across a queue, the producer must write it into the job message and the consumer must read it back. Some libraries do this for you, and many setups miss it."},
-        {"t": "flow",
+          ]
+        },
+        {
+          "t": "h",
+          "text": "Context propagation"
+        },
+        {
+          "t": "p",
+          "text": "For spans from different processes to join one trace, each call must carry the trace ID and the parent span ID. This is **context propagation**. Between HTTP services it travels in a header, standardized by W3C as `traceparent`. Across a queue, the producer must write it into the job message and the consumer must read it back. Some libraries do this for you, and many setups miss it."
+        },
+        {
+          "t": "flow",
           "title": "One trace across the API, the queue, and a worker",
           "steps": [
-            {"actor": "API", "label": "Starts the root span", "detail": "FastAPI instrumentation creates a trace ID, or continues one from an incoming `traceparent` header.", "fail": "Without instrumentation at the entry point, each downstream span becomes its own unrelated trace."},
-            {"actor": "API", "label": "Calls Postgres and the LLM API", "detail": "Database driver and HTTP client instrumentation create child spans. The LLM provider does not join your trace, so you see only your side of the call.", "fail": "A long span with no children means the time was spent inside something you cannot see."},
-            {"actor": "API", "label": "Publishes a job", "detail": "Writes the current trace context into the job message, next to the payload.", "fail": "If the context is not written, the worker's spans form a separate trace with no link to the request."},
-            {"actor": "Worker", "label": "Picks up the job", "detail": "Reads the context from the message and starts a span whose parent is the publish span.", "fail": "A long gap between publish and consume means the queue was backed up, not that the code was slow."},
-            {"actor": "Worker", "label": "Sends the email", "detail": "The email API call becomes another child span in the same trace.", "fail": "An error here appears on the trace long after the customer's request finished."},
-            {"actor": "Collector", "label": "Receives and samples spans", "detail": "Each service exports spans to a collector, which decides what to keep and forwards it to the tracing backend.", "fail": "If the collector drops spans under load, traces arrive with missing pieces."}
-          ]},
-        {"t": "p", "text": "**OpenTelemetry** is a vendor-neutral standard and set of libraries for producing traces, metrics, and logs. You add its SDK and instrumentation packages for FastAPI, your HTTP client, and your database driver, and spans appear without hand-written code. A collector receives the data and forwards it to the backend you choose, so changing vendors does not mean re-instrumenting."},
-        {"t": "compare",
+            {
+              "actor": "API",
+              "label": "Starts the root span",
+              "detail": "FastAPI instrumentation creates a trace ID, or continues one from an incoming `traceparent` header.",
+              "fail": "Without instrumentation at the entry point, each downstream span becomes its own unrelated trace."
+            },
+            {
+              "actor": "API",
+              "label": "Calls Postgres and the LLM API",
+              "detail": "Database driver and HTTP client instrumentation create child spans. The LLM provider does not join your trace, so you see only your side of the call.",
+              "fail": "A long span with no children means the time was spent inside something you cannot see."
+            },
+            {
+              "actor": "API",
+              "label": "Publishes a job",
+              "detail": "Writes the current trace context into the job message, next to the payload.",
+              "fail": "If the context is not written, the worker's spans form a separate trace with no link to the request."
+            },
+            {
+              "actor": "Worker",
+              "label": "Picks up the job",
+              "detail": "Reads the context from the message and starts a span whose parent is the publish span.",
+              "fail": "A long gap between publish and consume means the queue was backed up, not that the code was slow."
+            },
+            {
+              "actor": "Worker",
+              "label": "Sends the email",
+              "detail": "The email API call becomes another child span in the same trace.",
+              "fail": "An error here appears on the trace long after the customer's request finished."
+            },
+            {
+              "actor": "Collector",
+              "label": "Receives and samples spans",
+              "detail": "Each service exports spans to a collector, which decides what to keep and forwards it to the tracing backend.",
+              "fail": "If the collector drops spans under load, traces arrive with missing pieces."
+            }
+          ]
+        },
+        {
+          "t": "p",
+          "text": "**OpenTelemetry** is a vendor-neutral standard and set of libraries for producing traces, metrics, and logs. You add its SDK and instrumentation packages for FastAPI, your HTTP client, and your database driver, and spans appear without hand-written code. A collector receives the data and forwards it to the backend you choose, so changing vendors does not mean re-instrumenting."
+        },
+        {
+          "t": "compare",
           "caption": "Logs, metrics, and traces side by side",
-          "columns": ["", "Logs", "Metrics", "Traces"],
-          "rows": [
-            ["Question", "What happened to this request?", "How much, how often, how fast overall?", "Where did the time go inside this request?"],
-            ["Unit", "One event", "A number over time", "A tree of timed spans"],
-            ["Cost grows with", "Traffic and verbosity", "Number of series", "Traffic and spans per request"],
-            ["Good for alerting", "Rarely", "Yes", "Rarely"],
-            ["Weak at", "Trends across many requests", "Explaining any single request", "Rare events, if sampled away"]
+          "columns": [
+            "",
+            "Logs",
+            "Metrics",
+            "Traces"
           ],
-          "verdict": "Use metrics to notice and size a problem, traces to find the slow or failing hop, and logs to read the details. Put the trace ID in every log line so you can jump from one to the other."},
-        {"t": "tradeoff",
+          "rows": [
+            [
+              "Question",
+              "What happened to this request?",
+              "How much, how often, how fast overall?",
+              "Where did the time go inside this request?"
+            ],
+            [
+              "Unit",
+              "One event",
+              "A number over time",
+              "A tree of timed spans"
+            ],
+            [
+              "Cost grows with",
+              "Traffic and verbosity",
+              "Number of series",
+              "Traffic and spans per request"
+            ],
+            [
+              "Good for alerting",
+              "Rarely",
+              "Yes",
+              "Rarely"
+            ],
+            [
+              "Weak at",
+              "Trends across many requests",
+              "Explaining any single request",
+              "Rare events, if sampled away"
+            ]
+          ],
+          "verdict": "Use metrics to notice and size a problem, traces to find the slow or failing hop, and logs to read the details. Put the trace ID in every log line so you can jump from one to the other."
+        },
+        {
+          "t": "tradeoff",
           "title": "Which traces to keep",
           "options": [
-            {"name": "Keep every trace", "gain": ["Any request can be inspected", "Simple to reason about"], "cost": ["Storage and ingest cost grow with traffic", "Export work on every request"], "choose": "Choose this when traffic is low, as in staging or a small internal tool."},
-            {"name": "Head sampling", "gain": ["Cheap and simple", "The keep decision travels with the trace, so kept traces are whole"], "cost": ["Decided at the start, before anyone knows the request will fail", "Rare errors and slow requests are mostly discarded"], "choose": "Choose this when traffic is high and you mostly need typical behavior."},
-            {"name": "Tail sampling", "gain": ["Keeps every error and slow trace", "Drops the routine fast ones"], "cost": ["The collector must hold all spans until each trace ends", "More infrastructure to run and size"], "choose": "Choose this when you need the failures specifically and can run a collector that buffers traces briefly."}
-          ]},
-        {"t": "callout", "kind": "debug", "title": "A trace with holes", "text": "If a trace stops at the API and the worker's spans are missing, check that the job message carries the trace context. If a span is long with no children, the time is inside something uninstrumented: a library call, a lock, CPU work, or a remote service."},
-        {"t": "check",
+            {
+              "name": "Keep every trace",
+              "gain": [
+                "Any request can be inspected",
+                "Simple to reason about"
+              ],
+              "cost": [
+                "Storage and ingest cost grow with traffic",
+                "Export work on every request"
+              ],
+              "choose": "Choose this when traffic is low, as in staging or a small internal tool."
+            },
+            {
+              "name": "Head sampling",
+              "gain": [
+                "Cheap and simple",
+                "The keep decision travels with the trace, so kept traces are whole"
+              ],
+              "cost": [
+                "Decided at the start, before anyone knows the request will fail",
+                "Rare errors and slow requests are mostly discarded"
+              ],
+              "choose": "Choose this when traffic is high and you mostly need typical behavior."
+            },
+            {
+              "name": "Tail sampling",
+              "gain": [
+                "Keeps every error and slow trace",
+                "Drops the routine fast ones"
+              ],
+              "cost": [
+                "The collector must hold all spans until each trace ends",
+                "More infrastructure to run and size"
+              ],
+              "choose": "Choose this when you need the failures specifically and can run a collector that buffers traces briefly."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "A trace with holes",
+          "text": "If a trace stops at the API and the worker's spans are missing, check that the job message carries the trace context. If a span is long with no children, the time is inside something uninstrumented: a library call, a lock, CPU work, or a remote service."
+        },
+        {
+          "t": "check",
           "q": "In the waterfall above, which change would cut this reply's time the most?",
-          "options": ["Fix the slow `lookup_order` query", "Switch both LLM calls to a faster model", "Cache the Redis session lookup", "Speed up the message INSERT"],
+          "options": [
+            "Fix the slow `lookup_order` query",
+            "Switch both LLM calls to a faster model",
+            "Cache the Redis session lookup",
+            "Speed up the message INSERT"
+          ],
           "answer": 0,
-          "explain": "The tool span is 5 of the 9.87 seconds and is also why the answer lacked the order. A faster model could shave part of the 4.7 seconds of LLM time but leaves the failure in place; the Redis and INSERT spans are milliseconds."}
+          "explain": "The tool span is 5 of the 9.87 seconds and is also why the answer lacked the order. A faster model could shave part of the 4.7 seconds of LLM time but leaves the failure in place; the Redis and INSERT spans are milliseconds."
+        }
       ]
     },
     {
@@ -184,37 +494,107 @@
       "title": "SLOs, alerts, and what to instrument first",
       "minutes": 12,
       "blocks": [
-        {"t": "p", "text": "An **SLI**, or service level indicator, measures what users experience as a ratio of good events to all events. An **SLO**, or service level objective, is the target for that ratio over a window. For Relay: 99 percent of replies succeed and finish within 15 seconds, measured over 28 days."},
-        {"t": "p", "text": "The **error budget** is what the SLO allows to go wrong. At 99 percent and 200,000 replies in the window, about 2,000 may be slow or fail. When the budget is nearly spent, you slow down risky changes; when plenty remains, you can ship faster."},
-        {"t": "h", "text": "Page on symptoms"},
-        {"t": "compare",
+        {
+          "t": "p",
+          "text": "An **SLI**, or service level indicator, measures what users experience as a ratio of good events to all events. An **SLO**, or service level objective, is the target for that ratio over a window. For Relay: 99 percent of replies succeed and finish within 15 seconds, measured over 28 days."
+        },
+        {
+          "t": "p",
+          "text": "The **error budget** is what the SLO allows to go wrong. At 99 percent and 200,000 replies in the window, about 2,000 may be slow or fail. When the budget is nearly spent, you slow down risky changes; when plenty remains, you can ship faster."
+        },
+        {
+          "t": "h",
+          "text": "Page on symptoms"
+        },
+        {
+          "t": "compare",
           "caption": "Alerting on what users feel versus what machines do",
-          "columns": ["", "Symptom alert", "Cause alert"],
-          "rows": [
-            ["Example", "Reply SLI below target for 10 minutes", "Postgres CPU above 80 percent"],
-            ["Tells you", "Users are being hurt now", "A resource looks unusual"],
-            ["False alarms", "Few, since it fires only when users notice", "Many, since high CPU is often harmless"],
-            ["Misses", "Nothing users feel, by definition", "Every failure nobody wrote a rule for"],
-            ["Best use", "Paging a person", "Dashboards and tickets that help diagnosis"]
+          "columns": [
+            "",
+            "Symptom alert",
+            "Cause alert"
           ],
-          "verdict": "Page on symptoms. Keep cause metrics on dashboards, where you read them once a symptom alert tells you to look."},
-        {"t": "callout", "kind": "pitfall", "title": "Alert fatigue", "text": "When most pages need no action, people learn to ignore them, and the real one gets acknowledged and forgotten. Every page should be urgent, actionable, and about something users feel. Anything else becomes a ticket or a dashboard panel. Review last month's pages and delete the rules nobody acted on."},
-        {"t": "list", "style": "number", "items": [
-          "Is it broken? The SLI against its target, at the top, for each user-facing flow.",
-          "Where? RED metrics per route and per dependency: Postgres, Redis, the LLM API, the queue.",
-          "Since when? A time axis with deploy and config change markers, so the start of the problem lines up with a change."
-        ]},
-        {"t": "h", "text": "Instrumenting an LLM or agent service"},
-        {"t": "layers",
+          "rows": [
+            [
+              "Example",
+              "Reply SLI below target for 10 minutes",
+              "Postgres CPU above 80 percent"
+            ],
+            [
+              "Tells you",
+              "Users are being hurt now",
+              "A resource looks unusual"
+            ],
+            [
+              "False alarms",
+              "Few, since it fires only when users notice",
+              "Many, since high CPU is often harmless"
+            ],
+            [
+              "Misses",
+              "Nothing users feel, by definition",
+              "Every failure nobody wrote a rule for"
+            ],
+            [
+              "Best use",
+              "Paging a person",
+              "Dashboards and tickets that help diagnosis"
+            ]
+          ],
+          "verdict": "Page on symptoms. Keep cause metrics on dashboards, where you read them once a symptom alert tells you to look."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Alert fatigue",
+          "text": "When most pages need no action, people learn to ignore them, and the real one gets acknowledged and forgotten. Every page should be urgent, actionable, and about something users feel. Anything else becomes a ticket or a dashboard panel. Review last month's pages and delete the rules nobody acted on."
+        },
+        {
+          "t": "list",
+          "style": "number",
+          "items": [
+            "Is it broken? The SLI against its target, at the top, for each user-facing flow.",
+            "Where? RED metrics per route and per dependency: Postgres, Redis, the LLM API, the queue.",
+            "Since when? A time axis with deploy and config change markers, so the start of the problem lines up with a change."
+          ]
+        },
+        {
+          "t": "h",
+          "text": "Instrumenting an LLM or agent service"
+        },
+        {
+          "t": "layers",
           "title": "What to record in Relay's agent, from the outside in",
           "layers": [
-            {"name": "Run (one customer reply)", "role": "Outcome, total latency, number of steps, total tokens, and estimated cost.", "breaks": "Runs that hit the step limit or end without an answer look like successes if you record only the status code."},
-            {"name": "Model call", "role": "Model name and version, input and output tokens, time to first token, total time, stop reason, retries, and error type.", "breaks": "A truncated answer shows only as a max-tokens stop reason, which nobody sees unless it is recorded."},
-            {"name": "Tool call", "role": "Tool name, latency, success or error type, and the size of the result returned to the model.", "breaks": "Tool errors returned to the model as text raise no exception, so error rates stay at zero."},
-            {"name": "Retrieval", "role": "Query latency, number of chunks returned, and their IDs and scores.", "breaks": "Empty or irrelevant results produce confident wrong answers with no error anywhere."},
-            {"name": "Dependencies", "role": "RED metrics for Postgres, Redis, and the LLM API, including 429 responses.", "breaks": "Provider throttling shows up as slow runs, because the client retries quietly."}
-          ]},
-        {"t": "code",
+            {
+              "name": "Run (one customer reply)",
+              "role": "Outcome, total latency, number of steps, total tokens, and estimated cost.",
+              "breaks": "Runs that hit the step limit or end without an answer look like successes if you record only the status code."
+            },
+            {
+              "name": "Model call",
+              "role": "Model name and version, input and output tokens, time to first token, total time, stop reason, retries, and error type.",
+              "breaks": "A truncated answer shows only as a max-tokens stop reason, which nobody sees unless it is recorded."
+            },
+            {
+              "name": "Tool call",
+              "role": "Tool name, latency, success or error type, and the size of the result returned to the model.",
+              "breaks": "Tool errors returned to the model as text raise no exception, so error rates stay at zero."
+            },
+            {
+              "name": "Retrieval",
+              "role": "Query latency, number of chunks returned, and their IDs and scores.",
+              "breaks": "Empty or irrelevant results produce confident wrong answers with no error anywhere."
+            },
+            {
+              "name": "Dependencies",
+              "role": "RED metrics for Postgres, Redis, and the LLM API, including 429 responses.",
+              "breaks": "Provider throttling shows up as slow runs, because the client retries quietly."
+            }
+          ]
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "Relay agent metrics, last 24 hours",
           "code": "tool                  calls  errors   err%     p50     p95\nlookup_order          8,210     412   5.0%  180 ms   5.0 s\nissue_refund            940       3   0.3%  420 ms   1.1 s\nsearch_help_center   11,300      12   0.1%   90 ms  310 ms\n\nruns 6,020   steps/run p50 3  p95 9   hit step limit 41\ninput tokens/run p50 5.1k  p95 38k",
@@ -223,93 +603,181 @@
             "Every one of those 412 errors happened inside a request that most likely returned 200.",
             "The p95 of input tokens per run is about seven times the p50. A few long conversations drive a large share of cost and latency.",
             "These metrics are labeled by tool name and nothing finer. Conversation IDs belong on spans and log lines."
-          ]},
-        {"t": "callout", "kind": "ai", "title": "Errors that do not look like errors", "text": "In an agent, a failed tool call usually becomes a message to the model, and the model works around it. The HTTP status stays 200, the error rate stays flat, and answer quality drops. Count tool errors, step-limit stops, and max-token stops as their own metrics."},
-        {"t": "callout", "kind": "rule", "title": "What to instrument first", "text": "A request ID and trace ID in every log line comes first, because it connects everything else. Then the SLI for each user-facing flow, then RED for each dependency, then per-step agent metrics."},
-        {"t": "reveal", "prompt": "Relay's 5xx rate is flat at 0.2 percent, but the nightly eval pass rate fell from 85 to 74 percent after a deploy. Which instrumentation would have caught it the same day?", "answer": "A tool error rate by tool name, and counts of runs that stopped at the step limit or on max tokens. Both rise when tools fail quietly while every request returns 200. An SLI defined on answered replies, rather than on status codes, would show it too."}
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "Errors that do not look like errors",
+          "text": "In an agent, a failed tool call usually becomes a message to the model, and the model works around it. The HTTP status stays 200, the error rate stays flat, and answer quality drops. Count tool errors, step-limit stops, and max-token stops as their own metrics."
+        },
+        {
+          "t": "callout",
+          "kind": "rule",
+          "title": "What to instrument first",
+          "text": "A request ID and trace ID in every log line comes first, because it connects everything else. Then the SLI for each user-facing flow, then RED for each dependency, then per-step agent metrics."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Relay's 5xx rate is flat at 0.2 percent, but the nightly eval pass rate fell from 85 to 74 percent after a deploy. Which instrumentation would have caught it the same day?",
+          "answer": "A tool error rate by tool name, and counts of runs that stopped at the step limit or on max tokens. Both rise when tools fail quietly while every request returns 200. An SLI defined on answered replies, rather than on status codes, would show it too."
+        }
       ]
     }
   ],
   "fieldGuide": [
     {
       "symptom": "Average latency looks fine, but users say replies are slow",
-      "causes": ["A minority of requests take a slow path that the average hides", "Fast routes such as health checks dilute a service-wide average", "Timed-out requests never get a duration recorded"],
+      "causes": [
+        "A minority of requests take a slow path that the average hides",
+        "Fast routes such as health checks dilute a service-wide average",
+        "Timed-out requests never get a duration recorded"
+      ],
       "look": "p95 and p99 per route, especially the reply route, over the period of the complaints.",
       "confirm": "The reply route's p99 is far above its p50, and the slow requests share a route or a dependency.",
       "fix": "Dashboard and alert on per-route percentiles or on an SLI. This needs histograms, which cost more to store than a single average."
     },
     {
       "symptom": "Cannot find any log lines for a request a customer reported",
-      "causes": ["No request ID created at the entry point", "The ID is not returned to the client, so support cannot quote it", "Background jobs do not carry the ID"],
+      "causes": [
+        "No request ID created at the entry point",
+        "The ID is not returned to the client, so support cannot quote it",
+        "Background jobs do not carry the ID"
+      ],
       "look": "The response headers of a real request, and whether worker log lines contain a `request_id` field.",
       "confirm": "API lines have the ID and worker lines for the same work do not.",
       "fix": "Create the ID at the edge, return it in `X-Request-ID`, add it to the logging context, and copy it into every job message."
     },
     {
       "symptom": "On-call acknowledges pages without looking at them",
-      "causes": ["Alerts on causes such as CPU or memory that usually resolve themselves", "Thresholds set too tight", "Several rules firing for one incident"],
+      "causes": [
+        "Alerts on causes such as CPU or memory that usually resolve themselves",
+        "Thresholds set too tight",
+        "Several rules firing for one incident"
+      ],
       "look": "Last month's pages, and which ones led to any action.",
       "confirm": "Most pages were resolved with no change made.",
       "fix": "Page on SLI symptoms; move cause alerts to dashboards and tickets. You will learn of some resource trends later, but through their effect on users."
     },
     {
       "symptom": "Metrics backend became slow and its bill jumped right after a deploy",
-      "causes": ["A label with per-request values was added: user, ticket, conversation, or request ID", "Raw URL paths used as a label instead of route templates"],
+      "causes": [
+        "A label with per-request values was added: user, ticket, conversation, or request ID",
+        "Raw URL paths used as a label instead of route templates"
+      ],
       "look": "Series count per metric, and which labels each metric gained in the deploy.",
       "confirm": "One metric's series count grew by orders of magnitude while others stayed flat.",
       "fix": "Remove the label or replace it with a bounded one. Move the detail to logs and span attributes."
     },
     {
       "symptom": "Worker spans show up as separate traces with no parent request",
-      "causes": ["The trace context is not written into job messages", "The worker starts a new root span instead of reading the context"],
+      "causes": [
+        "The trace context is not written into job messages",
+        "The worker starts a new root span instead of reading the context"
+      ],
       "look": "A raw job message on the queue: does it carry a `traceparent` or similar field?",
       "confirm": "Messages lack the field, or the worker's first span has no parent ID.",
       "fix": "Inject the context when publishing and extract it when consuming, or use instrumentation that does both for your queue library."
     },
     {
       "symptom": "HTTP 200 everywhere, but evals and customers say the agent's answers got worse",
-      "causes": ["Tools fail and the error is passed to the model as text", "Runs end at the step limit or on max tokens", "Retrieval returns nothing useful"],
+      "causes": [
+        "Tools fail and the error is passed to the model as text",
+        "Runs end at the step limit or on max tokens",
+        "Retrieval returns nothing useful"
+      ],
       "look": "Tool error counts by tool, stop reasons, and step counts per run, before and after the change.",
       "confirm": "One tool's error rate or the share of abnormal stop reasons rose when quality fell.",
       "fix": "Fix the tool, and add these counts to the dashboard with an alert on their rate."
     },
     {
       "symptom": "The trace for the exact failing request you need is not in the tracing backend",
-      "causes": ["Head sampling kept a small random share and dropped this one", "The collector dropped spans under load"],
+      "causes": [
+        "Head sampling kept a small random share and dropped this one",
+        "The collector dropped spans under load"
+      ],
       "look": "Sampling settings in the SDK and collector, and the collector's dropped-span count.",
       "confirm": "The kept share matches the sampling rate, and errors are no more likely to be kept than successes.",
       "fix": "Use tail sampling that keeps all errors and slow traces. It costs collector memory to buffer traces until they finish."
     },
     {
       "symptom": "A token, password, or customer email shows up in log search",
-      "causes": ["A debug line printed a whole request or config object", "An exception message included the offending value"],
+      "causes": [
+        "A debug line printed a whole request or config object",
+        "An exception message included the offending value"
+      ],
       "look": "The logger call that produced the line, and how many days the value has been exposed.",
       "confirm": "The same field appears in many lines from one code path.",
       "fix": "Rotate the secret first, then redact in the logging setup and purge the affected lines where possible."
     },
     {
       "symptom": "Log costs doubled, or log lines are arriving late or missing",
-      "causes": ["Debug logging left on in production", "A new line inside a loop, such as one per streamed token"],
+      "causes": [
+        "Debug logging left on in production",
+        "A new line inside a loop, such as one per streamed token"
+      ],
       "look": "Log volume by service and by message over the last week.",
       "confirm": "One message or one service accounts for most of the growth.",
       "fix": "Remove or sample the noisy line, keeping all warnings and errors."
     }
   ],
   "glossary": [
-    {"term": "Structured log", "def": "A log line written as named fields, usually one JSON object per line, so it can be filtered and counted by field."},
-    {"term": "Request ID", "def": "A unique string assigned when a request enters the system and attached to every log line and job created while handling it."},
-    {"term": "Counter", "def": "A metric that only increases, such as total requests. You read its rate of increase."},
-    {"term": "Gauge", "def": "A metric holding a current value that can rise or fall, such as queue depth or connections in use."},
-    {"term": "Histogram", "def": "A metric that counts observations into value ranges called buckets, from which percentiles can be estimated and combined across servers."},
-    {"term": "Percentile", "def": "The value below which a given share of measurements fall. The p99 latency is the time that 99 percent of requests beat."},
-    {"term": "Cardinality", "def": "The number of distinct label combinations on a metric. Each combination is a separate time series with its own storage cost."},
-    {"term": "Trace", "def": "The record of one request's path through the system, made of spans that share a trace ID."},
-    {"term": "Span", "def": "One timed operation within a trace, with a start time, duration, parent, status, and attributes."},
-    {"term": "Context propagation", "def": "Passing the trace ID and parent span ID along with each call or message, so spans from different processes join one trace."},
-    {"term": "Sampling", "def": "Keeping only some of the telemetry. Head sampling decides when a trace starts; tail sampling decides after it ends."},
-    {"term": "SLI", "def": "Service level indicator: the share of events that were good from the user's point of view, such as replies that succeeded within 15 seconds."},
-    {"term": "SLO", "def": "Service level objective: a target for an SLI over a time window, such as 99 percent over 28 days."},
-    {"term": "Error budget", "def": "The amount of failure an SLO allows in its window. Spending it fast is a signal to slow down risky changes."}
+    {
+      "term": "Structured log",
+      "def": "A log line written as named fields, usually one JSON object per line, so it can be filtered and counted by field."
+    },
+    {
+      "term": "Request ID",
+      "def": "A unique string assigned when a request enters the system and attached to every log line and job created while handling it."
+    },
+    {
+      "term": "Counter",
+      "def": "A metric that only increases, such as total requests. You read its rate of increase."
+    },
+    {
+      "term": "Gauge",
+      "def": "A metric holding a current value that can rise or fall, such as queue depth or connections in use."
+    },
+    {
+      "term": "Histogram",
+      "def": "A metric that counts observations into value ranges called buckets, from which percentiles can be estimated and combined across servers."
+    },
+    {
+      "term": "Percentile",
+      "def": "The value below which a given share of measurements fall. The p99 latency is the time that 99 percent of requests beat."
+    },
+    {
+      "term": "Cardinality",
+      "def": "The number of distinct label combinations on a metric. Each combination is a separate time series with its own storage cost."
+    },
+    {
+      "term": "Trace",
+      "def": "The record of one request's path through the system, made of spans that share a trace ID."
+    },
+    {
+      "term": "Span",
+      "def": "One timed operation within a trace, with a start time, duration, parent, status, and attributes."
+    },
+    {
+      "term": "Context propagation",
+      "def": "Passing the trace ID and parent span ID along with each call or message, so spans from different processes join one trace."
+    },
+    {
+      "term": "Sampling",
+      "def": "Keeping only some of the telemetry. Head sampling decides when a trace starts; tail sampling decides after it ends."
+    },
+    {
+      "term": "SLI",
+      "def": "Service level indicator: the share of events that were good from the user's point of view, such as replies that succeeded within 15 seconds."
+    },
+    {
+      "term": "SLO",
+      "def": "Service level objective: a target for an SLI over a time window, such as 99 percent over 28 days."
+    },
+    {
+      "term": "Error budget",
+      "def": "The amount of failure an SLO allows in its window. Spending it fast is a signal to slow down risky changes."
+    }
   ],
   "apply": {
     "title": "Make your own LLM calls findable and measurable",
@@ -326,7 +794,10 @@
       "id": "d07-q01",
       "type": "mcq",
       "level": 2,
-      "tags": ["percentiles", "latency"],
+      "tags": [
+        "percentiles",
+        "latency"
+      ],
       "diagnostic": true,
       "q": "Users report that a service is slow, but the average response time on the dashboard is normal. Which measurement is most likely to show the problem?",
       "options": [
@@ -337,15 +808,27 @@
       ],
       "answer": 1,
       "explain": "Latency is skewed, so a slow minority barely moves an average. A high percentile per route shows the tail and where it lives. Splitting the average per server is tempting, but each server's average hides the tail in exactly the same way.",
-      "why": ["An average per server still blends fast and slow requests and hides a slow minority.", "", "Request count says how much traffic arrived, not how long anyone waited.", "CPU is a cause metric; a slow dependency can make users wait while CPU stays low."]
+      "why": [
+        "An average per server still blends fast and slow requests and hides a slow minority.",
+        "",
+        "Request count says how much traffic arrived, not how long anyone waited.",
+        "CPU is a cause metric; a slow dependency can make users wait while CPU stays low."
+      ]
     },
     {
       "id": "d07-q02",
       "type": "mcq",
       "level": 3,
-      "tags": ["structured-logs", "agent-instrumentation"],
+      "tags": [
+        "structured-logs",
+        "agent-instrumentation"
+      ],
       "context": "A customer complains that Relay replied 'I could not find your order', although the order exists. Support gives you the request ID.",
-      "artifact": {"lang": "log", "title": "Logs filtered on request_id=req_c219", "code": "{\"ts\":\"11:02:10.551Z\",\"lvl\":\"info\",\"svc\":\"api\",\"request_id\":\"req_c219\",\"msg\":\"reply started\"}\n{\"ts\":\"11:02:12.902Z\",\"lvl\":\"info\",\"svc\":\"api\",\"request_id\":\"req_c219\",\"msg\":\"tool call\"}\n{\"ts\":\"11:02:17.905Z\",\"lvl\":\"warn\",\"svc\":\"api\",\"request_id\":\"req_c219\",\"msg\":\"tool timeout\"}\n{\"ts\":\"11:02:20.140Z\",\"lvl\":\"info\",\"svc\":\"api\",\"request_id\":\"req_c219\",\"msg\":\"reply done\",\"status\":200}"},
+      "artifact": {
+        "lang": "log",
+        "title": "Logs filtered on request_id=req_c219",
+        "code": "{\"ts\":\"11:02:10.551Z\",\"lvl\":\"info\",\"svc\":\"api\",\"request_id\":\"req_c219\",\"msg\":\"reply started\"}\n{\"ts\":\"11:02:12.902Z\",\"lvl\":\"info\",\"svc\":\"api\",\"request_id\":\"req_c219\",\"msg\":\"tool call\"}\n{\"ts\":\"11:02:17.905Z\",\"lvl\":\"warn\",\"svc\":\"api\",\"request_id\":\"req_c219\",\"msg\":\"tool timeout\"}\n{\"ts\":\"11:02:20.140Z\",\"lvl\":\"info\",\"svc\":\"api\",\"request_id\":\"req_c219\",\"msg\":\"reply done\",\"status\":200}"
+      },
       "q": "What most likely happened?",
       "options": [
         "The order lookup tool timed out and the agent answered without the order",
@@ -355,13 +838,21 @@
       ],
       "answer": 0,
       "explain": "The warning five seconds after the tool call shows the tool timed out, and the model then answered with what it had. Blaming the model is tempting, but it was never given the order. The 200 status rules out a failed request.",
-      "why": ["", "The model had no order data because the tool call timed out; its answer matched what it received.", "A missing order would return a normal 'not found' result quickly, not a timeout after five seconds.", "The request finished with status 200, so the web app received a real reply."]
+      "why": [
+        "",
+        "The model had no order data because the tool call timed out; its answer matched what it received.",
+        "A missing order would return a normal 'not found' result quickly, not a timeout after five seconds.",
+        "The request finished with status 200, so the web app received a real reply."
+      ]
     },
     {
       "id": "d07-q03",
       "type": "mcq",
       "level": 2,
-      "tags": ["cardinality", "metrics"],
+      "tags": [
+        "cardinality",
+        "metrics"
+      ],
       "q": "A teammate wants to add `ticket_id` as a label on Relay's reply latency histogram, to find slow tickets. What is the better approach?",
       "options": [
         "Add the label, and shorten how long the metric is kept",
@@ -371,14 +862,26 @@
       ],
       "answer": 2,
       "explain": "Ticket IDs are unbounded, so any metric labeled with them creates a series per ticket. Spans and log lines carry per-request detail at no series cost, and you find slow tickets by filtering traces on duration. Shorter retention does not help, because the backend still holds every live series.",
-      "why": ["Retention limits history, but every active ticket still creates its own series.", "Slow replies are still thousands of distinct tickets, each a new series.", "", "One histogram per ticket is the same cardinality problem under another name."]
+      "why": [
+        "Retention limits history, but every active ticket still creates its own series.",
+        "Slow replies are still thousands of distinct tickets, each a new series.",
+        "",
+        "One histogram per ticket is the same cardinality problem under another name."
+      ]
     },
     {
       "id": "d07-q04",
       "type": "mcq",
       "level": 3,
-      "tags": ["tracing", "agent-instrumentation"],
-      "artifact": {"lang": "trace", "title": "A slow Relay reply", "code": "start(ms)  dur(ms)  span\n        0     8120  api POST /tickets/377/reply  status 200\n        2       11    postgres SELECT ticket, messages\n       14     8070    agent.run\n       14     1180      llm.call #1  stop=tool_use\n     7020     1060      llm.call #2  stop=end_turn\n     8090       26    postgres INSERT message"},
+      "tags": [
+        "tracing",
+        "agent-instrumentation"
+      ],
+      "artifact": {
+        "lang": "trace",
+        "title": "A slow Relay reply",
+        "code": "start(ms)  dur(ms)  span\n        0     8120  api POST /tickets/377/reply  status 200\n        2       11    postgres SELECT ticket, messages\n       14     8070    agent.run\n       14     1180      llm.call #1  stop=tool_use\n     7020     1060      llm.call #2  stop=end_turn\n     8090       26    postgres INSERT message"
+      },
       "q": "Where should you look next?",
       "options": [
         "The LLM provider, since both visible agent spans are model calls",
@@ -388,13 +891,21 @@
       ],
       "answer": 3,
       "explain": "Inside `agent.run` there is a 5.8-second gap between the end of the first model call and the start of the second. The first call stopped with `tool_use`, so a tool ran in that gap without being instrumented. Blaming the provider is tempting, but the model spans total only about 2.2 seconds.",
-      "why": ["The two model calls take about 2.2 seconds together; the missing time sits between them.", "The visible Postgres spans are short, and an instrumented driver would show a slow query as its own span.", "Serialization happens after `agent.run` ends, and the gap is inside `agent.run`.", ""]
+      "why": [
+        "The two model calls take about 2.2 seconds together; the missing time sits between them.",
+        "The visible Postgres spans are short, and an instrumented driver would show a slow query as its own span.",
+        "Serialization happens after `agent.run` ends, and the gap is inside `agent.run`.",
+        ""
+      ]
     },
     {
       "id": "d07-q05",
       "type": "mcq",
       "level": 2,
-      "tags": ["sampling", "tracing"],
+      "tags": [
+        "sampling",
+        "tracing"
+      ],
       "q": "Relay keeps 5 percent of traces, chosen at random when each request starts. Engineers keep finding that the trace for a reported failure is missing. Which change addresses this directly?",
       "options": [
         "Raise the head sampling rate from 5 to 10 percent",
@@ -404,13 +915,21 @@
       ],
       "answer": 1,
       "explain": "Head sampling decides before anyone knows a request will fail, so failures are kept at the same low rate as everything else. Tail sampling decides after the trace ends and can keep all errors. Doubling the head rate still discards nine traces in ten.",
-      "why": ["At 10 percent, nine out of ten failed traces are still discarded.", "", "More spans make kept traces richer but do not change which traces are kept.", "Debug logs add volume and cost, and do not bring back missing traces."]
+      "why": [
+        "At 10 percent, nine out of ten failed traces are still discarded.",
+        "",
+        "More spans make kept traces richer but do not change which traces are kept.",
+        "Debug logs add volume and cost, and do not bring back missing traces."
+      ]
     },
     {
       "id": "d07-q06",
       "type": "mcq",
       "level": 2,
-      "tags": ["slo", "error-budget"],
+      "tags": [
+        "slo",
+        "error-budget"
+      ],
       "context": "Relay's reply SLO is 99.5 percent of replies good over a 28-day window. About 300,000 replies are expected in the window. With 10 days left, 1,100 replies have been bad.",
       "q": "How much error budget remains?",
       "options": [
@@ -421,13 +940,21 @@
       ],
       "answer": 0,
       "explain": "The budget is 0.5 percent of 300,000, which is 1,500 bad replies. 1,100 are spent, so about 400 remain for the last 10 days. The common slip is to read the number spent as the number left.",
-      "why": ["", "The SLO allows 1,500 bad replies, and 1,100 is still under that.", "1,100 is what has been used, not what remains.", "1,500 is the whole budget, and most of it is already spent."]
+      "why": [
+        "",
+        "The SLO allows 1,500 bad replies, and 1,100 is still under that.",
+        "1,100 is what has been used, not what remains.",
+        "1,500 is the whole budget, and most of it is already spent."
+      ]
     },
     {
       "id": "d07-q07",
       "type": "mcq",
       "level": 3,
-      "tags": ["alerting", "alert-fatigue"],
+      "tags": [
+        "alerting",
+        "alert-fatigue"
+      ],
       "context": "Last month Relay's on-call engineer was paged 140 times. Nine pages matched a problem users noticed. Most of the rest were 'Postgres CPU above 70 percent' and 'worker memory above 80 percent', and they resolved on their own.",
       "q": "What is the best change?",
       "options": [
@@ -438,13 +965,21 @@
       ],
       "answer": 2,
       "explain": "The pages are cause alerts that rarely match user pain, so people stop reading them. Paging on the SLI fires when users are hurt, and the resource metrics stay available for diagnosis. Raising the threshold is tempting but keeps paging on a cause, just less often.",
-      "why": ["A higher threshold still pages on a cause, and will both miss real problems and fire on harmless spikes.", "Sharing noise between two people halves the fatigue without fixing it.", "", "More cause alerts add more pages that need no action."]
+      "why": [
+        "A higher threshold still pages on a cause, and will both miss real problems and fire on harmless spikes.",
+        "Sharing noise between two people halves the fatigue without fixing it.",
+        "",
+        "More cause alerts add more pages that need no action."
+      ]
     },
     {
       "id": "d07-q08",
       "type": "multi",
       "level": 2,
-      "tags": ["structured-logs", "security"],
+      "tags": [
+        "structured-logs",
+        "security"
+      ],
       "q": "Which of these should never appear in Relay's logs? Select all that apply.",
       "options": [
         "The `Authorization` header of an incoming request",
@@ -454,14 +989,21 @@
         "The tool name and its duration",
         "The model's stop reason"
       ],
-      "answers": [0, 1, 3],
+      "answers": [
+        0,
+        1,
+        3
+      ],
       "explain": "Credentials and personal data spread to every system that copies logs and stay there for the retention period. Request IDs, tool names, durations, and stop reasons are exactly the fields that make logs useful and expose nothing about the customer."
     },
     {
       "id": "d07-q09",
       "type": "order",
       "level": 2,
-      "tags": ["tracing", "alerting"],
+      "tags": [
+        "tracing",
+        "alerting"
+      ],
       "q": "Put the steps of following a slow-reply problem from alert to cause in order.",
       "items": [
         "A symptom alert fires because the reply SLI is below target",
@@ -476,14 +1018,33 @@
       "id": "d07-q10",
       "type": "match",
       "level": 1,
-      "tags": ["metrics", "tracing", "structured-logs"],
+      "tags": [
+        "metrics",
+        "tracing",
+        "structured-logs"
+      ],
       "q": "Match each signal to the question it answers best.",
       "pairs": [
-        ["Counter", "How many tool errors happen per minute?"],
-        ["Gauge", "How many jobs are waiting in the queue right now?"],
-        ["Histogram", "What is the p95 duration of LLM calls?"],
-        ["Trace", "Which step made this one reply slow?"],
-        ["Structured log", "What error text did this request's tool call return?"]
+        [
+          "Counter",
+          "How many tool errors happen per minute?"
+        ],
+        [
+          "Gauge",
+          "How many jobs are waiting in the queue right now?"
+        ],
+        [
+          "Histogram",
+          "What is the p95 duration of LLM calls?"
+        ],
+        [
+          "Trace",
+          "Which step made this one reply slow?"
+        ],
+        [
+          "Structured log",
+          "What error text did this request's tool call return?"
+        ]
       ],
       "explain": "Counters count events, gauges report a level, and histograms keep distributions for percentiles. Traces show timing inside one request, and logs hold the event details. Reaching for logs to answer a rate question is the most common mismatch."
     },
@@ -491,7 +1052,10 @@
       "id": "d07-q11",
       "type": "open",
       "level": 3,
-      "tags": ["agent-instrumentation", "alerting"],
+      "tags": [
+        "agent-instrumentation",
+        "alerting"
+      ],
       "context": "A deploy changed the `lookup_order` tool. For two days every request returned 200 and the error dashboard stayed flat, but customers kept getting replies that said 'I could not find your order'.",
       "q": "Explain why the existing monitoring missed this, and what you would instrument so it is caught within an hour next time.",
       "rubric": [
@@ -507,9 +1071,16 @@
       "id": "d07-q12",
       "type": "mcq",
       "level": 3,
-      "tags": ["cardinality", "metrics"],
+      "tags": [
+        "cardinality",
+        "metrics"
+      ],
       "context": "After Tuesday's deploy, Relay's metrics backend became slow and its bill tripled.",
-      "artifact": {"lang": "text", "title": "Series count per metric", "code": "metric                          series Mon   series Wed\nhttp_request_duration_seconds        1,920        1,950\nllm_tokens_total                        48      212,400\ntool_calls_total                        60           62"},
+      "artifact": {
+        "lang": "text",
+        "title": "Series count per metric",
+        "code": "metric                          series Mon   series Wed\nhttp_request_duration_seconds        1,920        1,950\nllm_tokens_total                        48      212,400\ntool_calls_total                        60           62"
+      },
       "q": "What most likely changed on Tuesday?",
       "options": [
         "Traffic roughly tripled on Tuesday",
@@ -519,7 +1090,12 @@
       ],
       "answer": 3,
       "explain": "Only one metric's series count exploded, by a factor of thousands, which points at a new unbounded label on that metric. More traffic or a shorter scrape interval adds samples to existing series without creating new ones, and one new model adds a handful.",
-      "why": ["More traffic raises sample counts, not the number of series, and the other metrics barely moved.", "A shorter interval stores more samples per series; the series count stays the same.", "One new model adds a few series, not 200,000.", ""]
+      "why": [
+        "More traffic raises sample counts, not the number of series, and the other metrics barely moved.",
+        "A shorter interval stores more samples per series; the series count stays the same.",
+        "One new model adds a few series, not 200,000.",
+        ""
+      ]
     }
   ],
   "drills": [
@@ -527,7 +1103,11 @@
       "id": "d07-x1",
       "title": "Replies are slow, and the dashboard is green",
       "brief": "Since Monday, support has forwarded a dozen complaints that Relay takes forever to answer questions about orders. The service dashboard shows average latency and error rate unchanged for a week. Monday's deploy switched the agent to a newer model version and included a few small tool changes.",
-      "artifact": {"lang": "text", "title": "Service dashboard, all routes", "code": "panel                       Sat     Sun     Mon     Tue\navg latency (all routes)   28 ms   27 ms   31 ms   31 ms\n5xx rate                   0.1%    0.1%    0.1%    0.1%\nrequests                   4.02M   3.88M   4.10M   4.25M"},
+      "artifact": {
+        "lang": "text",
+        "title": "Service dashboard, all routes",
+        "code": "panel                       Sat     Sun     Mon     Tue\navg latency (all routes)   28 ms   27 ms   31 ms   31 ms\n5xx rate                   0.1%    0.1%    0.1%    0.1%\nrequests                   4.02M   3.88M   4.10M   4.25M"
+      },
       "steps": [
         {
           "q": "What do you check first?",
@@ -540,7 +1120,11 @@
           "answer": 1,
           "explain": "A service-wide average dominated by health checks can hide almost anything. Splitting by route and percentile is cheap and says whether the slowness is everywhere or in a tail. Rolling back the model is a guess that also undoes the tool changes, and would not tell you which one mattered.",
           "reveal": "Only the reply route moved. Its p50 is unchanged, and its p99 jumped on Monday afternoon.",
-          "artifact": {"lang": "text", "title": "POST /tickets/{id}/reply", "code": "day     count     p50     p95     p99\nSat     11,900  2.4 s   4.5 s   5.6 s\nSun     11,200  2.4 s   4.4 s   5.5 s\nMon     12,300  2.5 s   6.8 s  13.2 s\nTue     12,600  2.5 s   7.3 s  14.6 s"}
+          "artifact": {
+            "lang": "text",
+            "title": "POST /tickets/{id}/reply",
+            "code": "day     count     p50     p95     p99\nSat     11,900  2.4 s   4.5 s   5.6 s\nSun     11,200  2.4 s   4.4 s   5.5 s\nMon     12,300  2.5 s   6.8 s  13.2 s\nTue     12,600  2.5 s   7.3 s  14.6 s"
+          }
         },
         {
           "q": "The typical reply is as fast as before; only the tail grew. What next?",
@@ -553,7 +1137,10 @@
           "answer": 2,
           "explain": "A slower model would raise the p50 too, and it did not move. Traces of the slow requests show directly which span grew. Adding logging means waiting for a redeploy when the evidence already exists.",
           "reveal": "Every slow trace has the same shape: the model calls take about 2 seconds each, and one `lookup_order` call takes 8 to 9 seconds.",
-          "artifact": {"lang": "trace", "code": "start(ms)  dur(ms)  span\n        0    13110  api POST /tickets/2291/reply\n       20    13060    agent.run\n       20     2050      llm.call #1  stop=tool_use\n     2074     8890      tool lookup_order\n     2075     8880        postgres SELECT orders\n    10968     2105      llm.call #2  stop=end_turn"}
+          "artifact": {
+            "lang": "trace",
+            "code": "start(ms)  dur(ms)  span\n        0    13110  api POST /tickets/2291/reply\n       20    13060    agent.run\n       20     2050      llm.call #1  stop=tool_use\n     2074     8890      tool lookup_order\n     2075     8880        postgres SELECT orders\n    10968     2105      llm.call #2  stop=end_turn"
+          }
         },
         {
           "q": "You have twenty slow traces. What is the cheapest way to find what they share?",
@@ -597,7 +1184,10 @@
           "answer": 1,
           "explain": "You have the exact key for one failing request, which is the cheapest evidence available. The provider outage is a plausible story, but the logs will confirm or rule it out in seconds. Re-sending fixes three customers and teaches you nothing.",
           "reveal": "The API lines show the refund, a queued email job, and a 200. Nothing from the worker matches.",
-          "artifact": {"lang": "log", "code": "{\"ts\":\"09:12:40.101Z\",\"svc\":\"api\",\"request_id\":\"req_51c0\",\"msg\":\"reply started\"}\n{\"ts\":\"09:12:44.850Z\",\"svc\":\"api\",\"request_id\":\"req_51c0\",\"msg\":\"refund issued\"}\n{\"ts\":\"09:12:44.870Z\",\"svc\":\"api\",\"request_id\":\"req_51c0\",\"msg\":\"job queued\",\"job\":\"j_8812\"}\n{\"ts\":\"09:12:44.912Z\",\"svc\":\"api\",\"request_id\":\"req_51c0\",\"msg\":\"reply done\",\"status\":200}"}
+          "artifact": {
+            "lang": "log",
+            "code": "{\"ts\":\"09:12:40.101Z\",\"svc\":\"api\",\"request_id\":\"req_51c0\",\"msg\":\"reply started\"}\n{\"ts\":\"09:12:44.850Z\",\"svc\":\"api\",\"request_id\":\"req_51c0\",\"msg\":\"refund issued\"}\n{\"ts\":\"09:12:44.870Z\",\"svc\":\"api\",\"request_id\":\"req_51c0\",\"msg\":\"job queued\",\"job\":\"j_8812\"}\n{\"ts\":\"09:12:44.912Z\",\"svc\":\"api\",\"request_id\":\"req_51c0\",\"msg\":\"reply done\",\"status\":200}"
+          }
         },
         {
           "q": "No worker line has this request ID. What next?",
@@ -610,7 +1200,10 @@
           "answer": 1,
           "explain": "The absence of a request ID in worker logs may mean the worker never ran, or only that it does not log the ID. The job ID from the API line is a second key that tells these apart at no cost. Concluding the job was lost skips that check.",
           "reveal": "The worker did run the job. It logged an error and then marked the job done, so it was never retried. Its lines carry the job ID and no request ID.",
-          "artifact": {"lang": "log", "code": "{\"ts\":\"09:12:45.230Z\",\"svc\":\"worker\",\"job\":\"j_8812\",\"msg\":\"job started\"}\n{\"ts\":\"09:12:45.402Z\",\"svc\":\"worker\",\"job\":\"j_8812\",\"lvl\":\"error\",\"msg\":\"template error\"}\n{\"ts\":\"09:12:45.403Z\",\"svc\":\"worker\",\"job\":\"j_8812\",\"msg\":\"job done\"}"}
+          "artifact": {
+            "lang": "log",
+            "code": "{\"ts\":\"09:12:45.230Z\",\"svc\":\"worker\",\"job\":\"j_8812\",\"msg\":\"job started\"}\n{\"ts\":\"09:12:45.402Z\",\"svc\":\"worker\",\"job\":\"j_8812\",\"lvl\":\"error\",\"msg\":\"template error\"}\n{\"ts\":\"09:12:45.403Z\",\"svc\":\"worker\",\"job\":\"j_8812\",\"msg\":\"job done\"}"
+          }
         },
         {
           "q": "The email has failed for two days. Why was nobody paged?",

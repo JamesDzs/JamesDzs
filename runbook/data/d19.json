@@ -19,48 +19,175 @@
       "title": "Scaling up vs scaling out, and statelessness",
       "minutes": 12,
       "blocks": [
-        {"t": "p", "text": "**Scaling up** (vertical scaling) means giving one machine more CPU, memory, or faster disks. **Scaling out** (horizontal scaling) means running more copies of a service behind a load balancer. Scaling up is simpler and changes no code. Scaling out has no fixed ceiling, but it only works when any copy can handle any request."},
-        {"t": "p", "text": "That last condition is the whole lesson. A copy can handle any request only if the process keeps nothing between requests that the next request needs. This property is called **statelessness**. The state still exists. It lives in Postgres, Redis, or object storage instead of inside the process."},
-        {"t": "tradeoff",
+        {
+          "t": "p",
+          "text": "**Scaling up** (vertical scaling) means giving one machine more CPU, memory, or faster disks. **Scaling out** (horizontal scaling) means running more copies of a service behind a load balancer. Scaling up is simpler and changes no code. Scaling out has no fixed ceiling, but it only works when any copy can handle any request."
+        },
+        {
+          "t": "p",
+          "text": "That last condition is the whole lesson. A copy can handle any request only if the process keeps nothing between requests that the next request needs. This property is called **statelessness**. The state still exists. It lives in Postgres, Redis, or object storage instead of inside the process."
+        },
+        {
+          "t": "tradeoff",
           "title": "Adding capacity to Relay's API",
           "options": [
-            {"name": "Scale up", "gain": ["No code or architecture change", "One process to debug", "Memory and local disk keep working as before"], "cost": ["A hard ceiling at the largest machine", "One machine is one failure", "Resizing usually means a restart"], "choose": "Choose this when the load fits on one machine with room to spare, or when the service holds state that is hard to move, such as a database primary."},
-            {"name": "Scale out", "gain": ["Capacity grows by adding copies", "One copy can die without an outage", "Copies can follow the load up and down"], "cost": ["Every piece of local state must move out first", "Needs a load balancer and health checks", "Bugs now depend on which copy served the request"], "choose": "Choose this for stateless app servers and workers, which is most of what Relay runs."}
-          ]},
-        {"t": "h", "text": "State that hides in an app server"},
-        {"t": "compare",
+            {
+              "name": "Scale up",
+              "gain": [
+                "No code or architecture change",
+                "One process to debug",
+                "Memory and local disk keep working as before"
+              ],
+              "cost": [
+                "A hard ceiling at the largest machine",
+                "One machine is one failure",
+                "Resizing usually means a restart"
+              ],
+              "choose": "Choose this when the load fits on one machine with room to spare, or when the service holds state that is hard to move, such as a database primary."
+            },
+            {
+              "name": "Scale out",
+              "gain": [
+                "Capacity grows by adding copies",
+                "One copy can die without an outage",
+                "Copies can follow the load up and down"
+              ],
+              "cost": [
+                "Every piece of local state must move out first",
+                "Needs a load balancer and health checks",
+                "Bugs now depend on which copy served the request"
+              ],
+              "choose": "Choose this for stateless app servers and workers, which is most of what Relay runs."
+            }
+          ]
+        },
+        {
+          "t": "h",
+          "text": "State that hides in an app server"
+        },
+        {
+          "t": "compare",
           "caption": "Local state and what it does once there are two copies",
-          "columns": ["", "Where it hides", "Symptom after scaling out", "Where it should live"],
-          "rows": [
-            ["Sessions", "A dictionary in process memory", "Users logged out when a request lands on another copy", "Redis or Postgres, keyed by a session ID"],
-            ["Uploaded files", "The server's local disk", "A file uploaded to one copy returns 404 from the others", "Object storage such as S3"],
-            ["In-process cache", "A module-level dict or LRU cache", "Copies disagree, so a change appears and disappears", "Redis, or accept short staleness per copy"],
-            ["Scheduled jobs", "A timer started inside each process", "The nightly email goes out once per copy", "One scheduler, or a lock only one copy can hold"],
-            ["Signing keys", "A random key generated at startup", "Cookies signed by one copy are rejected by another", "One shared secret from the secret manager"],
-            ["Rate-limit counters", "A counter in memory", "The real limit is the configured one times the number of copies", "Redis with atomic increments"]
+          "columns": [
+            "",
+            "Where it hides",
+            "Symptom after scaling out",
+            "Where it should live"
           ],
-          "verdict": "Walk this table before adding a second copy of any service. Each row is a bug that only exists once there are two."},
-        {"t": "callout", "kind": "pitfall", "title": "The second copy is the real test", "text": "A service that has only ever run as one process is not known to be stateless. These bugs pass every test on a laptop and appear the day an autoscaler adds a copy, which is usually the day traffic is highest."},
-        {"t": "check",
+          "rows": [
+            [
+              "Sessions",
+              "A dictionary in process memory",
+              "Users logged out when a request lands on another copy",
+              "Redis or Postgres, keyed by a session ID"
+            ],
+            [
+              "Uploaded files",
+              "The server's local disk",
+              "A file uploaded to one copy returns 404 from the others",
+              "Object storage such as S3"
+            ],
+            [
+              "In-process cache",
+              "A module-level dict or LRU cache",
+              "Copies disagree, so a change appears and disappears",
+              "Redis, or accept short staleness per copy"
+            ],
+            [
+              "Scheduled jobs",
+              "A timer started inside each process",
+              "The nightly email goes out once per copy",
+              "One scheduler, or a lock only one copy can hold"
+            ],
+            [
+              "Signing keys",
+              "A random key generated at startup",
+              "Cookies signed by one copy are rejected by another",
+              "One shared secret from the secret manager"
+            ],
+            [
+              "Rate-limit counters",
+              "A counter in memory",
+              "The real limit is the configured one times the number of copies",
+              "Redis with atomic increments"
+            ]
+          ],
+          "verdict": "Walk this table before adding a second copy of any service. Each row is a bug that only exists once there are two."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "The second copy is the real test",
+          "text": "A service that has only ever run as one process is not known to be stateless. These bugs pass every test on a laptop and appear the day an autoscaler adds a copy, which is usually the day traffic is highest."
+        },
+        {
+          "t": "check",
           "q": "Relay's API ran as one instance for months. After scaling to three behind round robin, about two thirds of screenshot links that customers upload come back broken. What is the most likely cause?",
-          "options": ["Uploads are written to the local disk of whichever instance received them", "The CDN is serving a stale copy of each image", "The database lost the rows that reference the images"],
-          "answer": 0,
-          "explain": "Two thirds is the chance that the image request reaches one of the two instances that do not hold the file. Moving uploads to object storage lets any instance serve any file."},
-        {"t": "h", "text": "When to add copies: autoscaling signals"},
-        {"t": "p", "text": "An **autoscaler** adds or removes copies when a chosen metric crosses a threshold. The metric must rise when users start to suffer. If it does not, the autoscaler reacts to the wrong thing or never reacts at all."},
-        {"t": "compare",
-          "caption": "Signals an autoscaler can follow",
-          "columns": ["", "Rises when", "Misleads when"],
-          "rows": [
-            ["CPU utilization", "Work is computation bound", "The service mostly waits on I/O, so CPU stays low while users queue"],
-            ["Requests in flight per copy", "Copies are busy for any reason", "A slow dependency fills every copy, and more copies only add load to it"],
-            ["Queue depth or consumer lag", "Workers fall behind incoming jobs", "Failing jobs are retried and inflate the queue"],
-            ["Latency", "Users are already waiting", "It lags the cause, and a slow database raises it on every copy at once"]
+          "options": [
+            "Uploads are written to the local disk of whichever instance received them",
+            "The CDN is serving a stale copy of each image",
+            "The database lost the rows that reference the images"
           ],
-          "verdict": "For I/O-bound services such as Relay's API, scale on requests in flight, and cap the maximum so the autoscaler cannot overwhelm Postgres or the LLM quota."},
-        {"t": "callout", "kind": "ai", "title": "LLM calls keep CPU near idle", "text": "A Relay chat request spends most of its time waiting for model tokens. One copy can hold many open streams while its CPU stays low, so a CPU-based autoscaler may never fire. Scale on concurrent requests, and remember that every copy you add shares the same provider tokens-per-minute limit."},
-        {"t": "callout", "kind": "debug", "title": "Scaling out made it worse", "text": "If adding copies raised errors, look downstream. Each copy opens its own database pool, so ten copies with pools of 20 ask Postgres for 200 connections. Check the database's connection count and the provider's rate-limit headers before adding more copies."},
-        {"t": "reveal", "prompt": "An autoscaler doubles Relay's API copies during a traffic spike, and p95 latency gets worse. Which resources do you check first, and why?", "answer": "The ones every copy shares: Postgres connections and the LLM provider's rate limit. More copies send more concurrent work to the same bottleneck, so the queue moves from the API to the database or the provider, where it is slower and harder to see."}
+          "answer": 0,
+          "explain": "Two thirds is the chance that the image request reaches one of the two instances that do not hold the file. Moving uploads to object storage lets any instance serve any file."
+        },
+        {
+          "t": "h",
+          "text": "When to add copies: autoscaling signals"
+        },
+        {
+          "t": "p",
+          "text": "An **autoscaler** adds or removes copies when a chosen metric crosses a threshold. The metric must rise when users start to suffer. If it does not, the autoscaler reacts to the wrong thing or never reacts at all."
+        },
+        {
+          "t": "compare",
+          "caption": "Signals an autoscaler can follow",
+          "columns": [
+            "",
+            "Rises when",
+            "Misleads when"
+          ],
+          "rows": [
+            [
+              "CPU utilization",
+              "Work is computation bound",
+              "The service mostly waits on I/O, so CPU stays low while users queue"
+            ],
+            [
+              "Requests in flight per copy",
+              "Copies are busy for any reason",
+              "A slow dependency fills every copy, and more copies only add load to it"
+            ],
+            [
+              "Queue depth or consumer lag",
+              "Workers fall behind incoming jobs",
+              "Failing jobs are retried and inflate the queue"
+            ],
+            [
+              "Latency",
+              "Users are already waiting",
+              "It lags the cause, and a slow database raises it on every copy at once"
+            ]
+          ],
+          "verdict": "For I/O-bound services such as Relay's API, scale on requests in flight, and cap the maximum so the autoscaler cannot overwhelm Postgres or the LLM quota."
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "LLM calls keep CPU near idle",
+          "text": "A Relay chat request spends most of its time waiting for model tokens. One copy can hold many open streams while its CPU stays low, so a CPU-based autoscaler may never fire. Scale on concurrent requests, and remember that every copy you add shares the same provider tokens-per-minute limit."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Scaling out made it worse",
+          "text": "If adding copies raised errors, look downstream. Each copy opens its own database pool, so ten copies with pools of 20 ask Postgres for 200 connections. Check the database's connection count and the provider's rate-limit headers before adding more copies."
+        },
+        {
+          "t": "reveal",
+          "prompt": "An autoscaler doubles Relay's API copies during a traffic spike, and p95 latency gets worse. Which resources do you check first, and why?",
+          "answer": "The ones every copy shares: Postgres connections and the LLM provider's rate limit. More copies send more concurrent work to the same bottleneck, so the queue moves from the API to the database or the provider, where it is slower and harder to see."
+        }
       ]
     },
     {
@@ -68,33 +195,81 @@
       "title": "Load balancing",
       "minutes": 13,
       "blocks": [
-        {"t": "p", "text": "A **load balancer** receives each request or connection and picks one healthy backend copy to handle it. Two questions define it: how much of the traffic it reads before choosing, and what rule it uses to choose. Both decide how evenly load spreads and which failures it can hide from you."},
-        {"t": "compare",
+        {
+          "t": "p",
+          "text": "A **load balancer** receives each request or connection and picks one healthy backend copy to handle it. Two questions define it: how much of the traffic it reads before choosing, and what rule it uses to choose. Both decide how evenly load spreads and which failures it can hide from you."
+        },
+        {
+          "t": "compare",
           "caption": "Layer 4 and layer 7 balancing",
-          "columns": ["", "Layer 4 (transport)", "Layer 7 (application)"],
-          "rows": [
-            ["Sees", "IP addresses, ports, TCP connections", "HTTP method, path, headers, cookies"],
-            ["Balances", "Whole connections", "Individual requests"],
-            ["Can also", "Carry any protocol at very high throughput", "Route by path, terminate TLS, add headers, retry"],
-            ["Blind spot", "One long connection pins all of its requests to one backend", "Parses every request, adding work and another set of timeouts"],
-            ["Typical use", "Non-HTTP traffic, or raw throughput at the edge", "HTTP APIs such as nginx in front of Relay's FastAPI service"]
+          "columns": [
+            "",
+            "Layer 4 (transport)",
+            "Layer 7 (application)"
           ],
-          "verdict": "Prefer layer 7 for HTTP services so that balancing happens per request. Use layer 4 for non-HTTP protocols or when throughput matters more than routing."},
-        {"t": "h", "text": "Choosing a backend"},
-        {"t": "list", "items": [
-          "**Round robin** sends to each backend in turn. Even when requests cost about the same, uneven when some take 50 ms and others take 30 seconds.",
-          "**Least connections** sends to the backend with the fewest open requests. Better when cost varies, such as LLM streams of very different lengths.",
-          "**Hashing on a key** maps the same user or key to the same backend every time. Good for cache locality, skewed when a few keys are very hot.",
-          "**Consistent hashing** is a hashing scheme in which adding or removing one of N backends moves only about 1/N of the keys, instead of nearly all of them."
-        ]},
-        {"t": "check",
+          "rows": [
+            [
+              "Sees",
+              "IP addresses, ports, TCP connections",
+              "HTTP method, path, headers, cookies"
+            ],
+            [
+              "Balances",
+              "Whole connections",
+              "Individual requests"
+            ],
+            [
+              "Can also",
+              "Carry any protocol at very high throughput",
+              "Route by path, terminate TLS, add headers, retry"
+            ],
+            [
+              "Blind spot",
+              "One long connection pins all of its requests to one backend",
+              "Parses every request, adding work and another set of timeouts"
+            ],
+            [
+              "Typical use",
+              "Non-HTTP traffic, or raw throughput at the edge",
+              "HTTP APIs such as nginx in front of Relay's FastAPI service"
+            ]
+          ],
+          "verdict": "Prefer layer 7 for HTTP services so that balancing happens per request. Use layer 4 for non-HTTP protocols or when throughput matters more than routing."
+        },
+        {
+          "t": "h",
+          "text": "Choosing a backend"
+        },
+        {
+          "t": "list",
+          "items": [
+            "**Round robin** sends to each backend in turn. Even when requests cost about the same, uneven when some take 50 ms and others take 30 seconds.",
+            "**Least connections** sends to the backend with the fewest open requests. Better when cost varies, such as LLM streams of very different lengths.",
+            "**Hashing on a key** maps the same user or key to the same backend every time. Good for cache locality, skewed when a few keys are very hot.",
+            "**Consistent hashing** is a hashing scheme in which adding or removing one of N backends moves only about 1/N of the keys, instead of nearly all of them."
+          ]
+        },
+        {
+          "t": "check",
           "q": "Relay's API serves quick order lookups and chat streams that last up to 40 seconds, balanced round robin. Some copies hold 400 open requests while others hold 30. Which change spreads load best?",
-          "options": ["Switch the balancer to least connections", "Add more copies and keep round robin", "Hash on the customer ID"],
+          "options": [
+            "Switch the balancer to least connections",
+            "Add more copies and keep round robin",
+            "Hash on the customer ID"
+          ],
           "answer": 0,
-          "explain": "Round robin counts turns, not work, so a copy that happens to receive many long streams still gets its full share of new requests. Least connections sends new work to the least busy copy. More copies under round robin keep the same imbalance."},
-        {"t": "h", "text": "Health checks and sticky sessions"},
-        {"t": "p", "text": "A **health check** is a request the balancer sends to each backend on a schedule. Backends that fail it stop receiving traffic. The check proves only what it tests. A `/healthz` handler that returns 200 without touching anything proves that the process can answer HTTP, and nothing else."},
-        {"t": "code",
+          "explain": "Round robin counts turns, not work, so a copy that happens to receive many long streams still gets its full share of new requests. Least connections sends new work to the least busy copy. More copies under round robin keep the same imbalance."
+        },
+        {
+          "t": "h",
+          "text": "Health checks and sticky sessions"
+        },
+        {
+          "t": "p",
+          "text": "A **health check** is a request the balancer sends to each backend on a schedule. Backends that fail it stop receiving traffic. The check proves only what it tests. A `/healthz` handler that returns 200 without touching anything proves that the process can answer HTTP, and nothing else."
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "nginx in front of Relay's API, the parts that decide balancing",
           "code": "upstream relay_api {\n    least_conn;\n    server 10.0.1.11:8000 max_fails=3 fail_timeout=10s;\n    server 10.0.1.12:8000 max_fails=3 fail_timeout=10s;\n    server 10.0.1.13:8000 max_fails=3 fail_timeout=10s;\n    keepalive 32;\n}\n\nlocation /api/ {\n    proxy_pass http://relay_api;\n    proxy_http_version 1.1;\n    proxy_set_header Connection \"\";\n    proxy_read_timeout 120s;\n    proxy_buffering off;\n}",
@@ -103,24 +278,102 @@
             "`max_fails` and `fail_timeout` are passive checks: open-source nginx marks a backend unavailable after failed attempts in real traffic and does not send probe requests of its own.",
             "By default only connection errors and timeouts count as failed attempts. A backend that answers every request with a fast 500 stays in rotation.",
             "`proxy_read_timeout` is the longest silence allowed between two reads from the backend; the default is 60 seconds. `proxy_buffering off` lets streamed tokens through as they arrive."
-          ]},
-        {"t": "tradeoff",
+          ]
+        },
+        {
+          "t": "tradeoff",
           "title": "What the health check should test",
           "options": [
-            {"name": "Shallow check", "gain": ["A shared outage never removes every copy", "Cheap and fast"], "cost": ["Passes while the copy cannot do real work", "A broken copy keeps receiving its share of traffic"], "choose": "Choose this for liveness, the question of whether the process should be restarted."},
-            {"name": "Deep check on shared dependencies", "gain": ["Removes copies that cannot reach Postgres or Redis"], "cost": ["A database blip fails every copy at once", "The balancer is left with no backends", "Adds a query per check"], "choose": "Choose this rarely, and only when sending traffic to a copy that cannot reach the dependency is worse than refusing everyone."},
-            {"name": "Check of local resources", "gain": ["Catches faults in one copy, such as an exhausted connection pool", "Does not fail every copy for one shared blip"], "cost": ["More code in the handler", "Can still miss a broken code path"], "choose": "Choose this for readiness, for example by taking a pool connection within a short timeout."}
-          ]},
-        {"t": "p", "text": "**Sticky sessions** (session affinity) make the balancer send a user back to the same backend each time, usually by setting a cookie. They hide state left in an app server instead of removing it. When that backend restarts, is replaced in a deploy, or is removed by the autoscaler, its users lose whatever it held."},
-        {"t": "tradeoff",
+            {
+              "name": "Shallow check",
+              "gain": [
+                "A shared outage never removes every copy",
+                "Cheap and fast"
+              ],
+              "cost": [
+                "Passes while the copy cannot do real work",
+                "A broken copy keeps receiving its share of traffic"
+              ],
+              "choose": "Choose this for liveness, the question of whether the process should be restarted."
+            },
+            {
+              "name": "Deep check on shared dependencies",
+              "gain": [
+                "Removes copies that cannot reach Postgres or Redis"
+              ],
+              "cost": [
+                "A database blip fails every copy at once",
+                "The balancer is left with no backends",
+                "Adds a query per check"
+              ],
+              "choose": "Choose this rarely, and only when sending traffic to a copy that cannot reach the dependency is worse than refusing everyone."
+            },
+            {
+              "name": "Check of local resources",
+              "gain": [
+                "Catches faults in one copy, such as an exhausted connection pool",
+                "Does not fail every copy for one shared blip"
+              ],
+              "cost": [
+                "More code in the handler",
+                "Can still miss a broken code path"
+              ],
+              "choose": "Choose this for readiness, for example by taking a pool connection within a short timeout."
+            }
+          ]
+        },
+        {
+          "t": "p",
+          "text": "**Sticky sessions** (session affinity) make the balancer send a user back to the same backend each time, usually by setting a cookie. They hide state left in an app server instead of removing it. When that backend restarts, is replaced in a deploy, or is removed by the autoscaler, its users lose whatever it held."
+        },
+        {
+          "t": "tradeoff",
           "title": "Where a user's session lives",
           "options": [
-            {"name": "Sticky sessions", "gain": ["No new infrastructure", "Works with state already in memory"], "cost": ["Users logged out when their backend goes away", "Uneven load when some users are much heavier", "Every deploy disrupts sessions"], "choose": "Choose this as a stopgap, or when per-user state is expensive to rebuild and losing it now and then is acceptable."},
-            {"name": "External session store", "gain": ["Any copy can serve any user", "Deploys and scale-in keep sessions"], "cost": ["A Redis or database read on each request", "One more dependency that can fail"], "choose": "Choose this as the default for any service that runs more than one copy."}
-          ]},
-        {"t": "callout", "kind": "debug", "title": "One instance receives most of the traffic", "text": "Check in this order: long-lived connections (keep-alive, HTTP/2, WebSockets, SSE) still attached to copies that existed before a scale-out; sticky sessions with a few heavy users; a layer 4 balancer in front of multiplexed connections; clients that cached one DNS answer. If the imbalance stays after new copies join, connections are pinned."},
-        {"t": "callout", "kind": "insight", "title": "An API gateway is a layer 7 balancer with opinions", "text": "An **API gateway** is a reverse proxy that also authenticates, rate limits, and routes paths to different services. nginx in front of Relay plays a small version of this role. Each feature it takes on is one more place a request can be refused before your code sees it."},
-        {"t": "reveal", "prompt": "A health check runs a query against Postgres. Postgres fails over and is unreachable for 20 seconds. What does the load balancer do, and what do users see?", "answer": "Every copy fails its check at about the same time, so the balancer marks all backends unhealthy and users get errors from the balancer itself, often 502 or 503. A 20 second database blip becomes a full outage at the front door, and lasts longer if copies need several passing checks to return."}
+            {
+              "name": "Sticky sessions",
+              "gain": [
+                "No new infrastructure",
+                "Works with state already in memory"
+              ],
+              "cost": [
+                "Users logged out when their backend goes away",
+                "Uneven load when some users are much heavier",
+                "Every deploy disrupts sessions"
+              ],
+              "choose": "Choose this as a stopgap, or when per-user state is expensive to rebuild and losing it now and then is acceptable."
+            },
+            {
+              "name": "External session store",
+              "gain": [
+                "Any copy can serve any user",
+                "Deploys and scale-in keep sessions"
+              ],
+              "cost": [
+                "A Redis or database read on each request",
+                "One more dependency that can fail"
+              ],
+              "choose": "Choose this as the default for any service that runs more than one copy."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "One instance receives most of the traffic",
+          "text": "Check in this order: long-lived connections (keep-alive, HTTP/2, WebSockets, SSE) still attached to copies that existed before a scale-out; sticky sessions with a few heavy users; a layer 4 balancer in front of multiplexed connections; clients that cached one DNS answer. If the imbalance stays after new copies join, connections are pinned."
+        },
+        {
+          "t": "callout",
+          "kind": "insight",
+          "title": "An API gateway is a layer 7 balancer with opinions",
+          "text": "An **API gateway** is a reverse proxy that also authenticates, rate limits, and routes paths to different services. nginx in front of Relay plays a small version of this role. Each feature it takes on is one more place a request can be refused before your code sees it."
+        },
+        {
+          "t": "reveal",
+          "prompt": "A health check runs a query against Postgres. Postgres fails over and is unreachable for 20 seconds. What does the load balancer do, and what do users see?",
+          "answer": "Every copy fails its check at about the same time, so the balancer marks all backends unhealthy and users get errors from the balancer itself, often 502 or 503. A 20 second database blip becomes a full outage at the front door, and lasts longer if copies need several passing checks to return."
+        }
       ]
     },
     {
@@ -128,45 +381,175 @@
       "title": "Monolith, modular monolith, microservices",
       "minutes": 12,
       "blocks": [
-        {"t": "p", "text": "A **monolith** is one deployable unit that holds all of an application's code. **Microservices** split the application into separately deployed services that talk over the network. A **modular monolith** is one deployable unit with strict internal boundaries, where modules talk only through defined interfaces. Relay is one API service and one worker fleet, which is close to a monolith."},
-        {"t": "compare",
+        {
+          "t": "p",
+          "text": "A **monolith** is one deployable unit that holds all of an application's code. **Microservices** split the application into separately deployed services that talk over the network. A **modular monolith** is one deployable unit with strict internal boundaries, where modules talk only through defined interfaces. Relay is one API service and one worker fleet, which is close to a monolith."
+        },
+        {
+          "t": "compare",
           "caption": "Three ways to organize the same product",
-          "columns": ["", "Monolith", "Modular monolith", "Microservices"],
-          "rows": [
-            ["Deploy", "One artifact, one release", "One artifact, one release", "Each service on its own schedule"],
-            ["Call between parts", "A function call", "A function call through a defined interface", "A network call that can time out"],
-            ["Debugging one request", "One stack trace", "One stack trace", "A distributed trace across services"],
-            ["Data", "One database, joins anywhere", "One database, tables owned by modules", "A database per service, no cross-service joins"],
-            ["Team coordination", "Everyone in one codebase", "Owners per module, shared release", "Owners per service, contracts between them"],
-            ["Typical failure", "A change anywhere can break everything", "Boundaries erode under deadline pressure", "Cascading timeouts and version skew"]
+          "columns": [
+            "",
+            "Monolith",
+            "Modular monolith",
+            "Microservices"
           ],
-          "verdict": "Start with a monolith, keep it modular, and split out a service when one part needs a different scale, release cadence, failure tolerance, or owning team."},
-        {"t": "p", "text": "Splitting does not remove complexity. It turns function calls into network calls, and each one gains latency, a timeout, a retry policy, and a way to fail partially. Every failure mode from day 18 becomes possible inside your own product."},
-        {"t": "tradeoff",
+          "rows": [
+            [
+              "Deploy",
+              "One artifact, one release",
+              "One artifact, one release",
+              "Each service on its own schedule"
+            ],
+            [
+              "Call between parts",
+              "A function call",
+              "A function call through a defined interface",
+              "A network call that can time out"
+            ],
+            [
+              "Debugging one request",
+              "One stack trace",
+              "One stack trace",
+              "A distributed trace across services"
+            ],
+            [
+              "Data",
+              "One database, joins anywhere",
+              "One database, tables owned by modules",
+              "A database per service, no cross-service joins"
+            ],
+            [
+              "Team coordination",
+              "Everyone in one codebase",
+              "Owners per module, shared release",
+              "Owners per service, contracts between them"
+            ],
+            [
+              "Typical failure",
+              "A change anywhere can break everything",
+              "Boundaries erode under deadline pressure",
+              "Cascading timeouts and version skew"
+            ]
+          ],
+          "verdict": "Start with a monolith, keep it modular, and split out a service when one part needs a different scale, release cadence, failure tolerance, or owning team."
+        },
+        {
+          "t": "p",
+          "text": "Splitting does not remove complexity. It turns function calls into network calls, and each one gains latency, a timeout, a retry policy, and a way to fail partially. Every failure mode from day 18 becomes possible inside your own product."
+        },
+        {
+          "t": "tradeoff",
           "title": "Should the agent loop leave Relay's API?",
           "options": [
-            {"name": "Keep it in the API", "gain": ["One deploy, one trace, one log stream", "A change across the boundary is a normal code change"], "cost": ["The agent's heavy dependencies ship with every API change", "Cannot scale the agent apart from order pages"], "choose": "Choose this while one team owns both parts and they grow together."},
-            {"name": "Separate agent service", "gain": ["Scales and deploys on its own schedule", "An agent crash leaves login and order pages up"], "cost": ["A network hop with its own timeout and retries", "A versioned contract to keep compatible", "Two places to look for every bug"], "choose": "Choose this when the agent has a different load shape, failure tolerance, or owning team."}
-          ]},
-        {"t": "h", "text": "Service boundaries and discovery"},
-        {"t": "p", "text": "A good boundary lets two services change and deploy without asking each other. It usually follows a business capability, such as billing or search, and the service owns its own data. A bad boundary splits one workflow across services that must change together. The result is a **distributed monolith**: every cost of microservices with none of the independence."},
-        {"t": "callout", "kind": "pitfall", "title": "A deploy needs five services released in order", "text": "That release plan is the signature of a distributed monolith. The services share a contract that cannot change compatibly, or they share database tables. The fix is a boundary that matches how the code actually changes, or contracts that stay backward compatible so each service can ship alone."},
-        {"t": "p", "text": "**Service discovery** is how one service finds the current addresses of another. In Kubernetes it is a stable DNS name in front of changing pod addresses. Elsewhere it may be a registry such as Consul. When discovery is stale, calls go to copies that no longer exist and fail with connection refused or timeouts."},
-        {"t": "check",
+            {
+              "name": "Keep it in the API",
+              "gain": [
+                "One deploy, one trace, one log stream",
+                "A change across the boundary is a normal code change"
+              ],
+              "cost": [
+                "The agent's heavy dependencies ship with every API change",
+                "Cannot scale the agent apart from order pages"
+              ],
+              "choose": "Choose this while one team owns both parts and they grow together."
+            },
+            {
+              "name": "Separate agent service",
+              "gain": [
+                "Scales and deploys on its own schedule",
+                "An agent crash leaves login and order pages up"
+              ],
+              "cost": [
+                "A network hop with its own timeout and retries",
+                "A versioned contract to keep compatible",
+                "Two places to look for every bug"
+              ],
+              "choose": "Choose this when the agent has a different load shape, failure tolerance, or owning team."
+            }
+          ]
+        },
+        {
+          "t": "h",
+          "text": "Service boundaries and discovery"
+        },
+        {
+          "t": "p",
+          "text": "A good boundary lets two services change and deploy without asking each other. It usually follows a business capability, such as billing or search, and the service owns its own data. A bad boundary splits one workflow across services that must change together. The result is a **distributed monolith**: every cost of microservices with none of the independence."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "A deploy needs five services released in order",
+          "text": "That release plan is the signature of a distributed monolith. The services share a contract that cannot change compatibly, or they share database tables. The fix is a boundary that matches how the code actually changes, or contracts that stay backward compatible so each service can ship alone."
+        },
+        {
+          "t": "p",
+          "text": "**Service discovery** is how one service finds the current addresses of another. In Kubernetes it is a stable DNS name in front of changing pod addresses. Elsewhere it may be a registry such as Consul. When discovery is stale, calls go to copies that no longer exist and fail with connection refused or timeouts."
+        },
+        {
+          "t": "check",
           "q": "Relay's team split billing into its own service. Now every API release also needs a billing release in a fixed order, or refunds fail. What does this suggest most strongly?",
-          "options": ["The boundary cuts across a workflow that changes as one unit", "Billing needs more replicas to keep up with the API", "Service discovery is returning stale billing addresses"],
+          "options": [
+            "The boundary cuts across a workflow that changes as one unit",
+            "Billing needs more replicas to keep up with the API",
+            "Service discovery is returning stale billing addresses"
+          ],
           "answer": 0,
-          "explain": "Lockstep releases mean the two services cannot change independently, which was the point of splitting them. Replicas and discovery are runtime concerns, and neither forces an order on releases."},
-        {"t": "p", "text": "A second boundary question is whether to own a component at all. Queues, databases, search, auth, and model hosting can each be built and run by your team or bought as a managed service."},
-        {"t": "tradeoff",
+          "explain": "Lockstep releases mean the two services cannot change independently, which was the point of splitting them. Replicas and discovery are runtime concerns, and neither forces an order on releases."
+        },
+        {
+          "t": "p",
+          "text": "A second boundary question is whether to own a component at all. Queues, databases, search, auth, and model hosting can each be built and run by your team or bought as a managed service."
+        },
+        {
+          "t": "tradeoff",
           "title": "Build or buy a component",
           "options": [
-            {"name": "Buy a managed service", "gain": ["Running in days instead of months", "Patching, backups, and failover handled for you"], "cost": ["Less control over limits, versions, and outage timing", "Cost grows with usage", "Leaving later takes work"], "choose": "Choose this for anything that is not the product's advantage, such as Relay's database, queue, and model API."},
-            {"name": "Build it yourself", "gain": ["Exact fit to your access pattern", "No per-use fees or vendor limits"], "cost": ["Your team owns every outage and upgrade", "Months before it is as reliable as the bought one"], "choose": "Choose this when the component is the product's advantage, or when usage makes the bought version clearly worse or more expensive."}
-          ]},
-        {"t": "callout", "kind": "ai", "title": "Agent tools are service contracts", "text": "Each tool Relay's agent can call, such as `lookup_order`, is a contract between the model and your backend. Renaming an argument is a breaking change for every prompt and eval case that uses the tool, and deserves the same compatibility care as a public API."},
-        {"t": "callout", "kind": "debug", "title": "Debugging across a split", "text": "Once a request crosses services, a log search in one service shows half the story. Make sure a request ID travels in a header through every hop and appears in every log line, or you will be matching timestamps by hand."},
-        {"t": "reveal", "prompt": "A teammate proposes splitting Relay into eight services to make it easier to debug. What would you ask before agreeing?", "answer": "Which part needs to scale, deploy, or fail separately, and who will own each service. If nothing differs in load, release cadence, or ownership, the split adds network calls, distributed traces, and version skew, all of which make debugging harder. Clear module boundaries inside one service give most of the clarity at far lower cost."}
+            {
+              "name": "Buy a managed service",
+              "gain": [
+                "Running in days instead of months",
+                "Patching, backups, and failover handled for you"
+              ],
+              "cost": [
+                "Less control over limits, versions, and outage timing",
+                "Cost grows with usage",
+                "Leaving later takes work"
+              ],
+              "choose": "Choose this for anything that is not the product's advantage, such as Relay's database, queue, and model API."
+            },
+            {
+              "name": "Build it yourself",
+              "gain": [
+                "Exact fit to your access pattern",
+                "No per-use fees or vendor limits"
+              ],
+              "cost": [
+                "Your team owns every outage and upgrade",
+                "Months before it is as reliable as the bought one"
+              ],
+              "choose": "Choose this when the component is the product's advantage, or when usage makes the bought version clearly worse or more expensive."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "Agent tools are service contracts",
+          "text": "Each tool Relay's agent can call, such as `lookup_order`, is a contract between the model and your backend. Renaming an argument is a breaking change for every prompt and eval case that uses the tool, and deserves the same compatibility care as a public API."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Debugging across a split",
+          "text": "Once a request crosses services, a log search in one service shows half the story. Make sure a request ID travels in a header through every hop and appears in every log line, or you will be matching timestamps by hand."
+        },
+        {
+          "t": "reveal",
+          "prompt": "A teammate proposes splitting Relay into eight services to make it easier to debug. What would you ask before agreeing?",
+          "answer": "Which part needs to scale, deploy, or fail separately, and who will own each service. If nothing differs in load, release cadence, or ownership, the split adds network calls, distributed traces, and version skew, all of which make debugging harder. Clear module boundaries inside one service give most of the clarity at far lower cost."
+        }
       ]
     },
     {
@@ -174,18 +557,32 @@
       "title": "Walking through a design",
       "minutes": 15,
       "blocks": [
-        {"t": "p", "text": "A design review follows a procedure. You state what the system must do, put rough numbers on it, draw the path of the main request, find what saturates first, and make each choice with its cost named. This lesson walks that procedure for the backend of a general LLM chat product, larger than Relay."},
-        {"t": "list", "style": "number", "items": [
-          "**Requirements.** What users do, plus targets such as time to first token, availability, and how long conversations are kept.",
-          "**Numbers.** Users to requests per second, then peak, then concurrency, tokens, and storage. Orders of magnitude are enough.",
-          "**Data path.** One request from the browser to storage and back, with every hop named.",
-          "**Bottleneck.** The resource that saturates first as load grows.",
-          "**Choices.** At each step, the option picked and what it costs.",
-          "**Ten times.** What breaks first if the numbers grow tenfold, and what you would measure."
-        ]},
-        {"t": "h", "text": "Back-of-envelope numbers"},
-        {"t": "p", "text": "Assume 1 million daily active users, each sending 10 messages a day. Each turn sends the conversation so far, averaging 2,000 input tokens, and the model replies with about 300 output tokens. Peak traffic is three times the daily average. These are assumptions, and you state them out loud so others can challenge them."},
-        {"t": "code",
+        {
+          "t": "p",
+          "text": "A design review follows a procedure. You state what the system must do, put rough numbers on it, draw the path of the main request, find what saturates first, and make each choice with its cost named. This lesson walks that procedure for the backend of a general LLM chat product, larger than Relay."
+        },
+        {
+          "t": "list",
+          "style": "number",
+          "items": [
+            "**Requirements.** What users do, plus targets such as time to first token, availability, and how long conversations are kept.",
+            "**Numbers.** Users to requests per second, then peak, then concurrency, tokens, and storage. Orders of magnitude are enough.",
+            "**Data path.** One request from the browser to storage and back, with every hop named.",
+            "**Bottleneck.** The resource that saturates first as load grows.",
+            "**Choices.** At each step, the option picked and what it costs.",
+            "**Ten times.** What breaks first if the numbers grow tenfold, and what you would measure."
+          ]
+        },
+        {
+          "t": "h",
+          "text": "Back-of-envelope numbers"
+        },
+        {
+          "t": "p",
+          "text": "Assume 1 million daily active users, each sending 10 messages a day. Each turn sends the conversation so far, averaging 2,000 input tokens, and the model replies with about 300 output tokens. Peak traffic is three times the daily average. These are assumptions, and you state them out loud so others can challenge them."
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "The arithmetic, checked",
           "code": "messages per day     1,000,000 users x 10              = 10,000,000\naverage rate         10,000,000 / 86,400 s             ~ 116 per second\npeak rate            116 x 3                           ~ 350 per second\n\nstream duration      ~1 s to first token + 300 tokens at ~50 per s  ~ 7 s\nopen streams (peak)  350 per second x 7 s              ~ 2,500 at once\n\ninput tokens (peak)  350 x 2,000                       ~ 700,000 per second\noutput tokens (peak) 350 x 300                         ~ 105,000 per second\ninput per day        10,000,000 x 2,000                = 20 billion\n\nstored per exchange  user text + reply + metadata      ~ 2 KB\nstorage per day      10,000,000 x 2 KB                 ~ 20 GB\nstorage per year     20 GB x 365                       ~ 7 TB\ndatabase writes      350 x 2 rows                      ~ 700 inserts per second",
@@ -194,114 +591,270 @@
             "Input tokens dwarf output tokens because every turn resends the history. Trimming or summarizing history is the largest lever on cost and on the provider's tokens-per-minute limit.",
             "700 inserts per second is a moderate load for one Postgres primary. Seven terabytes a year is the number that forces a retention decision.",
             "The token rates are the first hard wall. They must fit under the provider's limits for your account at peak, not on average."
-          ]},
-        {"t": "flow",
+          ]
+        },
+        {
+          "t": "flow",
           "title": "One chat turn through the backend",
           "steps": [
-            {"actor": "Browser", "label": "Sends the message and opens a stream", "detail": "The browser posts the new message and keeps the response open as server-sent events, so tokens appear as they are generated.", "fail": "A proxy that buffers responses delivers the whole reply at the end, and the product feels frozen."},
-            {"actor": "Load balancer", "label": "Picks an API copy by least connections", "detail": "Streams last seconds, so least connections spreads open streams evenly. Idle timeouts are raised above the longest expected silence.", "fail": "A long pause before the first token trips the idle timeout, and the client sees the stream close with no reply."},
-            {"actor": "API", "label": "Authenticates and checks the user's budget", "detail": "The session and a per-user token budget live in Redis, so any copy can serve the turn.", "fail": "If Redis is down, the API must choose between failing open and failing closed on the budget."},
-            {"actor": "Postgres", "label": "Saves the user message, loads history", "detail": "The user message is written before the model is called, so a later crash cannot lose it. History is read by conversation ID and time, which one composite index serves.", "fail": "Without that index the history read becomes a scan that slows as the table grows."},
-            {"actor": "Model", "label": "Generates the reply as a stream", "detail": "The API calls the provider with the trimmed history and relays tokens to the browser as they arrive.", "fail": "429 or overload errors at peak, and a slow first token when the prompt is long."},
-            {"actor": "API", "label": "Saves the finished reply", "detail": "The reply and its token counts are written when the stream ends, with a status of complete, stopped, or failed.", "fail": "If the user closes the tab, the API must decide whether to finish and save the reply or cancel and stop paying for tokens."},
-            {"actor": "Worker", "label": "Runs follow-up work off the request", "detail": "Conversation titles, moderation, usage accounting, and search indexing go through the job queue so they never delay the reply.", "fail": "Queue lag shows as missing titles or late usage numbers, not as slow chat."}
-          ]},
-        {"t": "compare",
+            {
+              "actor": "Browser",
+              "label": "Sends the message and opens a stream",
+              "detail": "The browser posts the new message and keeps the response open as server-sent events, so tokens appear as they are generated.",
+              "fail": "A proxy that buffers responses delivers the whole reply at the end, and the product feels frozen."
+            },
+            {
+              "actor": "Load balancer",
+              "label": "Picks an API copy by least connections",
+              "detail": "Streams last seconds, so least connections spreads open streams evenly. Idle timeouts are raised above the longest expected silence.",
+              "fail": "A long pause before the first token trips the idle timeout, and the client sees the stream close with no reply."
+            },
+            {
+              "actor": "API",
+              "label": "Authenticates and checks the user's budget",
+              "detail": "The session and a per-user token budget live in Redis, so any copy can serve the turn.",
+              "fail": "If Redis is down, the API must choose between failing open and failing closed on the budget."
+            },
+            {
+              "actor": "Postgres",
+              "label": "Saves the user message, loads history",
+              "detail": "The user message is written before the model is called, so a later crash cannot lose it. History is read by conversation ID and time, which one composite index serves.",
+              "fail": "Without that index the history read becomes a scan that slows as the table grows."
+            },
+            {
+              "actor": "Model",
+              "label": "Generates the reply as a stream",
+              "detail": "The API calls the provider with the trimmed history and relays tokens to the browser as they arrive.",
+              "fail": "429 or overload errors at peak, and a slow first token when the prompt is long."
+            },
+            {
+              "actor": "API",
+              "label": "Saves the finished reply",
+              "detail": "The reply and its token counts are written when the stream ends, with a status of complete, stopped, or failed.",
+              "fail": "If the user closes the tab, the API must decide whether to finish and save the reply or cancel and stop paying for tokens."
+            },
+            {
+              "actor": "Worker",
+              "label": "Runs follow-up work off the request",
+              "detail": "Conversation titles, moderation, usage accounting, and search indexing go through the job queue so they never delay the reply.",
+              "fail": "Queue lag shows as missing titles or late usage numbers, not as slow chat."
+            }
+          ]
+        },
+        {
+          "t": "compare",
           "caption": "The choice made at each step",
-          "columns": ["", "Choice", "What it costs"],
-          "rows": [
-            ["Streaming", "Server-sent events through our API", "Long-lived connections; every proxy timeout must be tuned"],
-            ["Provider key", "Held by the API, never sent to the browser", "All traffic passes through us, so we carry every open stream"],
-            ["History", "Recent turns plus a running summary", "Cheaper and faster; the model can lose details from early turns"],
-            ["Message store", "Postgres, partitioned by month", "Simple queries; old partitions must be archived or dropped"],
-            ["Follow-up work", "Job queue and workers", "Results arrive later; one more system to watch"],
-            ["Model", "Hosted API, not self-hosted", "Pay per token and live within rate limits; no GPUs to run"]
+          "columns": [
+            "",
+            "Choice",
+            "What it costs"
           ],
-          "verdict": "Each row trades some quality, freshness, or control for cost and simplicity. Write each assumption next to its number, and say each trade out loud, so both can be revisited when the numbers change."},
-        {"t": "callout", "kind": "debug", "title": "Where this design breaks first", "text": "At ten times the load the provider limit fails before anything you run: about 7 million input tokens per second at peak. Watch time to first token, 429 counts from the provider, open streams per API copy, and the growth of the message table. Each maps to one row of the choice table."},
-        {"t": "callout", "kind": "pitfall", "title": "Answering with components instead of numbers", "text": "A design that lists Kafka, a vector database, and five services before any number is computed is a memorized answer. At 350 requests per second, a stateless API, one Postgres primary, Redis, and a queue can carry the first version. The numbers tell you where complexity is worth paying for."},
-        {"t": "check",
+          "rows": [
+            [
+              "Streaming",
+              "Server-sent events through our API",
+              "Long-lived connections; every proxy timeout must be tuned"
+            ],
+            [
+              "Provider key",
+              "Held by the API, never sent to the browser",
+              "All traffic passes through us, so we carry every open stream"
+            ],
+            [
+              "History",
+              "Recent turns plus a running summary",
+              "Cheaper and faster; the model can lose details from early turns"
+            ],
+            [
+              "Message store",
+              "Postgres, partitioned by month",
+              "Simple queries; old partitions must be archived or dropped"
+            ],
+            [
+              "Follow-up work",
+              "Job queue and workers",
+              "Results arrive later; one more system to watch"
+            ],
+            [
+              "Model",
+              "Hosted API, not self-hosted",
+              "Pay per token and live within rate limits; no GPUs to run"
+            ]
+          ],
+          "verdict": "Each row trades some quality, freshness, or control for cost and simplicity. Write each assumption next to its number, and say each trade out loud, so both can be revisited when the numbers change."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Where this design breaks first",
+          "text": "At ten times the load the provider limit fails before anything you run: about 7 million input tokens per second at peak. Watch time to first token, 429 counts from the provider, open streams per API copy, and the growth of the message table. Each maps to one row of the choice table."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Answering with components instead of numbers",
+          "text": "A design that lists Kafka, a vector database, and five services before any number is computed is a memorized answer. At 350 requests per second, a stateless API, one Postgres primary, Redis, and a queue can carry the first version. The numbers tell you where complexity is worth paying for."
+        },
+        {
+          "t": "check",
           "q": "Product wants to double the history sent with each turn to improve answers. Using the numbers above, which resource does this affect most?",
-          "options": ["Input tokens, and with them cost, first-token latency, and the rate limit", "Database storage, because each stored message doubles in size", "Open streams, because each stream lasts twice as long", "Database writes, because each turn writes twice as many rows"],
+          "options": [
+            "Input tokens, and with them cost, first-token latency, and the rate limit",
+            "Database storage, because each stored message doubles in size",
+            "Open streams, because each stream lasts twice as long",
+            "Database writes, because each turn writes twice as many rows"
+          ],
           "answer": 0,
-          "explain": "History is resent as input on every turn, so doubling it roughly doubles input tokens, which drive cost, the tokens-per-minute limit, and time to first token. Stored messages keep their size, and output length, which sets stream duration, does not change."},
-        {"t": "reveal", "prompt": "Redo the numbers for 30 messages per user per day instead of 10. Which numbers change, and which decisions are most affected?", "answer": "Everything triples: about 1,050 requests per second at peak, about 7,500 open streams, 2.1 million input tokens per second, and about 21 TB of messages a year. The provider rate limit and the retention policy are hit hardest. The stateless API simply runs more copies."}
+          "explain": "History is resent as input on every turn, so doubling it roughly doubles input tokens, which drive cost, the tokens-per-minute limit, and time to first token. Stored messages keep their size, and output length, which sets stream duration, does not change."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Redo the numbers for 30 messages per user per day instead of 10. Which numbers change, and which decisions are most affected?",
+          "answer": "Everything triples: about 1,050 requests per second at peak, about 7,500 open streams, 2.1 million input tokens per second, and about 22 TB of messages a year. The provider rate limit and the retention policy are hit hardest. The stateless API simply runs more copies."
+        }
       ]
     }
   ],
   "fieldGuide": [
     {
       "symptom": "Users randomly logged out, more often since the service runs on several instances",
-      "causes": ["Sessions kept in one instance's memory", "Each instance signs cookies with its own key generated at startup", "Sticky sessions lost when an instance restarts or scales in"],
+      "causes": [
+        "Sessions kept in one instance's memory",
+        "Each instance signs cookies with its own key generated at startup",
+        "Sticky sessions lost when an instance restarts or scales in"
+      ],
       "look": "Which instance served each request that lost its session, and whether the session record still exists in the store.",
       "confirm": "Lost sessions cluster on particular instances, or start right after a scale-out or deploy.",
       "fix": "Move sessions to Redis or Postgres and load one shared signing secret on every instance. This costs a store read per request."
     },
     {
       "symptom": "One instance receives most of the traffic",
-      "causes": ["Long-lived connections still attached to instances that existed before a scale-out", "Sticky sessions with a few heavy users", "Hashing on a hot key", "Round robin with requests of very different cost"],
+      "causes": [
+        "Long-lived connections still attached to instances that existed before a scale-out",
+        "Sticky sessions with a few heavy users",
+        "Hashing on a hot key",
+        "Round robin with requests of very different cost"
+      ],
       "look": "Requests and open connections per instance in the balancer's metrics, and the balancing algorithm in its configuration.",
       "confirm": "The imbalance follows connections or keys rather than instance capacity, and stays after new instances join.",
       "fix": "Use least connections, cap connection lifetime so clients reconnect, or remove stickiness. Shorter connections cost some extra handshakes."
     },
     {
       "symptom": "Health check passes while the service is broken",
-      "causes": ["The check returns 200 without touching anything requests need", "The fault is in a code path the check never exercises"],
+      "causes": [
+        "The check returns 200 without touching anything requests need",
+        "The fault is in a code path the check never exercises"
+      ],
       "look": "Error rate per instance next to health check status, and the code of the health handler.",
       "confirm": "One instance shows a high 5xx rate while its health checks stay green.",
       "fix": "Make readiness test resources local to the instance, such as taking a pool connection quickly. Avoid failing on a shared dependency, which would remove every instance at once."
     },
     {
       "symptom": "Every instance marked unhealthy at once during a brief database blip",
-      "causes": ["Health check depends on a dependency all instances share"],
+      "causes": [
+        "Health check depends on a dependency all instances share"
+      ],
       "look": "The balancer's target status timeline next to the database event.",
       "confirm": "All targets turn unhealthy within one check interval of the database event.",
       "fix": "Keep liveness shallow and readiness local. The cost is that some requests fail with errors during the blip instead of the balancer refusing all of them."
     },
     {
       "symptom": "A deploy needs five services released in a fixed order",
-      "causes": ["Services share a contract that cannot change compatibly", "Services share database tables", "A boundary splits one workflow"],
+      "causes": [
+        "Services share a contract that cannot change compatibly",
+        "Services share database tables",
+        "A boundary splits one workflow"
+      ],
       "look": "Recent release plans and pull requests: which services changed together.",
       "confirm": "The same services change in the same releases most of the time.",
       "fix": "Make contract changes backward compatible, or merge services that always change together. Merging gives up independent scaling for simpler releases."
     },
     {
       "symptom": "Adding instances made latency and errors worse",
-      "causes": ["Each new instance opens more database connections", "More copies send more concurrent calls to a rate-limited provider"],
+      "causes": [
+        "Each new instance opens more database connections",
+        "More copies send more concurrent calls to a rate-limited provider"
+      ],
       "look": "Database connection count and provider rate-limit headers during the scale-out.",
       "confirm": "Connection errors or 429s rise in step with instance count.",
       "fix": "Cap the autoscaler's maximum, put a connection pooler in front of Postgres, and size pools per instance. The cap means requests queue at the edge under extreme load."
     },
     {
       "symptom": "Autoscaler never adds instances while users wait",
-      "causes": ["Scaling on CPU for an I/O-bound service"],
+      "causes": [
+        "Scaling on CPU for an I/O-bound service"
+      ],
       "look": "CPU next to in-flight requests and latency per instance during the slow period.",
       "confirm": "CPU stays low while in-flight requests per instance sit at the worker limit.",
       "fix": "Scale on concurrency or queue depth. These signals also rise when a dependency is slow, so cap the maximum."
     },
     {
       "symptom": "Scheduled email or report sent several times",
-      "causes": ["Every instance runs the same in-process scheduler"],
+      "causes": [
+        "Every instance runs the same in-process scheduler"
+      ],
       "look": "Job logs grouped by instance at the scheduled minute.",
       "confirm": "One run per instance, all at the same minute.",
       "fix": "Run schedules in one place, or take a lock in Redis or Postgres before running. A lock must expire if its holder dies, or the job stops running."
     }
   ],
   "glossary": [
-    {"term": "Vertical scaling (scaling up)", "def": "Adding CPU, memory, or faster disks to one machine. Simple, with a hard ceiling and a single point of failure."},
-    {"term": "Horizontal scaling (scaling out)", "def": "Adding more copies of a service behind a load balancer. Requires that any copy can handle any request."},
-    {"term": "Stateless service", "def": "A service whose processes keep nothing between requests that a later request needs. Its state lives in a database, cache, or object store."},
-    {"term": "Load balancer", "def": "A component that receives traffic and sends each connection or request to one healthy backend copy."},
-    {"term": "Layer 4 vs layer 7", "def": "Layer 4 balancing chooses per TCP connection using addresses and ports. Layer 7 balancing reads HTTP and chooses per request."},
-    {"term": "Consistent hashing", "def": "A way to map keys to backends so that adding or removing one of N backends moves only about 1/N of the keys."},
-    {"term": "Health check", "def": "A periodic probe from the balancer or orchestrator to a backend. It proves only what the handler actually tests."},
-    {"term": "Sticky sessions", "def": "Balancer behavior that sends a user back to the same backend each time, usually by cookie. It hides local state rather than removing it."},
-    {"term": "API gateway", "def": "A reverse proxy at the edge that also authenticates, rate limits, and routes requests to different services."},
-    {"term": "Modular monolith", "def": "One deployable application with strict internal module boundaries, so modules interact only through defined interfaces."},
-    {"term": "Distributed monolith", "def": "Services that are deployed separately but must change and release together, paying the costs of microservices without their independence."},
-    {"term": "Service discovery", "def": "The mechanism that tells a service the current addresses of another, such as a DNS name in front of changing instances."},
-    {"term": "Little's law", "def": "The average number of items in a system equals arrival rate times average time in the system. 350 requests per second lasting 7 seconds means about 2,450 open."},
-    {"term": "Back-of-envelope estimate", "def": "A rough calculation from stated assumptions to orders of magnitude, used to find the bottleneck before building anything."}
+    {
+      "term": "Vertical scaling (scaling up)",
+      "def": "Adding CPU, memory, or faster disks to one machine. Simple, with a hard ceiling and a single point of failure."
+    },
+    {
+      "term": "Horizontal scaling (scaling out)",
+      "def": "Adding more copies of a service behind a load balancer. Requires that any copy can handle any request."
+    },
+    {
+      "term": "Stateless service",
+      "def": "A service whose processes keep nothing between requests that a later request needs. Its state lives in a database, cache, or object store."
+    },
+    {
+      "term": "Load balancer",
+      "def": "A component that receives traffic and sends each connection or request to one healthy backend copy."
+    },
+    {
+      "term": "Layer 4 vs layer 7",
+      "def": "Layer 4 balancing chooses per TCP connection using addresses and ports. Layer 7 balancing reads HTTP and chooses per request."
+    },
+    {
+      "term": "Consistent hashing",
+      "def": "A way to map keys to backends so that adding or removing one of N backends moves only about 1/N of the keys."
+    },
+    {
+      "term": "Health check",
+      "def": "A periodic probe from the balancer or orchestrator to a backend. It proves only what the handler actually tests."
+    },
+    {
+      "term": "Sticky sessions",
+      "def": "Balancer behavior that sends a user back to the same backend each time, usually by cookie. It hides local state rather than removing it."
+    },
+    {
+      "term": "API gateway",
+      "def": "A reverse proxy at the edge that also authenticates, rate limits, and routes requests to different services."
+    },
+    {
+      "term": "Modular monolith",
+      "def": "One deployable application with strict internal module boundaries, so modules interact only through defined interfaces."
+    },
+    {
+      "term": "Distributed monolith",
+      "def": "Services that are deployed separately but must change and release together, paying the costs of microservices without their independence."
+    },
+    {
+      "term": "Service discovery",
+      "def": "The mechanism that tells a service the current addresses of another, such as a DNS name in front of changing instances."
+    },
+    {
+      "term": "Little's law",
+      "def": "The average number of items in a system equals arrival rate times average time in the system. 350 requests per second lasting 7 seconds means about 2,450 open."
+    },
+    {
+      "term": "Back-of-envelope estimate",
+      "def": "A rough calculation from stated assumptions to orders of magnitude, used to find the bottleneck before building anything."
+    }
   ],
   "apply": {
     "title": "Put numbers on your own project's design",
@@ -318,7 +871,10 @@
       "id": "d19-q01",
       "type": "mcq",
       "level": 2,
-      "tags": ["statelessness", "sessions"],
+      "tags": [
+        "statelessness",
+        "sessions"
+      ],
       "diagnostic": true,
       "q": "A web API keeps each user's session in a dictionary inside its process. A second copy is added behind a round-robin load balancer. What happens?",
       "options": [
@@ -329,15 +885,27 @@
       ],
       "answer": 0,
       "explain": "Each process has its own memory, so a session created on one copy does not exist on the other. Round robin sends about half of each user's requests to the copy that has never seen them. Running the same code does not mean sharing memory.",
-      "why": ["", "Balancers route traffic; they do not replicate application state between backends.", "Identical code still runs in separate processes with separate memory.", "Memory size is unrelated; the session is missing on the other copy from the first request."]
+      "why": [
+        "",
+        "Balancers route traffic; they do not replicate application state between backends.",
+        "Identical code still runs in separate processes with separate memory.",
+        "Memory size is unrelated; the session is missing on the other copy from the first request."
+      ]
     },
     {
       "id": "d19-q02",
       "type": "mcq",
       "level": 3,
-      "tags": ["load-balancing", "scaling-out"],
+      "tags": [
+        "load-balancing",
+        "scaling-out"
+      ],
       "context": "A chat service's clients each hold one long-lived connection to the API for as long as the app is open. During a traffic spike two new copies were added 12 minutes ago, and latency has not improved.",
-      "artifact": {"lang": "text", "title": "Balancer metrics per backend", "code": "backend  age   open_conns  req/s  cpu   health\napi-1    6h    1,840       41     22%   healthy\napi-2    6h    1,795       39     21%   healthy\napi-3    12m   38          3      4%    healthy\napi-4    12m   41          3      4%    healthy\nbalancing: layer 4, round robin per new connection; no max connection lifetime"},
+      "artifact": {
+        "lang": "text",
+        "title": "Balancer metrics per backend",
+        "code": "backend  age   open_conns  req/s  cpu   health\napi-1    6h    1,840       41     22%   healthy\napi-2    6h    1,795       39     21%   healthy\napi-3    12m   38          3      4%    healthy\napi-4    12m   41          3      4%    healthy\nbalancing: layer 4, round robin per new connection; no max connection lifetime"
+      },
       "q": "Why are the new copies nearly idle?",
       "options": [
         "The new copies are failing health checks and receive no traffic",
@@ -347,13 +915,20 @@
       ],
       "answer": 2,
       "explain": "A layer 4 balancer places connections, not requests. Clients connected before the scale-out stay on api-1 and api-2 until they reconnect, so only the trickle of new connections reaches api-3 and api-4. Their health is fine; they are serving a few requests per second.",
-      "why": ["The table shows them healthy and serving a few requests per second.", "Round robin has no age rule; the new copies are getting their share of new connections.", "", "Their CPU is at 4 percent, so nothing is being throttled; they simply have little work."]
+      "why": [
+        "The table shows them healthy and serving a few requests per second.",
+        "Round robin has no age rule; the new copies are getting their share of new connections.",
+        "",
+        "Their CPU is at 4 percent, so nothing is being throttled; they simply have little work."
+      ]
     },
     {
       "id": "d19-q03",
       "type": "mcq",
       "level": 2,
-      "tags": ["health-checks"],
+      "tags": [
+        "health-checks"
+      ],
       "q": "Relay's readiness check runs `SELECT 1` against Postgres, which all API copies share. What is the main risk of this design?",
       "options": [
         "The extra query adds noticeable load to the shared database",
@@ -363,13 +938,21 @@
       ],
       "answer": 1,
       "explain": "Because every copy shares Postgres, one database blip fails every check at once and the front door refuses all traffic. The cheap query is not a real load concern, and a check that sends a request does notice a process that has stopped answering.",
-      "why": ["`SELECT 1` every few seconds per copy is negligible for Postgres.", "", "If the process stops answering HTTP, the check request fails too, so this is detected.", "A readiness check only removes a copy from rotation; restarts come from a liveness check."]
+      "why": [
+        "`SELECT 1` every few seconds per copy is negligible for Postgres.",
+        "",
+        "If the process stops answering HTTP, the check request fails too, so this is detected.",
+        "A readiness check only removes a copy from rotation; restarts come from a liveness check."
+      ]
     },
     {
       "id": "d19-q04",
       "type": "mcq",
       "level": 3,
-      "tags": ["sessions", "statelessness"],
+      "tags": [
+        "sessions",
+        "statelessness"
+      ],
       "context": "After Relay's API moved from one instance to three, most customers are logged out within minutes of logging in. Sessions are stored in Redis under an ID carried in a signed cookie. For logged-out users the session record is still present in Redis. Two of the three instances log `SECRET_KEY not set, using a random key` at startup.",
       "q": "What is the cause?",
       "options": [
@@ -380,13 +963,21 @@
       ],
       "answer": 1,
       "explain": "The session records still exist, which rules out eviction and TTL. A cookie signed by one instance fails verification on an instance with a different random key, so the user looks logged out. Sticky sessions would hide this until an instance restarted; one shared secret fixes it.",
-      "why": ["Evicted or expired keys would be missing from Redis, and they are present.", "", "Stickiness would mask the mismatch, and users would still be logged out whenever their instance changed.", "An expired TTL would remove the record, which is still there."]
+      "why": [
+        "Evicted or expired keys would be missing from Redis, and they are present.",
+        "",
+        "Stickiness would mask the mismatch, and users would still be logged out whenever their instance changed.",
+        "An expired TTL would remove the record, which is still there."
+      ]
     },
     {
       "id": "d19-q05",
       "type": "mcq",
       "level": 2,
-      "tags": ["microservices", "monolith"],
+      "tags": [
+        "microservices",
+        "monolith"
+      ],
       "context": "Relay has four engineers. The order lookup, refund, and chat code change together in most releases. A proposal splits them into three services.",
       "q": "What is the strongest argument against the split?",
       "options": [
@@ -397,15 +988,27 @@
       ],
       "answer": 3,
       "explain": "When parts change together, splitting them produces lockstep releases and version skew, the signature of a distributed monolith. Independent scaling and tracing are both possible with services, which is why they are tempting as wrong answers.",
-      "why": ["Independent scaling is one of the real benefits of separate services.", "Distributed tracing with a propagated request ID follows a request across services.", "Services can share a language; nothing forces a different one.", ""]
+      "why": [
+        "Independent scaling is one of the real benefits of separate services.",
+        "Distributed tracing with a propagated request ID follows a request across services.",
+        "Services can share a language; nothing forces a different one.",
+        ""
+      ]
     },
     {
       "id": "d19-q06",
       "type": "mcq",
       "level": 3,
-      "tags": ["estimation", "capacity"],
+      "tags": [
+        "estimation",
+        "capacity"
+      ],
       "context": "A teammate sized an internal chat tool before choosing its infrastructure.",
-      "artifact": {"lang": "text", "title": "The estimate", "code": "daily active users       200,000\nmessages per user/day    5\nmessages per day         1,000,000\naverage per second       1,000,000 / 3,600 = 278\npeak (x3)                ~830 per second"},
+      "artifact": {
+        "lang": "text",
+        "title": "The estimate",
+        "code": "daily active users       200,000\nmessages per user/day    5\nmessages per day         1,000,000\naverage per second       1,000,000 / 3,600 = 278\npeak (x3)                ~830 per second"
+      },
       "q": "What is wrong, and what is a better peak estimate?",
       "options": [
         "Peak should be ten times the average, so about 2,800 per second",
@@ -415,13 +1018,20 @@
       ],
       "answer": 3,
       "explain": "The teammate divided a daily total by the seconds in an hour. One million over 86,400 is about 12 per second, and three times that is about 35. The error inflated the estimate by 24 times, enough to justify infrastructure the tool does not need.",
-      "why": ["The peak factor is an assumption to discuss, but the division by 3,600 is the real error.", "200,000 users times 5 messages is 1,000,000, so the daily total is right.", "Dividing by 3,600 treats the whole day's traffic as if it arrived in one hour.", ""]
+      "why": [
+        "The peak factor is an assumption to discuss, but the division by 3,600 is the real error.",
+        "200,000 users times 5 messages is 1,000,000, so the daily total is right.",
+        "Dividing by 3,600 treats the whole day's traffic as if it arrived in one hour.",
+        ""
+      ]
     },
     {
       "id": "d19-q07",
       "type": "mcq",
       "level": 2,
-      "tags": ["build-vs-buy"],
+      "tags": [
+        "build-vs-buy"
+      ],
       "context": "Relay needs a job queue for triage and email. The team is small, and queuing is not part of what makes Relay valuable to customers.",
       "q": "Which choice follows the build-or-buy reasoning from this day?",
       "options": [
@@ -432,13 +1042,21 @@
       ],
       "answer": 2,
       "explain": "A queue is a solved problem and not Relay's advantage, so buying or adopting a standard one frees the team for the agent. Moving triage into the request avoids a dependency but puts slow work on the user's wait, which is why queues exist.",
-      "why": ["Custom infrastructure makes the team own every outage of a component that is not its advantage.", "Running slow triage inside the request makes users wait and loses retries.", "", "Language speed is not the constraint; the cost is building and operating the queue at all."]
+      "why": [
+        "Custom infrastructure makes the team own every outage of a component that is not its advantage.",
+        "Running slow triage inside the request makes users wait and loses retries.",
+        "",
+        "Language speed is not the constraint; the cost is building and operating the queue at all."
+      ]
     },
     {
       "id": "d19-q08",
       "type": "multi",
       "level": 2,
-      "tags": ["statelessness", "scaling-out"],
+      "tags": [
+        "statelessness",
+        "scaling-out"
+      ],
       "q": "Which of these must move out of the process before Relay's API can run as several interchangeable copies? Select all that apply.",
       "options": [
         "Session data kept in a module-level dictionary",
@@ -448,14 +1066,22 @@
         "The database URL read from an environment variable",
         "A signing key generated randomly at startup"
       ],
-      "answers": [0, 1, 2, 5],
+      "answers": [
+        0,
+        1,
+        2,
+        5
+      ],
       "explain": "Sessions, local files, in-process timers, and random startup keys all differ or duplicate between copies. Route definitions are code, identical in every copy, and an environment variable set the same way everywhere is configuration, not state."
     },
     {
       "id": "d19-q09",
       "type": "multi",
       "level": 2,
-      "tags": ["microservices", "distributed-monolith"],
+      "tags": [
+        "microservices",
+        "distributed-monolith"
+      ],
       "q": "Which of these are signs of a distributed monolith? Select all that apply.",
       "options": [
         "Releases of several services must happen in a fixed order",
@@ -464,14 +1090,21 @@
         "Each service has its own on-call rotation",
         "Services talk through versioned, backward-compatible APIs"
       ],
-      "answers": [0, 1, 2],
+      "answers": [
+        0,
+        1,
+        2
+      ],
       "explain": "Ordered releases, shared tables, and changes that always span services all show that the parts cannot change independently. Separate on-call and versioned compatible APIs are signs of healthy independence, the goal of splitting in the first place."
     },
     {
       "id": "d19-q10",
       "type": "order",
       "level": 2,
-      "tags": ["system-design", "estimation"],
+      "tags": [
+        "system-design",
+        "estimation"
+      ],
       "q": "Put the steps of a design walkthrough in order.",
       "items": [
         "State the requirements and the latency and retention targets",
@@ -486,14 +1119,33 @@
       "id": "d19-q11",
       "type": "match",
       "level": 3,
-      "tags": ["load-balancing", "health-checks", "statelessness"],
+      "tags": [
+        "load-balancing",
+        "health-checks",
+        "statelessness"
+      ],
       "q": "Match each observation to its most likely cause.",
       "pairs": [
-        ["Logged out when a request hits another copy", "Session kept in one process's memory"],
-        ["Nightly email sent three times", "Each copy runs its own scheduler"],
-        ["New copies idle after a scale-out", "Long-lived connections stay on the old copies"],
-        ["One copy errors while its health check is green", "The health handler tests nothing that requests need"],
-        ["Releases need a fixed order across services", "A service boundary splits one workflow"]
+        [
+          "Logged out when a request hits another copy",
+          "Session kept in one process's memory"
+        ],
+        [
+          "Nightly email sent three times",
+          "Each copy runs its own scheduler"
+        ],
+        [
+          "New copies idle after a scale-out",
+          "Long-lived connections stay on the old copies"
+        ],
+        [
+          "One copy errors while its health check is green",
+          "The health handler tests nothing that requests need"
+        ],
+        [
+          "Releases need a fixed order across services",
+          "A service boundary splits one workflow"
+        ]
       ],
       "explain": "Each symptom follows from where state or connections live. Asking which copy served the failing request, and what that copy holds that others do not, resolves most scaling surprises."
     },
@@ -501,7 +1153,11 @@
       "id": "d19-q12",
       "type": "open",
       "level": 3,
-      "tags": ["system-design", "estimation", "llm-cost"],
+      "tags": [
+        "system-design",
+        "estimation",
+        "llm-cost"
+      ],
       "context": "For the chat product in lesson 4 (1 million daily users, 10 messages each, 2,000 input tokens per turn, peak three times average), a teammate proposes sending the full conversation history on every turn and dropping the running summary.",
       "q": "Explain how you would evaluate the proposal.",
       "rubric": [
@@ -519,7 +1175,11 @@
       "id": "d19-x1",
       "title": "Logged out at random after the scale-out",
       "brief": "Since Tuesday, support has received complaints that Relay logs customers out mid-conversation, sometimes twice in a minute. On Tuesday morning the team turned on autoscaling for the API, which now runs between two and six instances. Sessions are stored in Redis under a session ID carried in a signed cookie. Nobody changed the login code.",
-      "artifact": {"lang": "log", "title": "API access log, one customer", "code": "10:14:02 POST /chat/send     200 user=u_381\n10:14:09 POST /chat/send     401 user=- reason=no_session\n10:14:11 GET  /chat/history  200 user=u_381\n10:14:15 POST /chat/send     401 user=- reason=no_session\n10:14:20 POST /chat/send     200 user=u_381"},
+      "artifact": {
+        "lang": "log",
+        "title": "API access log, one customer",
+        "code": "10:14:02 POST /chat/send     200 user=u_381\n10:14:09 POST /chat/send     401 user=- reason=no_session\n10:14:11 GET  /chat/history  200 user=u_381\n10:14:15 POST /chat/send     401 user=- reason=no_session\n10:14:20 POST /chat/send     200 user=u_381"
+      },
       "steps": [
         {
           "q": "The same cookie succeeds and fails within seconds. What do you check first?",
@@ -532,7 +1192,11 @@
           "answer": 1,
           "explain": "A cookie that works, fails, and works again within seconds points at whatever differs between requests, and the serving instance is the obvious candidate. Splitting by instance is one query. Changing the TTL or turning on stickiness is a fix for a cause you have not found, and the login code did not change.",
           "reveal": "Most unexpected 401s come from the two instances the autoscaler created since Tuesday. The two older instances serve a few hundred, and served none before Tuesday.",
-          "artifact": {"lang": "text", "title": "Unexpected 401s by instance, last hour", "code": "instance   created          requests   unexpected_401\napi-a7     2 weeks ago      9,120      412\napi-b4     2 weeks ago      8,977      398\napi-c2     Tue 09:12        8,640      2,911\napi-f9     Tue 11:40        8,702      2,958"}
+          "artifact": {
+            "lang": "text",
+            "title": "Unexpected 401s by instance, last hour",
+            "code": "instance   created          requests   unexpected_401\napi-a7     2 weeks ago      9,120      412\napi-b4     2 weeks ago      8,977      398\napi-c2     Tue 09:12        8,640      2,911\napi-f9     Tue 11:40        8,702      2,958"
+          }
         },
         {
           "q": "Which explanation fits this pattern, and what would confirm it?",
@@ -545,7 +1209,11 @@
           "answer": 2,
           "explain": "Eviction would hit sessions regardless of which instance asks, so it cannot explain a clean split by instance. A difference in how new instances verify cookies matches the pattern exactly, and startup configuration is where that difference would live.",
           "reveal": "The session record for a logged-out customer is still in Redis. Both new instances log a warning at startup. The autoscaler's launch template was copied from an old one that never set `SECRET_KEY`.",
-          "artifact": {"lang": "log", "title": "api-c2 startup", "code": "09:12:31 WARNING config: SECRET_KEY not set, generating a temporary random key\n09:12:31 INFO    uvicorn: Application startup complete."}
+          "artifact": {
+            "lang": "log",
+            "title": "api-c2 startup",
+            "code": "09:12:31 WARNING config: SECRET_KEY not set, generating a temporary random key\n09:12:31 INFO    uvicorn: Application startup complete."
+          }
         },
         {
           "q": "What is the right fix?",
@@ -590,7 +1258,11 @@
           "answer": 1,
           "explain": "An error rate stuck near 25 percent with four instances suggests one instance failing everything. The breakdown takes a minute and tells you whether the problem is the build, the database, or one copy. Rolling back or restarting first would destroy that evidence.",
           "reveal": "Almost every 5xx comes from api-3. All four instances run the same build, and the other three are serving normally.",
-          "artifact": {"lang": "text", "title": "Last 30 minutes by instance", "code": "instance  build    requests  5xx    health\napi-1     4f2a91   6,912     3      healthy\napi-2     4f2a91   6,870     2      healthy\napi-3     4f2a91   6,955     6,931  healthy\napi-4     4f2a91   6,898     4      healthy"}
+          "artifact": {
+            "lang": "text",
+            "title": "Last 30 minutes by instance",
+            "code": "instance  build    requests  5xx    health\napi-1     4f2a91   6,912     3      healthy\napi-2     4f2a91   6,870     2      healthy\napi-3     4f2a91   6,955     6,931  healthy\napi-4     4f2a91   6,898     4      healthy"
+          }
         },
         {
           "q": "The build is the same everywhere. What do you read next?",
@@ -603,7 +1275,11 @@
           "answer": 2,
           "explain": "The fault is local to one instance running the same code as healthy ones, so that instance's own logs are the cheapest evidence. The deploy diff is the same for all four, and Postgres is serving the other three normally.",
           "reveal": "Each failing request waits 30 seconds for a database connection and gives up. Meanwhile the health check answers 200 in a millisecond. In Postgres, `pg_stat_activity` shows ten connections from api-3 in state `idle in transaction` since 14:19.",
-          "artifact": {"lang": "log", "title": "api-3", "code": "14:52:10 ERROR POST /chat/send sqlalchemy.exc.TimeoutError: QueuePool limit of size 10\n         overflow 0 reached, connection timed out, timeout 30.00\n14:52:11 INFO  GET /healthz 200 1ms"}
+          "artifact": {
+            "lang": "log",
+            "title": "api-3",
+            "code": "14:52:10 ERROR POST /chat/send sqlalchemy.exc.TimeoutError: QueuePool limit of size 10\n         overflow 0 reached, connection timed out, timeout 30.00\n14:52:11 INFO  GET /healthz 200 1ms"
+          }
         },
         {
           "q": "Why does the load balancer keep sending traffic to api-3?",

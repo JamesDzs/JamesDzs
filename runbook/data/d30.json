@@ -19,50 +19,176 @@
       "title": "The master map: from symptom to layer",
       "minutes": 14,
       "blocks": [
-        {"t": "p", "text": "Every incident reaches you as one of five symptoms: something errors, something is slow, something is wrong, something happens only sometimes, or something costs too much. Each symptom points to a short list of layers. Your first move is the cheapest piece of evidence that cuts that list in half."},
-        {"t": "p", "text": "Before any layer, ask the Day 6 question: what changed? In Relay, change comes from more places than code. A deploy, a config value, a migration, a job schedule, a model version, a prompt, an index rebuild, and a shift in traffic all count. Most incidents in this capstone begin with a change nobody connected to the symptom."},
-        {"t": "compare",
+        {
+          "t": "p",
+          "text": "Every incident reaches you as one of five symptoms: something errors, something is slow, something is wrong, something happens only sometimes, or something costs too much. Each symptom points to a short list of layers. Your first move is the cheapest piece of evidence that cuts that list in half."
+        },
+        {
+          "t": "p",
+          "text": "Before any layer, ask the Day 6 question: what changed? In Relay, change comes from more places than code. A deploy, a config value, a migration, a job schedule, a model version, a prompt, an index rebuild, and a shift in traffic all count. Most incidents in this capstone begin with a change nobody connected to the symptom."
+        },
+        {
+          "t": "compare",
           "caption": "Five symptoms and where each one points",
-          "columns": ["", "Cheapest first evidence", "Layers it points to", "Common wrong turn"],
-          "rows": [
-            ["Error", "The status code and which hop emitted it", "Proxy, app runtime, auth, a dependency", "Reading app code for a 502 that nginx produced"],
-            ["Slow", "One trace: which span holds the time", "Database, pools, queue, LLM generation, retries", "Adding hardware before finding the waiting span"],
-            ["Wrong", "Where the answer came from: cache, replica, retrieval, model", "Cache, replica, index, retrieval, tools, prompt", "Blaming the model when it never ran"],
-            ["Intermittent", "What failing cases share: pod, time, version, key", "One bad instance, races, replica lag, deploy skew", "Retrying until it passes and calling it fixed"],
-            ["Costly", "Calls and tokens per unit of work, by step", "Retries, agent loops, cache misses, prompt growth", "Switching models before counting calls"]
+          "columns": [
+            "",
+            "Cheapest first evidence",
+            "Layers it points to",
+            "Common wrong turn"
           ],
-          "verdict": "Classify first, then gather the evidence in the second column before touching anything. The wrong turns in the last column are all fixes applied before a layer was cleared."},
-        {"t": "flow",
+          "rows": [
+            [
+              "Error",
+              "The status code and which hop emitted it",
+              "Proxy, app runtime, auth, a dependency",
+              "Reading app code for a 502 that nginx produced"
+            ],
+            [
+              "Slow",
+              "One trace: which span holds the time",
+              "Database, pools, queue, LLM generation, retries",
+              "Adding hardware before finding the waiting span"
+            ],
+            [
+              "Wrong",
+              "Where the answer came from: cache, replica, retrieval, model",
+              "Cache, replica, index, retrieval, tools, prompt",
+              "Blaming the model when it never ran"
+            ],
+            [
+              "Intermittent",
+              "What failing cases share: pod, time, version, key",
+              "One bad instance, races, replica lag, deploy skew",
+              "Retrying until it passes and calling it fixed"
+            ],
+            [
+              "Costly",
+              "Calls and tokens per unit of work, by step",
+              "Retries, agent loops, cache misses, prompt growth",
+              "Switching models before counting calls"
+            ]
+          ],
+          "verdict": "Classify first, then gather the evidence in the second column before touching anything. The wrong turns in the last column are all fixes applied before a layer was cleared."
+        },
+        {
+          "t": "flow",
           "title": "From report to layer",
           "steps": [
-            {"actor": "You", "label": "State the symptom precisely", "detail": "Expected versus actual, for whom, since when, how often. 'Relay is broken' becomes 'refund answers quote 30 days since Tuesday'.", "fail": "A vague symptom sends three people to three different layers."},
-            {"actor": "Change log", "label": "Ask what changed", "detail": "Deploys, config, migrations, job schedules, model and prompt versions, index rebuilds, traffic.", "fail": "When two changes ship together, the more visible one gets blamed."},
-            {"actor": "Edge logs", "label": "Find who emitted the error", "detail": "The status code plus the proxy and app logs tell you which hop answered: load balancer, nginx, the API, or a dependency.", "fail": "Debugging the app for an error the proxy generated."},
-            {"actor": "Trace", "label": "Follow one request by its ID", "detail": "The waterfall shows which spans ran and how long each took. A missing span is evidence too.", "fail": "Without a request ID you read averages and guess."},
-            {"actor": "You", "label": "Bisect with one experiment", "detail": "Bypass the cache, pin the read to the primary, replay the prompt directly, run the old image. Each result clears or convicts a layer.", "fail": "Changing two things at once makes the result unreadable."},
-            {"actor": "You", "label": "Mitigate, then fix and guard", "detail": "Stop the harm first with a rollback, a flag, or a limit. Then fix the cause and add a test, an eval case, or an alert.", "fail": "A mitigation mistaken for the fix leaves the cause waiting."}
-          ]},
-        {"t": "h", "text": "Wrong answers in a stack with a model in it"},
-        {"t": "p", "text": "Wrong is the symptom most often blamed on the newest layer. In Relay, a wrong answer can come from a cached response, a lagging replica, a stale or half-built index, a retrieval miss, a tool that returned old data, or the model. Check them in the order the request touched them, and stop at the first one that was already wrong."},
-        {"t": "layers",
+            {
+              "actor": "You",
+              "label": "State the symptom precisely",
+              "detail": "Expected versus actual, for whom, since when, how often. 'Relay is broken' becomes 'refund answers quote 30 days since Tuesday'.",
+              "fail": "A vague symptom sends three people to three different layers."
+            },
+            {
+              "actor": "Change log",
+              "label": "Ask what changed",
+              "detail": "Deploys, config, migrations, job schedules, model and prompt versions, index rebuilds, traffic.",
+              "fail": "When two changes ship together, the more visible one gets blamed."
+            },
+            {
+              "actor": "Edge logs",
+              "label": "Find who emitted the error",
+              "detail": "The status code plus the proxy and app logs tell you which hop answered: load balancer, nginx, the API, or a dependency.",
+              "fail": "Debugging the app for an error the proxy generated."
+            },
+            {
+              "actor": "Trace",
+              "label": "Follow one request by its ID",
+              "detail": "The waterfall shows which spans ran and how long each took. A missing span is evidence too.",
+              "fail": "Without a request ID you read averages and guess."
+            },
+            {
+              "actor": "You",
+              "label": "Bisect with one experiment",
+              "detail": "Bypass the cache, pin the read to the primary, replay the prompt directly, run the old image. Each result clears or convicts a layer.",
+              "fail": "Changing two things at once makes the result unreadable."
+            },
+            {
+              "actor": "You",
+              "label": "Mitigate, then fix and guard",
+              "detail": "Stop the harm first with a rollback, a flag, or a limit. Then fix the cause and add a test, an eval case, or an alert.",
+              "fail": "A mitigation mistaken for the fix leaves the cause waiting."
+            }
+          ]
+        },
+        {
+          "t": "h",
+          "text": "Wrong answers in a stack with a model in it"
+        },
+        {
+          "t": "p",
+          "text": "Wrong is the symptom most often blamed on the newest layer. In Relay, a wrong answer can come from a cached response, a lagging replica, a stale or half-built index, a retrieval miss, a tool that returned old data, or the model. Check them in the order the request touched them, and stop at the first one that was already wrong."
+        },
+        {
+          "t": "layers",
           "title": "Relay's stack and how each layer lies",
           "layers": [
-            {"name": "Edge: load balancer, nginx", "role": "Terminates connections and routes to API pods.", "breaks": "Emits 502 or 504 itself, often during deploys or on long generations."},
-            {"name": "API: FastAPI on uvicorn", "role": "Runs handlers and calls everything else.", "breaks": "A blocked event loop or an exhausted pool slows everything while CPU sits idle."},
-            {"name": "Redis", "role": "Cache entries, sessions, rate-limit counters.", "breaks": "Stale or badly keyed entries serve wrong answers quickly; eviction drops sessions."},
-            {"name": "PostgreSQL and pgvector", "role": "Orders, tickets, and help-center chunks.", "breaks": "Missing index, lock waits, replica lag, or a write half done."},
-            {"name": "Queue and workers", "role": "Refunds, email, triage, re-indexing.", "breaks": "Redelivery runs a job twice; a backlog delays results; dead letters hide failures."},
-            {"name": "LLM API", "role": "Generates replies and tool calls.", "breaks": "429s, overload, timeouts on long outputs, behavior change on a new version."},
-            {"name": "Agent and eval harness", "role": "Runs the tool loop and scores versions nightly.", "breaks": "Tool results that mislead the model; infrastructure errors graded as model failures."}
-          ]},
-        {"t": "callout", "kind": "pitfall", "title": "The newest layer gets blamed first", "text": "The model is the least familiar part of the stack, so it draws suspicion first. Many reports that the model got worse turn out to be a cache, a timeout, a rate limit, or an index that changed underneath it. Prove the model ran on the right inputs before judging its output."},
-        {"t": "callout", "kind": "debug", "title": "Bypass, pin, replay", "text": "Three experiments settle most cross-layer questions. Bypass the cache and see if the answer changes. Pin the read to the primary and see if the data changes. Replay the exact prompt and retrieved context against the model and see if the output changes."},
-        {"t": "check",
+            {
+              "name": "Edge: load balancer, nginx",
+              "role": "Terminates connections and routes to API pods.",
+              "breaks": "Emits 502 or 504 itself, often during deploys or on long generations."
+            },
+            {
+              "name": "API: FastAPI on uvicorn",
+              "role": "Runs handlers and calls everything else.",
+              "breaks": "A blocked event loop or an exhausted pool slows everything while CPU sits idle."
+            },
+            {
+              "name": "Redis",
+              "role": "Cache entries, sessions, rate-limit counters.",
+              "breaks": "Stale or badly keyed entries serve wrong answers quickly; eviction drops sessions."
+            },
+            {
+              "name": "PostgreSQL and pgvector",
+              "role": "Orders, tickets, and help-center chunks.",
+              "breaks": "Missing index, lock waits, replica lag, or a write half done."
+            },
+            {
+              "name": "Queue and workers",
+              "role": "Refunds, email, triage, re-indexing.",
+              "breaks": "Redelivery runs a job twice; a backlog delays results; dead letters hide failures."
+            },
+            {
+              "name": "LLM API",
+              "role": "Generates replies and tool calls.",
+              "breaks": "429s, overload, timeouts on long outputs, behavior change on a new version."
+            },
+            {
+              "name": "Agent and eval harness",
+              "role": "Runs the tool loop and scores versions nightly.",
+              "breaks": "Tool results that mislead the model; infrastructure errors graded as model failures."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "The newest layer gets blamed first",
+          "text": "The model is the least familiar part of the stack, so it draws suspicion first. Many reports that the model got worse turn out to be a cache, a timeout, a rate limit, or an index that changed underneath it. Prove the model ran on the right inputs before judging its output."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Bypass, pin, replay",
+          "text": "Three experiments settle most cross-layer questions. Bypass the cache and see if the answer changes. Pin the read to the primary and see if the data changes. Replay the exact prompt and retrieved context against the model and see if the output changes."
+        },
+        {
+          "t": "check",
           "q": "Relay's error rate is flat, but the LLM bill doubled overnight. What do you gather first?",
-          "options": ["LLM calls and tokens per ticket, split by step and by retry", "The slow query log from PostgreSQL", "Last night's eval scores by category"],
+          "options": [
+            "LLM calls and tokens per ticket, split by step and by retry",
+            "The slow query log from PostgreSQL",
+            "Last night's eval scores by category"
+          ],
           "answer": 0,
-          "explain": "A cost symptom with flat errors calls for counting the unit of cost per unit of work. That one breakdown shows whether calls multiplied (retries, loops) or each call grew (prompt or output length). The database and the eval do not bill tokens."},
-        {"t": "reveal", "prompt": "A trace for a wrong answer shows a Redis hit and then the reply, with no retrieval span and no LLM span. Which layers are cleared, and which one is now the suspect?", "answer": "Retrieval and the model are cleared for this request, because they never ran. The cached entry is the suspect: when it was written, what key it was stored under, and why nothing invalidated it when the content changed."}
+          "explain": "A cost symptom with flat errors calls for counting the unit of cost per unit of work. That one breakdown shows whether calls multiplied (retries, loops) or each call grew (prompt or output length). The database and the eval do not bill tokens."
+        },
+        {
+          "t": "reveal",
+          "prompt": "A trace for a wrong answer shows a Redis hit and then the reply, with no retrieval span and no LLM span. Which layers are cleared, and which one is now the suspect?",
+          "answer": "Retrieval and the model are cleared for this request, because they never ran. The cached entry is the suspect: when it was written, what key it was stored under, and why nothing invalidated it when the content changed."
+        }
       ]
     },
     {
@@ -70,36 +196,129 @@
       "title": "The tradeoff ledger",
       "minutes": 12,
       "blocks": [
-        {"t": "p", "text": "Over thirty days you met dozens of named tradeoffs. Nearly all of them are cases of six recurring tensions. Knowing which one you face tells you what you are paying, and what will break first if the choice turns out wrong."},
-        {"t": "compare",
+        {
+          "t": "p",
+          "text": "Over thirty days you met dozens of named tradeoffs. Nearly all of them are cases of six recurring tensions. Knowing which one you face tells you what you are paying, and what will break first if the choice turns out wrong."
+        },
+        {
+          "t": "compare",
           "caption": "Six tensions behind most of the month's decisions",
-          "columns": ["", "Favoring the first gives", "And costs", "Where you met it"],
-          "rows": [
-            ["Consistency vs availability", "Every reader sees the latest write", "Waiting or refusing when a node or link fails", "Replication, caching, sagas (Days 11, 12, 18)"],
-            ["Latency vs throughput", "Each request finishes fast", "Fewer requests per machine, idle capacity", "Pools, batching, model serving (Days 3, 13, 29)"],
-            ["Simplicity vs flexibility", "Fewer parts, easier debugging", "Harder to adapt to new needs", "Monolith, REST, PostgreSQL first (Days 4, 11, 19)"],
-            ["Speed of change vs safety", "Faster shipping and learning", "More regressions reach users", "CI, canaries, flags, migrations (Days 20, 21)"],
-            ["Cost vs quality", "Lower spend per request", "Weaker answers or less headroom", "Model routing, caching, quantization (Days 24, 29)"],
-            ["Determinism vs capability", "Predictable, testable behavior", "Less ability to handle the unexpected", "Temperature, workflows vs agents (Days 23, 26, 27)"]
+          "columns": [
+            "",
+            "Favoring the first gives",
+            "And costs",
+            "Where you met it"
           ],
-          "verdict": "Name the tension first, then the requirement that decides it. A choice made from a stated requirement survives review; a choice made from habit does not."},
-        {"t": "p", "text": "The same data can sit on both sides of one tension. Showing a customer their order status from a replica is fine; a few seconds of lag hurts nobody. Deciding whether to refund that order from the same replica is not fine, because the agent may act on a state that no longer exists. The requirement changed, so the choice changes."},
-        {"t": "tradeoff",
+          "rows": [
+            [
+              "Consistency vs availability",
+              "Every reader sees the latest write",
+              "Waiting or refusing when a node or link fails",
+              "Replication, caching, sagas (Days 11, 12, 18)"
+            ],
+            [
+              "Latency vs throughput",
+              "Each request finishes fast",
+              "Fewer requests per machine, idle capacity",
+              "Pools, batching, model serving (Days 3, 13, 29)"
+            ],
+            [
+              "Simplicity vs flexibility",
+              "Fewer parts, easier debugging",
+              "Harder to adapt to new needs",
+              "Monolith, REST, PostgreSQL first (Days 4, 11, 19)"
+            ],
+            [
+              "Speed of change vs safety",
+              "Faster shipping and learning",
+              "More regressions reach users",
+              "CI, canaries, flags, migrations (Days 20, 21)"
+            ],
+            [
+              "Cost vs quality",
+              "Lower spend per request",
+              "Weaker answers or less headroom",
+              "Model routing, caching, quantization (Days 24, 29)"
+            ],
+            [
+              "Determinism vs capability",
+              "Predictable, testable behavior",
+              "Less ability to handle the unexpected",
+              "Temperature, workflows vs agents (Days 23, 26, 27)"
+            ]
+          ],
+          "verdict": "Name the tension first, then the requirement that decides it. A choice made from a stated requirement survives review; a choice made from habit does not."
+        },
+        {
+          "t": "p",
+          "text": "The same data can sit on both sides of one tension. Showing a customer their order status from a replica is fine; a few seconds of lag hurts nobody. Deciding whether to refund that order from the same replica is not fine, because the agent may act on a state that no longer exists. The requirement changed, so the choice changes."
+        },
+        {
+          "t": "tradeoff",
           "title": "Where Relay reads order state",
           "options": [
-            {"name": "Replica or cache", "gain": ["Takes load off the primary", "Faster under heavy traffic"], "cost": ["Stale right after a write", "An agent may act on old state"], "choose": "Choose this for display and for decisions that tolerate a few seconds of staleness."},
-            {"name": "Primary", "gain": ["Reads its own writes", "Safe for decisions that move money"], "cost": ["More load on the primary", "A primary outage blocks the action"], "choose": "Choose this for any read that decides a refund or another irreversible action."}
-          ]},
-        {"t": "p", "text": "Determinism against capability is the tension the AI half of Relay adds. A fixed workflow with code-enforced checks is easy to test and handles only what you planned. An agent handles odd tickets and fails in new ways. Relay mixes them: the model reads and writes language and proposes actions, and code enforces refund rules. Temperature 0 narrows variation but does not guarantee identical outputs."},
-        {"t": "p", "text": "Cost against quality and speed against safety travel together. Each cheaper option, such as a smaller model, a quantized one, or a cached answer, needs a measurement that would catch the quality it costs, broken down by category. Each faster release process needs a rollback that is faster still."},
-        {"t": "callout", "kind": "insight", "title": "Every fix moves a cost somewhere", "text": "A cache moves cost into staleness. A retry moves it into load and duplicates. A queue moves it into delay and redelivery. An agent moves it into verification. When you adopt a fix, ask where the cost went and who will notice it first."},
-        {"t": "callout", "kind": "pitfall", "title": "Choosing by habit", "text": "Always cache, always retry, and always use the bigger model are habits. Each was right somewhere this month and wrong somewhere else. Write the requirement next to the choice in the design note or the pull request, so the next person can tell when it stops holding."},
-        {"t": "check",
+            {
+              "name": "Replica or cache",
+              "gain": [
+                "Takes load off the primary",
+                "Faster under heavy traffic"
+              ],
+              "cost": [
+                "Stale right after a write",
+                "An agent may act on old state"
+              ],
+              "choose": "Choose this for display and for decisions that tolerate a few seconds of staleness."
+            },
+            {
+              "name": "Primary",
+              "gain": [
+                "Reads its own writes",
+                "Safe for decisions that move money"
+              ],
+              "cost": [
+                "More load on the primary",
+                "A primary outage blocks the action"
+              ],
+              "choose": "Choose this for any read that decides a refund or another irreversible action."
+            }
+          ]
+        },
+        {
+          "t": "p",
+          "text": "Determinism against capability is the tension the AI half of Relay adds. A fixed workflow with code-enforced checks is easy to test and handles only what you planned. An agent handles odd tickets and fails in new ways. Relay mixes them: the model reads and writes language and proposes actions, and code enforces refund rules. Temperature 0 narrows variation but does not guarantee identical outputs."
+        },
+        {
+          "t": "p",
+          "text": "Cost against quality and speed against safety travel together. Each cheaper option, such as a smaller model, a quantized one, or a cached answer, needs a measurement that would catch the quality it costs, broken down by category. Each faster release process needs a rollback that is faster still."
+        },
+        {
+          "t": "callout",
+          "kind": "insight",
+          "title": "Every fix moves a cost somewhere",
+          "text": "A cache moves cost into staleness. A retry moves it into load and duplicates. A queue moves it into delay and redelivery. An agent moves it into verification. When you adopt a fix, ask where the cost went and who will notice it first."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Choosing by habit",
+          "text": "Always cache, always retry, and always use the bigger model are habits. Each was right somewhere this month and wrong somewhere else. Write the requirement next to the choice in the design note or the pull request, so the next person can tell when it stops holding."
+        },
+        {
+          "t": "check",
           "q": "Relay caches LLM answers to common help-center questions for 24 hours. What does this choice trade, and what does it cost?",
-          "options": ["Freshness for cost and latency; answers can go stale after content changes", "Safety for speed of change; deploys become riskier", "Capability for determinism; answers become less capable"],
+          "options": [
+            "Freshness for cost and latency; answers can go stale after content changes",
+            "Safety for speed of change; deploys become riskier",
+            "Capability for determinism; answers become less capable"
+          ],
           "answer": 0,
-          "explain": "A cached answer is cheaper and faster than a fresh generation and is exactly as capable as the original. What it gives up is freshness: if the article changes, the cache keeps serving the old answer until the entry expires or is invalidated."},
-        {"t": "reveal", "prompt": "Relay's team wants to retry the payment call behind `issue_refund` automatically when it times out. Which tensions are involved, and what must be true first?", "answer": "Availability against correctness, and speed against safety. A timeout does not say whether the refund happened, so a blind retry can pay twice. Retrying is safe only with an idempotency key the payment provider honors, backoff with jitter, and a cap on attempts."}
+          "explain": "A cached answer is cheaper and faster than a fresh generation and is exactly as capable as the original. What it gives up is freshness: if the article changes, the cache keeps serving the old answer until the entry expires or is invalidated."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Relay's team wants to retry the payment call behind `issue_refund` automatically when it times out. Which tensions are involved, and what must be true first?",
+          "answer": "Availability against correctness, and speed against safety. A timeout does not say whether the refund happened, so a blind retry can pay twice. Retrying is safe only with an idempotency key the payment provider honors, backoff with jitter, and a cap on attempts."
+        }
       ]
     },
     {
@@ -107,14 +326,22 @@
       "title": "Keeping the skill",
       "minutes": 10,
       "blocks": [
-        {"t": "p", "text": "Debugging skill fades without practice, and real incidents are too rare to be your only practice. Four habits keep it sharp: postmortems for your own bugs, a debugging journal, reading other people's incident reports, and turning every failure into a check that runs."},
-        {"t": "list", "style": "number", "items": [
-          "Write a short postmortem for any bug that took more than an hour, even a local one: timeline, root cause, why it took so long, and one action.",
-          "Keep a debugging journal with one entry per hunt: symptom, first guess, evidence, actual cause, and time lost to the wrong guess.",
-          "Read one public incident report a week. Before reading the cause, write your own guess from the symptoms.",
-          "Turn every failure into a regression test, an eval case, or an alert, so the same bug cannot return quietly."
-        ]},
-        {"t": "code",
+        {
+          "t": "p",
+          "text": "Debugging skill fades without practice, and real incidents are too rare to be your only practice. Four habits keep it sharp: postmortems for your own bugs, a debugging journal, reading other people's incident reports, and turning every failure into a check that runs."
+        },
+        {
+          "t": "list",
+          "style": "number",
+          "items": [
+            "Write a short postmortem for any bug that took more than an hour, even a local one: timeline, root cause, why it took so long, and one action.",
+            "Keep a debugging journal with one entry per hunt: symptom, first guess, evidence, actual cause, and time lost to the wrong guess.",
+            "Read one public incident report a week. Before reading the cause, write your own guess from the symptoms.",
+            "Turn every failure into a regression test, an eval case, or an alert, so the same bug cannot return quietly."
+          ]
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "One debugging journal entry",
           "code": "date:        2026-12-03\nsymptom:     customers logged out mid-chat, about 2 in 3 messages\nfirst guess: Redis evicting session keys under memory pressure\nevidence:    Redis memory 35%, zero evictions; logouts began with\n             scale-out from 1 to 3 API pods; failing requests hit\n             pods other than the one that created the session\ncause:       new chat feature cached session data in process memory\ntime:        1h40m to root cause, 55m of it spent on Redis\nfaster path: ask what changed first; compare failing pod vs origin pod\nguards:      CI test runs two API instances; review rule against\n             module-level mutable caches in request handlers",
@@ -122,107 +349,253 @@
             "The first-guess line is the most valuable one. Over months it shows which layers you blame too early.",
             "Time lost to the wrong guess measures the habit you are trying to improve, separately from the bug.",
             "The entry ends with guards that run automatically. A lesson that lives only in the journal will be learned again the hard way."
-          ]},
-        {"t": "compare",
+          ]
+        },
+        {
+          "t": "compare",
           "caption": "Four habits, compared",
-          "columns": ["", "Effort", "What it trains", "Cadence"],
-          "rows": [
-            ["Your own postmortem", "20 to 30 minutes", "Finding where your process failed, beyond the code", "After any bug over an hour"],
-            ["Journal entry", "About 5 minutes", "Noticing which layers you suspect too early", "Every hunt"],
-            ["Reading an incident report", "About 15 minutes", "Pattern recognition in systems you do not run", "Weekly"],
-            ["Regression check", "Varies", "Making the system remember so you do not have to", "Every fixed failure"]
+          "columns": [
+            "",
+            "Effort",
+            "What it trains",
+            "Cadence"
           ],
-          "verdict": "If you keep only one habit, keep the journal. It is cheap, and the first-guess column is the fastest feedback on your own judgment."},
-        {"t": "p", "text": "Reuse the field guides. Every day of this course ended with a symptom-to-cause table. Rewrite the rows that matter for your project in your own words, add rows from your journal, and keep them somewhere you will find them at 2 a.m."},
-        {"t": "tradeoff",
+          "rows": [
+            [
+              "Your own postmortem",
+              "20 to 30 minutes",
+              "Finding where your process failed, beyond the code",
+              "After any bug over an hour"
+            ],
+            [
+              "Journal entry",
+              "About 5 minutes",
+              "Noticing which layers you suspect too early",
+              "Every hunt"
+            ],
+            [
+              "Reading an incident report",
+              "About 15 minutes",
+              "Pattern recognition in systems you do not run",
+              "Weekly"
+            ],
+            [
+              "Regression check",
+              "Varies",
+              "Making the system remember so you do not have to",
+              "Every fixed failure"
+            ]
+          ],
+          "verdict": "If you keep only one habit, keep the journal. It is cheap, and the first-guess column is the fastest feedback on your own judgment."
+        },
+        {
+          "t": "p",
+          "text": "Reuse the field guides. Every day of this course ended with a symptom-to-cause table. Rewrite the rows that matter for your project in your own words, add rows from your journal, and keep them somewhere you will find them at 2 a.m."
+        },
+        {
+          "t": "tradeoff",
           "title": "Where a fixed failure should live",
           "options": [
-            {"name": "Regression test", "gain": ["Deterministic", "Runs on every commit"], "cost": ["Only covers behavior you can assert exactly"], "choose": "Choose this when the failure is in code with one definite right answer."},
-            {"name": "Eval case", "gain": ["Covers model and agent behavior", "Tracks a rate across versions"], "cost": ["Noisy, needs a grader", "Usually runs less often"], "choose": "Choose this when the failure is in what the model or agent decided."},
-            {"name": "Alert", "gain": ["Catches drift and infrastructure faults", "Sees live traffic"], "cost": ["Fires after users are affected", "Can turn noisy"], "choose": "Choose this when the failure depends on live data, traffic, or a third party."}
-          ]},
-        {"t": "callout", "kind": "pitfall", "title": "The postmortem that changes nothing", "text": "Action items like 'be more careful' or 'monitor closely' guarantee a repeat. Each action should be a specific change: a test, an eval case, an alert with a threshold, a config check in CI, or a sharp edge removed from the code."},
-        {"t": "callout", "kind": "rule", "title": "Guess before you read", "text": "When you read an incident report or a drill, write down your guess and your first check before reading the cause. Comparing your guess with the answer is the practice. Reading the answer alone feels like learning and mostly is not."},
-        {"t": "check",
+            {
+              "name": "Regression test",
+              "gain": [
+                "Deterministic",
+                "Runs on every commit"
+              ],
+              "cost": [
+                "Only covers behavior you can assert exactly"
+              ],
+              "choose": "Choose this when the failure is in code with one definite right answer."
+            },
+            {
+              "name": "Eval case",
+              "gain": [
+                "Covers model and agent behavior",
+                "Tracks a rate across versions"
+              ],
+              "cost": [
+                "Noisy, needs a grader",
+                "Usually runs less often"
+              ],
+              "choose": "Choose this when the failure is in what the model or agent decided."
+            },
+            {
+              "name": "Alert",
+              "gain": [
+                "Catches drift and infrastructure faults",
+                "Sees live traffic"
+              ],
+              "cost": [
+                "Fires after users are affected",
+                "Can turn noisy"
+              ],
+              "choose": "Choose this when the failure depends on live data, traffic, or a third party."
+            }
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "The postmortem that changes nothing",
+          "text": "Action items like 'be more careful' or 'monitor closely' guarantee a repeat. Each action should be a specific change: a test, an eval case, an alert with a threshold, a config check in CI, or a sharp edge removed from the code."
+        },
+        {
+          "t": "callout",
+          "kind": "rule",
+          "title": "Guess before you read",
+          "text": "When you read an incident report or a drill, write down your guess and your first check before reading the cause. Comparing your guess with the answer is the practice. Reading the answer alone feels like learning and mostly is not."
+        },
+        {
+          "t": "check",
           "q": "Relay's agent once refunded an order outside the refund window. The bug is fixed. Where should this failure live so it cannot return unseen?",
-          "options": ["A policy check in code with a test, plus a case in the nightly eval", "A new paragraph in the system prompt about refund windows", "A note on the team wiki's incident page"],
+          "options": [
+            "A policy check in code with a test, plus a case in the nightly eval",
+            "A new paragraph in the system prompt about refund windows",
+            "A note on the team wiki's incident page"
+          ],
           "answer": 0,
-          "explain": "The code check makes the violation impossible, the test keeps the check from being removed, and the eval case watches whether the agent still tries. A prompt paragraph makes the mistake rarer without preventing it, and a wiki note runs nowhere."},
-        {"t": "reveal", "prompt": "Think of your last bug that took more than an hour. What was your first guess, and what evidence would have ruled it out in five minutes?", "answer": "There is no single right answer. A good one names the first guess and a cheap check that would have cleared or confirmed it, such as a status code, one trace, a cache bypass, or failures grouped by type. Then make that check the first step next time."}
+          "explain": "The code check makes the violation impossible, the test keeps the check from being removed, and the eval case watches whether the agent still tries. A prompt paragraph makes the mistake rarer without preventing it, and a wiki note runs nowhere."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Think of your last bug that took more than an hour. What was your first guess, and what evidence would have ruled it out in five minutes?",
+          "answer": "There is no single right answer. A good one names the first guess and a cheap check that would have cleared or confirmed it, such as a status code, one trace, a cache bypass, or failures grouped by type. Then make that check the first step next time."
+        }
       ]
     }
   ],
   "fieldGuide": [
     {
       "symptom": "\"The model got worse\" right after a change to infrastructure, a job, or a config",
-      "causes": ["Infrastructure errors graded as wrong answers", "Retrieval or tool data changed underneath the model", "Two changes shipped together"],
+      "causes": [
+        "Infrastructure errors graded as wrong answers",
+        "Retrieval or tool data changed underneath the model",
+        "Two changes shipped together"
+      ],
       "look": "Eval failures grouped by error type and by retrieval outcome, and the change log for the same window.",
       "confirm": "New failures cluster on timeouts, tool errors, or missing retrieval, or in a time window that matches a job or deploy.",
       "fix": "Fix the infrastructure, then compare versions on a frozen setup. Reruns cost time and API spend."
     },
     {
       "symptom": "Answers stay stale after the help-center content was updated",
-      "causes": ["A response cache whose key ignores content version", "A re-index that failed or skipped the article", "Reads from a lagging replica"],
+      "causes": [
+        "A response cache whose key ignores content version",
+        "A re-index that failed or skipped the article",
+        "Reads from a lagging replica"
+      ],
       "look": "The trace for one stale answer: was there a cache hit, a retrieval span, an LLM span?",
       "confirm": "A cache hit with no retrieval or LLM span, or retrieved chunks with an old updated time.",
       "fix": "Tie cache invalidation to content changes. Shorter TTLs help but cost hit ratio."
     },
     {
       "symptom": "Customer charged or refunded twice; the agent trajectory shows one tool call",
-      "causes": ["A queue redelivered a job after a worker died before acknowledging", "A client or proxy retried a non-idempotent request"],
+      "causes": [
+        "A queue redelivered a job after a worker died before acknowledging",
+        "A client or proxy retried a non-idempotent request"
+      ],
       "look": "Worker logs for the job ID, and pod events around the time.",
       "confirm": "The same job ID runs on two workers, with a crash or OOMKilled between.",
       "fix": "Idempotency keys on the side effect, and a unique constraint as a backstop."
     },
     {
       "symptom": "LLM cost per ticket jumped while error rate and quality look unchanged",
-      "causes": ["Client timeouts shorter than generations, retried and billed", "Agent loops", "Prompt caching stopped matching"],
+      "causes": [
+        "Client timeouts shorter than generations, retried and billed",
+        "Agent loops",
+        "Prompt caching stopped matching"
+      ],
       "look": "Calls, input tokens, cached tokens, and output tokens per ticket, by step and attempt.",
       "confirm": "Attempts per call or calls per ticket rose, or cached input tokens fell to near zero.",
       "fix": "Fit timeouts to the longest allowed output, cap retries, and keep changing content out of the prompt prefix."
     },
     {
       "symptom": "502s for a minute or two during every deploy, including a redeploy of the same image",
-      "causes": ["Pods exit before in-flight requests finish and before routing stops sending traffic"],
+      "causes": [
+        "Pods exit before in-flight requests finish and before routing stops sending traffic"
+      ],
       "look": "nginx error log lines at deploy time and pod shutdown timing after SIGTERM.",
       "confirm": "Upstream 'connection refused' or 'prematurely closed' errors coincide with pods exiting within a second of SIGTERM.",
       "fix": "Graceful shutdown with a short pre-stop delay, within the termination grace period."
     },
     {
       "symptom": "Agent repeats an action it already completed until it hits the turn limit",
-      "causes": ["A follow-up read hits a lagging replica", "The tool result does not state what was done"],
+      "causes": [
+        "A follow-up read hits a lagging replica",
+        "The tool result does not state what was done"
+      ],
       "look": "The trajectory turn by turn, then the same rows on the primary and the replica.",
       "confirm": "The write exists on the primary while the agent's read showed the old state.",
       "fix": "Read-your-writes for the agent's session and tool results that return the new record."
     },
     {
       "symptom": "A fix made the symptom disappear and nobody can explain why",
-      "causes": ["A cache, retry, or queue is masking the fault", "A second change happened at the same time"],
+      "causes": [
+        "A cache, retry, or queue is masking the fault",
+        "A second change happened at the same time"
+      ],
       "look": "Retry counts, cache hit ratio, and queue redelivery counts before and after.",
       "confirm": "The underlying failure count is unchanged, only hidden.",
       "fix": "Remove the mask in a test environment and reproduce, then fix the cause and keep the metric that exposed it."
     },
     {
       "symptom": "Eval failures begin exactly one hour into the run with 401 errors",
-      "causes": ["A service token fetched once at startup expired"],
+      "causes": [
+        "A service token fetched once at startup expired"
+      ],
       "look": "The first 401's time relative to the harness start, and the token lifetime.",
       "confirm": "Failures start at the token's lifetime and every later tool call fails.",
       "fix": "Refresh tokens before expiry, and report infrastructure errors separately from graded failures."
     }
   ],
   "glossary": [
-    {"term": "Blast radius", "def": "How many users, requests, or records a failure or a change can affect. Canaries, flags, and limits exist to shrink it."},
-    {"term": "Bisection", "def": "Halving the space of suspects with each experiment: over commits, layers, config, data, or time."},
-    {"term": "Mitigation", "def": "An action that stops harm during an incident, such as a rollback, flag, or limit, without necessarily fixing the cause."},
-    {"term": "Root cause", "def": "The fault that, once fixed, prevents the incident from recurring. Incidents often also have contributing factors that made it worse or slower to find."},
-    {"term": "Masking", "def": "A cache, retry, queue, or fallback hiding a fault so the symptom shrinks or moves while the fault stays."},
-    {"term": "Confounded change", "def": "Two or more changes shipped together, so an effect cannot be attributed to either without separating them."},
-    {"term": "Version skew", "def": "Two versions of code, schema, model, or index running at once, such as during a rollout, and disagreeing about data or behavior."},
-    {"term": "Read-your-writes", "def": "A guarantee that after you write, your own later reads see the write. Breaks when reads go to a lagging replica or cache."},
-    {"term": "Idempotency key", "def": "A unique ID sent with a request so the receiver performs the action once even if the request arrives several times."},
-    {"term": "Postmortem", "def": "A written account of an incident: timeline, cause, impact, why detection took as long as it did, and specific actions. Blameless by design."},
-    {"term": "Debugging journal", "def": "A personal log of each hunt: symptom, first guess, evidence, actual cause, and time lost to wrong guesses."},
-    {"term": "Regression eval case", "def": "A recorded task added to the eval set after a failure, so later versions are checked against that failure every run."}
+    {
+      "term": "Blast radius",
+      "def": "How many users, requests, or records a failure or a change can affect. Canaries, flags, and limits exist to shrink it."
+    },
+    {
+      "term": "Bisection",
+      "def": "Halving the space of suspects with each experiment: over commits, layers, config, data, or time."
+    },
+    {
+      "term": "Mitigation",
+      "def": "An action that stops harm during an incident, such as a rollback, flag, or limit, without necessarily fixing the cause."
+    },
+    {
+      "term": "Root cause",
+      "def": "The fault that, once fixed, prevents the incident from recurring. Incidents often also have contributing factors that made it worse or slower to find."
+    },
+    {
+      "term": "Masking",
+      "def": "A cache, retry, queue, or fallback hiding a fault so the symptom shrinks or moves while the fault stays."
+    },
+    {
+      "term": "Confounded change",
+      "def": "Two or more changes shipped together, so an effect cannot be attributed to either without separating them."
+    },
+    {
+      "term": "Version skew",
+      "def": "Two versions of code, schema, model, or index running at once, such as during a rollout, and disagreeing about data or behavior."
+    },
+    {
+      "term": "Read-your-writes",
+      "def": "A guarantee that after you write, your own later reads see the write. Breaks when reads go to a lagging replica or cache."
+    },
+    {
+      "term": "Idempotency key",
+      "def": "A unique ID sent with a request so the receiver performs the action once even if the request arrives several times."
+    },
+    {
+      "term": "Postmortem",
+      "def": "A written account of an incident: timeline, cause, impact, why detection took as long as it did, and specific actions. Blameless by design."
+    },
+    {
+      "term": "Debugging journal",
+      "def": "A personal log of each hunt: symptom, first guess, evidence, actual cause, and time lost to wrong guesses."
+    },
+    {
+      "term": "Regression eval case",
+      "def": "A recorded task added to the eval set after a failure, so later versions are checked against that failure every run."
+    }
   ],
   "apply": {
     "title": "Write a postmortem and a guard for your last real bug",
@@ -239,7 +612,11 @@
       "id": "d30-q01",
       "type": "mcq",
       "level": 3,
-      "tags": ["caching", "rag", "stale-answers"],
+      "tags": [
+        "caching",
+        "rag",
+        "stale-answers"
+      ],
       "context": "On Monday the store stopped offering free return shipping and updated the help-center article. On Wednesday, Relay still answers \"Is return shipping free?\" with yes. Asked \"Do I have to pay to send an item back?\", it correctly says the customer pays. The nightly re-index job succeeded both nights.",
       "q": "What is the most likely cause?",
       "options": [
@@ -250,15 +627,28 @@
       ],
       "answer": 2,
       "explain": "The rephrased question gets the new answer, so the index and retrieval are current. Only the exact old wording fails, which is the signature of a response cache keyed on question text. The tempting answer, a stale index, would mislead both phrasings.",
-      "why": ["A stale index would give the old answer to the rephrased question too.", "The model uses the retrieved article correctly for the rephrased question.", "", "Two days of replica lag would be an outage noticed everywhere, and would also affect both phrasings."]
+      "why": [
+        "A stale index would give the old answer to the rephrased question too.",
+        "The model uses the retrieved article correctly for the rephrased question.",
+        "",
+        "Two days of replica lag would be an outage noticed everywhere, and would also affect both phrasings."
+      ]
     },
     {
       "id": "d30-q02",
       "type": "mcq",
       "level": 3,
-      "tags": ["status-codes", "llm-latency", "timeouts"],
+      "tags": [
+        "status-codes",
+        "llm-latency",
+        "timeouts"
+      ],
       "context": "After max_tokens for ticket summaries was raised, some summary requests fail. The summary endpoint waits for the full LLM response before replying.",
-      "artifact": {"lang": "log", "title": "nginx access log", "code": "10:14:07 \"POST /tickets/9921/summary\" 200 rt=11.204 upstream_rt=11.201\n10:14:31 \"POST /tickets/9925/summary\" 504 rt=60.001 upstream_rt=60.000\n10:15:02 \"POST /tickets/9930/summary\" 200 rt=24.877 upstream_rt=24.875\n10:15:40 \"POST /tickets/9934/summary\" 504 rt=60.002 upstream_rt=60.001"},
+      "artifact": {
+        "lang": "log",
+        "title": "nginx access log",
+        "code": "10:14:07 \"POST /tickets/9921/summary\" 200 rt=11.204 upstream_rt=11.201\n10:14:31 \"POST /tickets/9925/summary\" 504 rt=60.001 upstream_rt=60.000\n10:15:02 \"POST /tickets/9930/summary\" 200 rt=24.877 upstream_rt=24.875\n10:15:40 \"POST /tickets/9934/summary\" 504 rt=60.002 upstream_rt=60.001"
+      },
       "q": "What does the log show?",
       "options": [
         "The LLM provider rate-limited the longer requests",
@@ -268,13 +658,22 @@
       ],
       "answer": 1,
       "explain": "A 504 is a gateway that waited for its upstream and gave up. Both failures sit at exactly 60 seconds, the mark of a configured timeout, while successes finish under it. Longer outputs now take longer than the proxy allows; stream the response or align the timeouts.",
-      "why": ["A rate limit returns 429 quickly, not after exactly 60 seconds.", "", "A crash shows up as a 502 or a 500, not as a wait that ends at a round number.", "nginx logs a client that disconnects with its own code, 499, not 504."]
+      "why": [
+        "A rate limit returns 429 quickly, not after exactly 60 seconds.",
+        "",
+        "A crash shows up as a 502 or a 500, not as a wait that ends at a round number.",
+        "nginx logs a client that disconnects with its own code, 499, not 504."
+      ]
     },
     {
       "id": "d30-q03",
       "type": "mcq",
       "level": 3,
-      "tags": ["race-conditions", "agents", "idempotency"],
+      "tags": [
+        "race-conditions",
+        "agents",
+        "idempotency"
+      ],
       "context": "A customer submitted the same refund request twice, one second apart, and two agent runs started. Each called `lookup_order`, saw no refund, and called `issue_refund`. Both lookups ran before either refund was written. The order was refunded twice.",
       "q": "What is the underlying bug, and the fix?",
       "options": [
@@ -285,15 +684,28 @@
       ],
       "answer": 3,
       "explain": "Two runs checked, both saw nothing, both acted: a classic check-then-act race from Day 10, now with an agent in the loop. Only a database guard such as a unique constraint or an idempotency key closes it. Each agent followed its instructions correctly.",
-      "why": ["Each agent did check first, as instructed; the race happens between the check and the act.", "Both lookups ran before either write, so there was nothing for lag to hide.", "Two agent runs made two separate calls; this is not one job delivered twice.", ""]
+      "why": [
+        "Each agent did check first, as instructed; the race happens between the check and the act.",
+        "Both lookups ran before either write, so there was nothing for lag to hide.",
+        "Two agent runs made two separate calls; this is not one job delivered twice.",
+        ""
+      ]
     },
     {
       "id": "d30-q04",
       "type": "mcq",
       "level": 3,
-      "tags": ["query-plans", "vector-search", "agents"],
+      "tags": [
+        "query-plans",
+        "vector-search",
+        "agents"
+      ],
       "context": "The agent's `search_help_center` tool has grown slower for months as the help_chunks table grew, and now often hits the tool timeout.",
-      "artifact": {"lang": "plan", "title": "EXPLAIN ANALYZE for the retrieval query", "code": "Limit  (actual time=3812.4..3812.5 rows=5 loops=1)\n  ->  Sort  (actual time=3812.4..3812.4 rows=5 loops=1)\n        Sort Key: ((embedding <=> $1))\n        Sort Method: top-N heapsort\n        ->  Seq Scan on help_chunks  (actual time=0.02..3101.7 rows=1840000 loops=1)\nExecution Time: 3812.6 ms"},
+      "artifact": {
+        "lang": "plan",
+        "title": "EXPLAIN ANALYZE for the retrieval query",
+        "code": "Limit  (actual time=3812.4..3812.5 rows=5 loops=1)\n  ->  Sort  (actual time=3812.4..3812.4 rows=5 loops=1)\n        Sort Key: ((embedding <=> $1))\n        Sort Method: top-N heapsort\n        ->  Seq Scan on help_chunks  (actual time=0.02..3101.7 rows=1840000 loops=1)\nExecution Time: 3812.6 ms"
+      },
       "q": "What does the plan show?",
       "options": [
         "The query embedding takes several seconds to compute",
@@ -303,13 +715,21 @@
       ],
       "answer": 1,
       "explain": "A sequential scan over 1.8 million rows followed by a sort on vector distance means no approximate nearest neighbor index is used, so cost grows with the table (Days 9 and 25). Embedding, pool waits, and LLM time all happen outside this plan's execution time.",
-      "why": ["The query vector arrives as a parameter; its computation is not part of this plan.", "", "Pool waits happen before the query starts and would not appear in execution time.", "The LLM is not involved in the database query at all."]
+      "why": [
+        "The query vector arrives as a parameter; its computation is not part of this plan.",
+        "",
+        "Pool waits happen before the query starts and would not appear in execution time.",
+        "The LLM is not involved in the database query at all."
+      ]
     },
     {
       "id": "d30-q05",
       "type": "mcq",
       "level": 3,
-      "tags": ["prompt-caching", "llm-cost"],
+      "tags": [
+        "prompt-caching",
+        "llm-cost"
+      ],
       "context": "Relay's LLM spend rose 40 percent overnight with the same traffic. The only change was a deploy that puts the current date and time at the very top of the system prompt. Usage logs show cached input tokens fell to near zero.",
       "q": "Why did spend rise?",
       "options": [
@@ -320,13 +740,22 @@
       ],
       "answer": 2,
       "explain": "Prompt caching reuses work for an identical prompt prefix. A timestamp at the top makes every prefix unique, so every request pays full input price. Moving changing content to the end restores the cache. Longer answers would show in output tokens, not in cached input tokens.",
-      "why": ["A few added tokens do not explain a 40 percent jump, and cached tokens falling to zero points elsewhere.", "Longer answers would raise output tokens; the evidence is about cached input tokens.", "", "Caching depends on matching prefixes, not on what the content says."]
+      "why": [
+        "A few added tokens do not explain a 40 percent jump, and cached tokens falling to zero points elsewhere.",
+        "Longer answers would raise output tokens; the evidence is about cached input tokens.",
+        "",
+        "Caching depends on matching prefixes, not on what the content says."
+      ]
     },
     {
       "id": "d30-q06",
       "type": "multi",
       "level": 2,
-      "tags": ["retries", "idempotency", "timeouts"],
+      "tags": [
+        "retries",
+        "idempotency",
+        "timeouts"
+      ],
       "q": "Relay's worker calls the payment API to issue a refund, and the call sometimes times out. Which of these must be in place before retrying it automatically? Select all that apply.",
       "options": [
         "An idempotency key the payment API honors",
@@ -336,14 +765,21 @@
         "Retrying 400 validation errors the same way",
         "Letting the agent call issue_refund again instead"
       ],
-      "answers": [0, 1, 2],
+      "answers": [
+        0,
+        1,
+        2
+      ],
       "explain": "A timeout does not say whether the refund happened, so only an idempotency key makes a retry safe. Backoff with jitter and a cap keep retries from turning a slow dependency into a retry storm. Immediate retries add load, a 400 will fail again, and a second agent call is an unkeyed retry."
     },
     {
       "id": "d30-q07",
       "type": "order",
       "level": 2,
-      "tags": ["debugging-method", "incident-response"],
+      "tags": [
+        "debugging-method",
+        "incident-response"
+      ],
       "q": "Put the steps of the master debugging procedure in order.",
       "items": [
         "State the symptom precisely: expected, actual, since when",
@@ -359,14 +795,32 @@
       "id": "d30-q08",
       "type": "match",
       "level": 2,
-      "tags": ["cross-layer", "diagnosis"],
+      "tags": [
+        "cross-layer",
+        "diagnosis"
+      ],
       "q": "Match each Relay symptom to the most likely cause.",
       "pairs": [
-        ["502s only during deploys", "Pods exiting before in-flight requests finish"],
-        ["Saved address shows the old value on refresh", "A read from a lagging replica"],
-        ["Same tool call repeated until the turn limit", "A tool result that hides that the action succeeded"],
-        ["Eval drop where failed cases show timeouts", "Infrastructure failures graded as wrong answers"],
-        ["Fluent answer citing an article deleted last week", "A stale index or a cached response"]
+        [
+          "502s only during deploys",
+          "Pods exiting before in-flight requests finish"
+        ],
+        [
+          "Saved address shows the old value on refresh",
+          "A read from a lagging replica"
+        ],
+        [
+          "Same tool call repeated until the turn limit",
+          "A tool result that hides that the action succeeded"
+        ],
+        [
+          "Eval drop where failed cases show timeouts",
+          "Infrastructure failures graded as wrong answers"
+        ],
+        [
+          "Fluent answer citing an article deleted last week",
+          "A stale index or a cached response"
+        ]
       ],
       "explain": "Each symptom names a layer if you ask which component last touched the data or the request. Notice that three of the five involve the AI half of Relay yet are caused by classic backend parts: state, timeouts, and caches."
     },
@@ -374,9 +828,17 @@
       "id": "d30-q09",
       "type": "mcq",
       "level": 3,
-      "tags": ["auth", "evals", "infrastructure-failures"],
+      "tags": [
+        "auth",
+        "evals",
+        "infrastructure-failures"
+      ],
       "context": "Relay's nightly eval started at 01:00. The harness fetches a service token once at startup to call the internal tools API.",
-      "artifact": {"lang": "log", "title": "eval harness", "code": "01:02:11 case=88  tool=lookup_order  status=200\n01:58:40 case=241 tool=lookup_order  status=200\n02:00:03 case=242 tool=lookup_order  status=401 error=\"token expired\"\n02:00:05 case=243 tool=issue_refund  status=401 error=\"token expired\"\n02:14:52 summary pass=196 fail=104 total=300"},
+      "artifact": {
+        "lang": "log",
+        "title": "eval harness",
+        "code": "01:02:11 case=88  tool=lookup_order  status=200\n01:58:40 case=241 tool=lookup_order  status=200\n02:00:03 case=242 tool=lookup_order  status=401 error=\"token expired\"\n02:00:05 case=243 tool=issue_refund  status=401 error=\"token expired\"\n02:14:52 summary pass=196 fail=104 total=300"
+      },
       "q": "What is the best explanation for the failures after 02:00?",
       "options": [
         "The tools API began rate-limiting the harness",
@@ -386,13 +848,22 @@
       ],
       "answer": 3,
       "explain": "A 401 with 'token expired' exactly one hour into the run is a token lifetime problem in the harness (Days 15 and 27). The failures from case 242 on say nothing about the model, and the score should be reported with them separated as infrastructure errors.",
-      "why": ["A rate limit returns 429, not 401 with 'token expired'.", "Malformed arguments return 400 or 422, and would not start at a round hour.", "A database outage gives 5xx errors from the tools API.", ""]
+      "why": [
+        "A rate limit returns 429, not 401 with 'token expired'.",
+        "Malformed arguments return 400 or 422, and would not start at a round hour.",
+        "A database outage gives 5xx errors from the tools API.",
+        ""
+      ]
     },
     {
       "id": "d30-q10",
       "type": "mcq",
       "level": 3,
-      "tags": ["statelessness", "scaling", "agents"],
+      "tags": [
+        "statelessness",
+        "scaling",
+        "agents"
+      ],
       "context": "Relay scaled its API from one pod to four. Since then, the agent often forgets the earlier part of a conversation on a follow-up message, about three times in four. Redis memory is at 30 percent with no evictions.",
       "q": "What is the most likely cause?",
       "options": [
@@ -403,13 +874,22 @@
       ],
       "answer": 0,
       "explain": "Forgetting about three times in four matches the chance of landing on one of the three other pods. Redis shows no evictions, and context size would not depend on pod count. Move conversation state to Redis or Postgres; sticky sessions would reduce it but lose history whenever a pod restarts.",
-      "why": ["", "Context limits do not change with the number of pods, and the problem began with scaling.", "Redis reports no evictions and has plenty of memory.", "A stripped cookie would break every request, not three in four."]
+      "why": [
+        "",
+        "Context limits do not change with the number of pods, and the problem began with scaling.",
+        "Redis reports no evictions and has plenty of memory.",
+        "A stripped cookie would break every request, not three in four."
+      ]
     },
     {
       "id": "d30-q11",
       "type": "mcq",
       "level": 2,
-      "tags": ["tradeoffs", "agents", "determinism"],
+      "tags": [
+        "tradeoffs",
+        "agents",
+        "determinism"
+      ],
       "q": "Relay's refund step moves money and must follow policy exactly. Which design fits that requirement best?",
       "options": [
         "The agent decides freely, guided by refund rules in the prompt",
@@ -419,13 +899,21 @@
       ],
       "answer": 1,
       "explain": "Money and exact policy put this step on the determinism side of the ledger. The model can read the request and propose an action, but code it cannot argue with should enforce the rule. Prompt rules and bigger models make violations rarer, not impossible.",
-      "why": ["Prompt rules lower the rate of violations without preventing them.", "", "Higher temperature increases variation, the opposite of what exact policy needs.", "A better model still makes some mistakes, and nothing would catch them."]
+      "why": [
+        "Prompt rules lower the rate of violations without preventing them.",
+        "",
+        "Higher temperature increases variation, the opposite of what exact policy needs.",
+        "A better model still makes some mistakes, and nothing would catch them."
+      ]
     },
     {
       "id": "d30-q12",
       "type": "mcq",
       "level": 2,
-      "tags": ["incident-response", "mitigation"],
+      "tags": [
+        "incident-response",
+        "mitigation"
+      ],
       "context": "Finance reports that duplicate refunds are happening right now, a few per hour. The cause is unknown.",
       "q": "What do you do first?",
       "options": [
@@ -436,13 +924,22 @@
       ],
       "answer": 2,
       "explain": "Mitigate first, then diagnose (Day 21). A flag that pauses the money-moving step stops the harm in minutes and buys time to find the cause. Reading code while refunds continue lets damage grow, and a prompt change guesses at a cause that may sit in the queue.",
-      "why": ["Harm continues while you read, and the cause may not be in that code.", "It guesses that the agent is at fault, and the duplicates may come from the queue.", "", "The eval measures recorded tickets, not today's live duplicates, and waiting extends the harm."]
+      "why": [
+        "Harm continues while you read, and the cause may not be in that code.",
+        "It guesses that the agent is at fault, and the duplicates may come from the queue.",
+        "",
+        "The eval measures recorded tickets, not today's live duplicates, and waiting extends the harm."
+      ]
     },
     {
       "id": "d30-q13",
       "type": "open",
       "level": 3,
-      "tags": ["evals", "confounded-changes", "timeouts"],
+      "tags": [
+        "evals",
+        "confounded-changes",
+        "timeouts"
+      ],
       "context": "Relay's eval pass rate fell from 85 to 79 percent on the night two changes shipped: the LLM was upgraded to a new version, and the agent's tool timeout was lowered from 20 seconds to 8.",
       "q": "Describe how you would separate the effects of the two changes.",
       "rubric": [
@@ -458,9 +955,16 @@
       "id": "d30-q14",
       "type": "mcq",
       "level": 3,
-      "tags": ["tracing", "connection-pools", "llm-latency"],
+      "tags": [
+        "tracing",
+        "connection-pools",
+        "llm-latency"
+      ],
       "context": "Customers say Relay's replies got slow this afternoon. The team suspects the LLM provider. This is the trace for one slow reply.",
-      "artifact": {"lang": "trace", "code": "POST /tickets/7712/reply                9.84 s\n  auth.verify_session                    2 ms\n  db.pool.acquire                     6.91 s\n  pgvector search_help_center           38 ms\n  llm.generate (stream)               2.71 s\n  db.insert message                     12 ms"},
+      "artifact": {
+        "lang": "trace",
+        "code": "POST /tickets/7712/reply                9.84 s\n  auth.verify_session                    2 ms\n  db.pool.acquire                     6.91 s\n  pgvector search_help_center           38 ms\n  llm.generate (stream)               2.71 s\n  db.insert message                     12 ms"
+      },
       "q": "What does the trace establish?",
       "options": [
         "Most of the time went to waiting for a database connection",
@@ -470,13 +974,21 @@
       ],
       "answer": 0,
       "explain": "Seven of the ten seconds are spent acquiring a connection from the pool, before any query runs. The LLM span is a normal few seconds and the search itself takes 38 ms. Look for what is holding connections: a slow query elsewhere, a leak, or too small a pool (Days 3, 7, and 9).",
-      "why": ["", "The LLM span is under 3 seconds of the nearly 10; it is not the main cost.", "The search query itself finished in 38 ms once it had a connection.", "Session verification took 2 ms."]
+      "why": [
+        "",
+        "The LLM span is under 3 seconds of the nearly 10; it is not the main cost.",
+        "The search query itself finished in 38 ms once it had a connection.",
+        "Session verification took 2 ms."
+      ]
     },
     {
       "id": "d30-q15",
       "type": "mcq",
       "level": 2,
-      "tags": ["model-versions", "change-management"],
+      "tags": [
+        "model-versions",
+        "change-management"
+      ],
       "context": "Relay's behavior on refund conversations changed last Wednesday with no deploy, no prompt change, and no data change. Relay calls the model by an alias instead of a dated version.",
       "q": "What is the most likely cause, and the lasting fix?",
       "options": [
@@ -487,7 +999,12 @@
       ],
       "answer": 0,
       "explain": "An alias can point at a new model version without any change on your side, which is the LLM version of deploying 'latest' (Days 20 and 24). Pin a dated version and treat each upgrade like a deploy, gated by evals. A running image does not change its libraries without a deploy.",
-      "why": ["", "A running container's libraries do not change without a new image being deployed.", "Slowness changes latency, not the behavior of answers.", "Temperature is a request parameter; it does not drift unless your code changes it."]
+      "why": [
+        "",
+        "A running container's libraries do not change without a new image being deployed.",
+        "Slowness changes latency, not the behavior of answers.",
+        "Temperature is a request parameter; it does not drift unless your code changes it."
+      ]
     }
   ],
   "drills": [
@@ -507,7 +1024,10 @@
           "answer": 1,
           "explain": "One trace shows which layers actually produced the answer, which halves the search for free. Re-embedding and prompt edits are fixes for causes nobody has confirmed, and the prompt edit would hide the real fault for this one fact only.",
           "reveal": "The trace for ticket 88213 shows a Redis hit and no retrieval or LLM spans. The reply took 14 ms.",
-          "artifact": {"lang": "trace", "code": "POST /tickets/88213/reply              14 ms\n  auth.verify_session                  1 ms\n  redis GET ans:v2:9f3c1e...           2 ms   HIT\n  render_reply                         3 ms"}
+          "artifact": {
+            "lang": "trace",
+            "code": "POST /tickets/88213/reply              14 ms\n  auth.verify_session                  1 ms\n  redis GET ans:v2:9f3c1e...           2 ms   HIT\n  render_reply                         3 ms"
+          }
         },
         {
           "q": "What does that trace tell you?",
@@ -587,7 +1107,11 @@
           ],
           "answer": 3,
           "explain": "The log shows each article's delete committed on its own, then minutes of embedding, then the insert. Anyone reading in between sees no chunks for that article. That is Day 10's atomicity problem inside a Day 25 pipeline.",
-          "artifact": {"lang": "log", "title": "reindex job", "code": "02:31:04 article=refund-policy   DELETE 14 chunks   COMMIT\n02:31:05 article=refund-policy   embedding 15 chunks\n02:33:40 article=refund-policy   INSERT 15 chunks   COMMIT\n02:33:41 article=shipping-times  DELETE 9 chunks    COMMIT\n02:33:42 article=shipping-times  embedding 9 chunks\n02:35:58 article=shipping-times  INSERT 9 chunks    COMMIT"}
+          "artifact": {
+            "lang": "log",
+            "title": "reindex job",
+            "code": "02:31:04 article=refund-policy   DELETE 14 chunks   COMMIT\n02:31:05 article=refund-policy   embedding 15 chunks\n02:33:40 article=refund-policy   INSERT 15 chunks   COMMIT\n02:33:41 article=shipping-times  DELETE 9 chunks    COMMIT\n02:33:42 article=shipping-times  embedding 9 chunks\n02:35:58 article=shipping-times  INSERT 9 chunks    COMMIT"
+          }
         },
         {
           "q": "What is the right fix for the job?",
@@ -643,7 +1167,10 @@
           ],
           "answer": 2,
           "explain": "Worker-7 called the payment API and never reached the acknowledgement. After the visibility timeout the broker handed the job to worker-2, as at-least-once delivery promises. The 30-second gap matches a timeout, not a simultaneous pull.",
-          "artifact": {"lang": "log", "code": "10:41:02 worker-7 job=rf_5521 start order=88412 amount=39.00\n10:41:03 worker-7 job=rf_5521 payment_api ok refund_id=re_9QK\n10:41:03 worker-7 job=rf_5521 refund row committed\n10:41:33 worker-2 job=rf_5521 start order=88412 amount=39.00 (redelivered)\n10:41:34 worker-2 job=rf_5521 payment_api ok refund_id=re_A7T\n10:41:34 worker-2 job=rf_5521 ack"},
+          "artifact": {
+            "lang": "log",
+            "code": "10:41:02 worker-7 job=rf_5521 start order=88412 amount=39.00\n10:41:03 worker-7 job=rf_5521 payment_api ok refund_id=re_9QK\n10:41:03 worker-7 job=rf_5521 refund row committed\n10:41:33 worker-2 job=rf_5521 start order=88412 amount=39.00 (redelivered)\n10:41:34 worker-2 job=rf_5521 payment_api ok refund_id=re_A7T\n10:41:34 worker-2 job=rf_5521 ack"
+          },
           "reveal": "Pod events show worker-7 was OOMKilled at 10:41:04. Memory on refund workers climbs during busy periods, and several were killed last week."
         },
         {
@@ -667,7 +1194,7 @@
             "A larger model that confirms refunds more carefully"
           ],
           "answer": 0,
-          "explain": "The database would have rejected the second refund row, and a redelivery alert would have pointed at the dying workers. The eval and the agent logs were never going to see it, because the agent behaved correctly.",
+          "explain": "The database would have rejected the second refund row with an error the moment the duplicate happened, and a redelivery alert would have pointed at the dying workers. Neither stops the payment, which is the job of the idempotency key. The eval and the agent logs were never going to see it, because the agent behaved correctly.",
           "reveal": "The OOM is tracked separately; with the key and constraint in place, it now causes a delay instead of a double refund."
         }
       ],
@@ -689,7 +1216,11 @@
           "answer": 3,
           "explain": "Cost is calls times tokens per call. Splitting it shows whether answers got longer or calls multiplied, and the two need different fixes. Reverting max_tokens brings back truncation and tests only one theory.",
           "reveal": "Output tokens per request rose about 30 percent. The provider's usage export shows billed requests per call rose from 1.02 to 2.4.",
-          "artifact": {"lang": "text", "title": "app metrics and provider usage export", "code": "metric                     monday   tuesday\nllm_calls_per_ticket         2.1      2.1\nbilled_requests_per_call     1.02     2.4\nout_tokens_per_request       410      530\nerror_rate                   0.2%     0.2%"}
+          "artifact": {
+            "lang": "text",
+            "title": "app metrics and provider usage export",
+            "code": "metric                     monday   tuesday\nllm_calls_per_ticket         2.1      2.1\nbilled_requests_per_call     1.02     2.4\nout_tokens_per_request       410      530\nerror_rate                   0.2%     0.2%"
+          }
         },
         {
           "q": "What explains the extra attempts?",
@@ -701,7 +1232,10 @@
           ],
           "answer": 1,
           "explain": "The log shows client-side timeouts at exactly 30 seconds, then a retry. The usage export shows the abandoned attempts were still generated and billed, so a client timeout did not stop the cost. Calls per ticket are flat, which clears the agent loop.",
-          "artifact": {"lang": "log", "code": "11:02:14 llm ticket=7781 attempt=1 client timeout after 30.0s\n11:02:45 llm ticket=7781 attempt=2 client timeout after 30.0s\n11:03:09 llm ticket=7781 attempt=3 ok 23.6s out_tokens=1120"}
+          "artifact": {
+            "lang": "log",
+            "code": "11:02:14 llm ticket=7781 attempt=1 client timeout after 30.0s\n11:02:45 llm ticket=7781 attempt=2 client timeout after 30.0s\n11:03:09 llm ticket=7781 attempt=3 ok 23.6s out_tokens=1120"
+          }
         },
         {
           "q": "Why did the error rate not move?",
@@ -757,7 +1291,11 @@
           ],
           "answer": 0,
           "explain": "These are nginx's own errors about its upstream: connections refused and connections closed mid-request. The pods it was routing to had stopped. A timeout would be a 504, and a TLS failure would never reach nginx's upstream step.",
-          "artifact": {"lang": "log", "title": "nginx error log at deploy time", "code": "10:14:02 upstream prematurely closed connection while reading response header from upstream\n10:14:03 connect() failed (111: Connection refused) while connecting to upstream\n10:14:04 connect() failed (111: Connection refused) while connecting to upstream"}
+          "artifact": {
+            "lang": "log",
+            "title": "nginx error log at deploy time",
+            "code": "10:14:02 upstream prematurely closed connection while reading response header from upstream\n10:14:03 connect() failed (111: Connection refused) while connecting to upstream\n10:14:04 connect() failed (111: Connection refused) while connecting to upstream"
+          }
         },
         {
           "q": "The old pods' logs show the timing below. What is the mechanism?",
@@ -769,7 +1307,10 @@
           ],
           "answer": 2,
           "explain": "Removing a terminating pod from routing takes a few seconds to reach every proxy. A pod that exits on SIGTERM immediately drops its in-flight requests and refuses the ones still being sent to it.",
-          "artifact": {"lang": "log", "code": "10:14:02.110 SIGTERM received\n10:14:02.180 shutting down, 6 requests in flight\n10:14:02.240 process exited"}
+          "artifact": {
+            "lang": "log",
+            "code": "10:14:02.110 SIGTERM received\n10:14:02.180 shutting down, 6 requests in flight\n10:14:02.240 process exited"
+          }
         },
         {
           "q": "What is the right fix?",
@@ -802,7 +1343,10 @@
           "answer": 2,
           "explain": "One trajectory shows what the agent saw and did at every turn, which tells you whether the model or its inputs went wrong. The other options each act on an unconfirmed theory, and a longer turn limit would only make the loops cost more.",
           "reveal": "The agent refunds, looks up the order, sees no refund, and tries again, receiving 409 each time.",
-          "artifact": {"lang": "text", "code": "turn 3  issue_refund(order=55120)  -> {\"status\": \"accepted\"}\nturn 4  lookup_order(order=55120)  -> {\"refund_status\": \"none\"}\nturn 5  issue_refund(order=55120)  -> 409 {\"error\": \"refund exists\"}\nturn 6  lookup_order(order=55120)  -> {\"refund_status\": \"none\"}\nturn 7  issue_refund(order=55120)  -> 409 {\"error\": \"refund exists\"}"}
+          "artifact": {
+            "lang": "text",
+            "code": "turn 3  issue_refund(order=55120)  -> {\"status\": \"accepted\"}\nturn 4  lookup_order(order=55120)  -> {\"refund_status\": \"none\"}\nturn 5  issue_refund(order=55120)  -> 409 {\"error\": \"refund exists\"}\nturn 6  lookup_order(order=55120)  -> {\"refund_status\": \"none\"}\nturn 7  issue_refund(order=55120)  -> 409 {\"error\": \"refund exists\"}"
+          }
         },
         {
           "q": "Which reading of the trajectory is right?",
