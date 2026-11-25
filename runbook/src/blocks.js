@@ -14,7 +14,7 @@ function renderCode(c, opts) {
   opts = opts || {};
   const lang = c.lang || 'text';
   const lines = String(c.code || '').replace(/\n$/, '').split('\n');
-  const body = lines.map((l, i) => { const cls = lineClass(lang, l, i); return '<span class="ln' + (cls ? ' ' + cls : '') + '" data-n="' + (i + 1) + '">' + esc(l) + '</span>'; }).join('\n');
+  const body = lines.map((l, i) => { const cls = lineClass(lang, l, i); return '<span class="ln' + (cls ? ' ' + cls : '') + '" data-n="' + (i + 1) + '">' + esc(l) + '</span>'; }).join('');
   const title = c.title || opts.title || '';
   let html = '<figure class="code blk" style="margin:0"><div class="code-head"><span class="ct">' + esc(title) + '</span><span class="cl">' + esc(LANG_LABEL[lang] || lang) + '</span></div>' +
     '<pre tabindex="0" aria-label="' + esc((title ? title + ', ' : '') + (LANG_LABEL[lang] || lang)) + '"><code>' + body + '</code></pre>';

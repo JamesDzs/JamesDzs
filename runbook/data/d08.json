@@ -1,0 +1,625 @@
+{
+  "id": "d08",
+  "day": 8,
+  "phase": "p3",
+  "title": "Data modeling and SQL",
+  "tagline": "Tables, keys, joins, and constraints: the shape of the data decides which bugs are possible.",
+  "minutes": 55,
+  "why": "Many bugs that look like application logic are really data-shape bugs: a report that double counts, a filter that silently skips rows, an orphan that crashes a nightly job. If you can read a schema and predict what a join returns, you can tell a wrong number from a wrong model in minutes. Constraints and migrations decide which bad data can ever exist and whether a deploy can freeze the database.",
+  "objectives": [
+    "Read a small schema and name each table's primary key and the relationships between tables",
+    "Predict how many rows a join returns and spot when a total has been multiplied",
+    "Explain why a comparison with NULL matches nothing and fix the filter",
+    "Choose which rules belong in database constraints and which in application code",
+    "Describe an expand-and-contract migration and say which schema changes can lock a busy table"
+  ],
+  "lessons": [
+    {
+      "id": "d08-l1",
+      "title": "Tables, keys, and relationships",
+      "minutes": 11,
+      "blocks": [
+        {"t": "p", "text": "A relational database stores data in **tables**. Each table holds one kind of thing, each row is one instance of it, and each column is one typed attribute. A **primary key** is the column, or set of columns, whose value identifies exactly one row and never repeats."},
+        {"t": "p", "text": "A **foreign key** is a column that holds another table's primary key, so a row can point at its parent. In Relay, each message points at its ticket and each ticket points at its user. The database can check that every pointer leads somewhere."},
+        {"t": "code",
+          "lang": "text",
+          "title": "Relay's core tables, simplified",
+          "code": "users        id PK | email UNIQUE | name | created_at\ntickets      id PK | user_id FK -> users.id | status | created_at\nmessages     id PK | ticket_id FK -> tickets.id | role | body | created_at\norders       id PK | user_id FK -> users.id | total_cents | placed_at\nrefunds      id PK | order_id FK -> orders.id | ticket_id FK -> tickets.id\n             | amount_cents | created_at\ntags         id PK | name UNIQUE\nticket_tags  ticket_id FK -> tickets.id | tag_id FK -> tags.id\n             | PK (ticket_id, tag_id)",
+          "notes": [
+            "Read each FK as 'many of these belong to one of those'. Many tickets belong to one user; many messages belong to one ticket.",
+            "`refunds` has two parents. A refund belongs to an order, and records which support ticket caused it.",
+            "`ticket_tags` exists only to connect tickets and tags. Its primary key is the pair, so the same tag cannot be attached to a ticket twice.",
+            "The foreign key always sits on the 'many' side. That is where to look when you want to know who points at whom."
+          ]},
+        {"t": "compare",
+          "caption": "Relationship shapes",
+          "columns": ["", "One-to-one", "One-to-many", "Many-to-many"],
+          "rows": [
+            ["Meaning", "Each row matches at most one row on the other side", "One parent, any number of children", "Each side can match many on the other"],
+            ["Where the key lives", "A unique foreign key on either side", "A foreign key on the child", "A join table holding both keys"],
+            ["Relay example", "A user and their notification settings", "A ticket and its messages", "Tickets and tags"],
+            ["Typical mistake", "Forgetting the UNIQUE, so 'one' quietly becomes many", "Storing child IDs as a list inside the parent", "A comma-separated tag string that cannot be joined or checked"]
+          ],
+          "verdict": "Name the relationship before you design or debug a table. Most row-count surprises come from treating a one-to-many as a one-to-one."},
+        {"t": "h", "text": "Natural or surrogate keys"},
+        {"t": "p", "text": "A **natural key** is a real-world value that happens to be unique, such as an email address or an order number printed on a receipt. A **surrogate key** is a meaningless value the database generates only to identify the row. Natural keys change: customers change emails, and every foreign key holding the old value must change with them."},
+        {"t": "callout", "kind": "pitfall", "title": "Email as the primary key", "text": "If `users.email` is the primary key, every ticket, order, and refund stores the email. A customer who changes address forces updates across all of them, and any table that missed the update now points at nobody. Use a surrogate `id` as the key and put a UNIQUE constraint on email."},
+        {"t": "tradeoff",
+          "title": "UUID or auto-increment integer IDs",
+          "options": [
+            {"name": "Auto-increment integer", "gain": ["Small: 8 bytes as a 64-bit integer", "New rows append at the end of the index", "Easy to read in logs and support tickets"], "cost": ["Only the database can assign it", "Reveals volume and is easy to guess", "A 32-bit column runs out near 2.1 billion"], "choose": "Choose this for internal tables with one database, using a 64-bit type from the start."},
+            {"name": "Random UUID", "gain": ["Can be generated anywhere, before the insert", "Not guessable or countable", "Safe to merge data from several sources"], "cost": ["16 bytes in the key and in every index and foreign key", "Random values scatter inserts across the index", "Hard to read aloud or compare by eye"], "choose": "Choose this when IDs are created outside the database, appear in public URLs, or come from several systems."},
+            {"name": "Time-ordered UUID", "gain": ["Generated anywhere like a UUID", "Roughly increasing, so inserts stay near the end of the index"], "cost": ["Still 16 bytes", "Leaks the creation time"], "choose": "Choose this when you want UUID benefits on a large, insert-heavy table, using a variant such as UUIDv7."}
+          ]},
+        {"t": "callout", "kind": "insight", "title": "Hard-to-guess IDs are not access control", "text": "If a customer can open `/tickets/1043` and see another customer's ticket, switching to UUIDs only makes that harder to stumble on. The real fix is a server-side check that the ticket belongs to the caller, covered on Day 16."},
+        {"t": "check",
+          "q": "Relay wants to record which tags apply to each ticket. A ticket can have several tags and a tag applies to many tickets. Where do the keys go?",
+          "options": ["A join table with a ticket ID and a tag ID per row", "A `tag_id` column on the tickets table", "A `ticket_id` column on the tags table", "A comma-separated list of tag names on each ticket"],
+          "answer": 0,
+          "explain": "Many-to-many needs a table of pairs. A single `tag_id` on tickets allows only one tag per ticket, a `ticket_id` on tags allows only one ticket per tag, and a text list cannot be joined, indexed, or checked by a foreign key."}
+      ]
+    },
+    {
+      "id": "d08-l2",
+      "title": "Joins and aggregations, conceptually",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "A **join** combines rows from two tables wherever a condition matches, usually a foreign key equal to a primary key. The result has one row per matching pair. Nearly every surprising number from SQL comes from forgetting that it is one row per *pair*."},
+        {"t": "compare",
+          "caption": "What each join returns",
+          "columns": ["", "Inner join", "Left join", "Cross join"],
+          "rows": [
+            ["Returns", "Only pairs where the condition matches", "Every left row, with its matches or with NULLs", "Every left row paired with every right row"],
+            ["Left row with no match", "Disappears from the result", "Kept once, right-side columns NULL", "Not applicable, since there is no condition"],
+            ["Row count", "One per matching pair", "One per matching pair, at least one per left row", "Left count times right count"],
+            ["Typical bug", "Customers with no orders vanish from a report", "A WHERE condition on the right table turns it back into an inner join", "A forgotten join condition produces it by accident"]
+          ],
+          "verdict": "Use an inner join when unmatched rows should be excluded, and a left join when every row on the left must appear. Ask how many matches each left row can have before trusting any total."},
+        {"t": "h", "text": "How a join multiplies rows"},
+        {"t": "p", "text": "Joining one parent to two different child tables pairs every child of the first kind with every child of the second. A user with 2 orders and 3 tickets becomes 6 rows. Any SUM or COUNT over those rows counts each order three times and each ticket twice."},
+        {"t": "code",
+          "lang": "sql",
+          "title": "A per-customer report that triples revenue",
+          "code": "-- ana has 2 orders (4000 and 6000 cents) and 3 tickets\nSELECT u.email,\n       SUM(o.total_cents) AS spent_cents,\n       COUNT(t.id)        AS tickets\nFROM users u\nJOIN orders  o ON o.user_id = u.id\nJOIN tickets t ON t.user_id = u.id\nGROUP BY u.email;\n\n email           | spent_cents | tickets\n-----------------+-------------+---------\n ana@example.com |       30000 |       6",
+          "notes": [
+            "Before grouping there are 2 x 3 = 6 rows for ana. Each order appears once per ticket.",
+            "The true spend is 10,000 cents and the true ticket count is 3. Both numbers are wrong, by different factors.",
+            "Users with no tickets vanish entirely, because both joins are inner joins.",
+            "`SUM(DISTINCT o.total_cents)` is not a fix. It would also merge two different orders that happen to have the same amount."
+          ]},
+        {"t": "callout", "kind": "debug", "title": "A total changed after someone edited a query", "text": "Count the rows before grouping and compare `COUNT(*)` with `COUNT(DISTINCT o.id)`. If they differ, rows are repeated. The usual fix is to aggregate each child table separately per user, then join the small results."},
+        {"t": "p", "text": "**GROUP BY** collapses all rows that share the grouping key into one row per group, and aggregates such as SUM and COUNT are computed within each group. Aggregates run after the join, so they faithfully sum whatever rows the join produced, duplicates included."},
+        {"t": "h", "text": "NULL and three-valued logic"},
+        {"t": "p", "text": "**NULL** means the value is missing or unknown. Comparing anything with NULL, even another NULL, gives UNKNOWN rather than true or false. A WHERE clause keeps only rows where the condition is true, so rows that evaluate to UNKNOWN silently drop out."},
+        {"t": "code",
+          "lang": "sql",
+          "title": "Counting tickets by assignee",
+          "code": "SELECT count(*) FROM tickets;                            -- 10,000\nSELECT count(*) FROM tickets WHERE assignee_id = NULL;   -- 0\nSELECT count(*) FROM tickets WHERE assignee_id IS NULL;  -- 2,500\nSELECT count(*) FROM tickets WHERE assignee_id <> 7;     -- 7,100\nSELECT count(assignee_id) FROM tickets;                  -- 7,500",
+          "notes": [
+            "`= NULL` is never true, so it matches nothing. `IS NULL` is the test that works.",
+            "`<> 7` returns 7,100, not 9,600. The 400 tickets assigned to 7 are excluded, and so are the 2,500 unassigned ones.",
+            "`count(*)` counts rows; `count(column)` skips NULLs. Averages skip NULLs too."
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "NOT IN with a NULL inside", "text": "`WHERE id NOT IN (SELECT ticket_id FROM refunds)` returns no rows at all if any `ticket_id` in refunds is NULL, because every comparison with that NULL is UNKNOWN. `NOT EXISTS` behaves the way people expect."},
+        {"t": "check",
+          "q": "A report should list every user with their open tickets, if any. It uses `users LEFT JOIN tickets` with `WHERE tickets.status = 'open'`. Users with no open tickets are missing. Why?",
+          "options": ["The WHERE condition drops rows whose ticket columns are NULL", "A left join returns only users who have tickets", "The status comparison needs `IS 'open'` instead of `=`", "The query needs a GROUP BY on the user"],
+          "answer": 0,
+          "explain": "The left join keeps unmatched users with NULL ticket columns, then the WHERE tests `NULL = 'open'`, which is UNKNOWN, so those rows are dropped. Moving the status condition into the join's ON clause keeps them."},
+        {"t": "reveal", "prompt": "An average resolution time over all tickets looks suspiciously good. Many tickets are still open and have a NULL `resolved_at`. What is the average actually measuring?", "answer": "Only resolved tickets, because averages skip NULLs. The slowest tickets, the ones still open, are left out entirely, so the average is biased low. Report the open count next to it, or measure age for open tickets separately."}
+      ]
+    },
+    {
+      "id": "d08-l3",
+      "title": "Normalize or denormalize, and constraints",
+      "minutes": 11,
+      "blocks": [
+        {"t": "p", "text": "**Normalization** means storing each fact once, in one place, and pointing to it from everywhere else. The normal forms are formal rules for this, and their practical summary is short: if a value can change, it should live in exactly one row."},
+        {"t": "p", "text": "Suppose Relay copied the customer's email into every ticket row. When the customer changes their email, old tickets keep the old one unless every copy is updated. Reports then disagree depending on which copy they read. That is the cost duplication always carries."},
+        {"t": "tradeoff",
+          "title": "Store each fact once, or copy it where it is read",
+          "options": [
+            {"name": "Normalized", "gain": ["One place to update", "No copies to disagree", "Constraints are easy to express"], "cost": ["Reads need joins", "Some list pages get slower as tables grow"], "choose": "Choose this by default, for any data that changes and must be correct."},
+            {"name": "Denormalized", "gain": ["Reads skip joins", "A row is self-contained for display or export"], "cost": ["Every copy must be updated on change", "Copies drift apart when an update path is missed"], "choose": "Choose this deliberately for read-heavy paths, or for values that should freeze in time, such as the price on a past order."}
+          ]},
+        {"t": "callout", "kind": "insight", "title": "Some copies are facts of their own", "text": "An order's total at checkout should not change when the product's price changes later. Storing it on the order is a separate fact, the price paid, and not duplication. Ask whether the copy should follow the original or stay frozen."},
+        {"t": "h", "text": "Constraints are tests that run on every write"},
+        {"t": "compare",
+          "caption": "Constraints in Relay's schema",
+          "columns": ["", "Rejects", "Relay example", "Bug it prevents"],
+          "rows": [
+            ["NOT NULL", "A missing value", "`tickets.status`", "A ticket no queue picks up because its status is empty"],
+            ["UNIQUE", "A second row with the same value", "`users.email`", "Two accounts for one customer after a double-click"],
+            ["CHECK", "A row failing a condition on its own columns", "`refunds.amount_cents > 0`", "A negative refund that pays the store"],
+            ["FOREIGN KEY", "A pointer to a row that does not exist", "`refunds.order_id`", "A refund for an order nobody can find"]
+          ],
+          "verdict": "Put every rule that must never be broken into a constraint. The database then checks it on every write, from every code path, including scripts and the agent's tools."},
+        {"t": "code",
+          "lang": "log",
+          "title": "What constraint violations look like in PostgreSQL",
+          "code": "ERROR:  duplicate key value violates unique constraint \"users_email_key\"\nDETAIL:  Key (email)=(ana@example.com) already exists.\n\nERROR:  insert or update on table \"refunds\" violates foreign key constraint\n        \"refunds_order_id_fkey\"\nDETAIL:  Key (order_id)=(91822) is not present in table \"orders\".\n\nERROR:  new row for relation \"refunds\" violates check constraint\n        \"refunds_amount_cents_check\"",
+          "notes": [
+            "The constraint name tells you which rule fired; Postgres names them after the table and column unless you choose a name.",
+            "DETAIL shows the offending value. A foreign key error with an ID nobody recognizes often means the caller invented or mistyped it.",
+            "In Python these arrive as exceptions from the driver. An API that turns them into 500s is hiding a 409 or 422."
+          ]},
+        {"t": "compare",
+          "caption": "Where to enforce a rule",
+          "columns": ["", "Database constraint", "Application check"],
+          "rows": [
+            ["Runs when", "Every write, from any client", "Only on code paths that call it"],
+            ["Bypassed by", "Almost nothing", "Scripts, admin tools, other services, a forgotten path"],
+            ["Concurrent requests", "Safe: two inserts cannot both pass a UNIQUE", "Two requests can both pass a check and both insert"],
+            ["Error quality", "Generic, needs translating for users", "Clear, specific, and friendly"],
+            ["Rules it can express", "Simple ones about a row or a key", "Anything, including calls to other systems"]
+          ],
+          "verdict": "Enforce invariants in the database and also check them in the application for good error messages. Keep rules that need other systems or business judgment in code."},
+        {"t": "callout", "kind": "pitfall", "title": "Check, then insert", "text": "Relay's sign-up code checks that no user has an email, then inserts. Two requests a few milliseconds apart both pass the check and both insert. Only a UNIQUE constraint closes the gap; Day 10 covers this race in depth."},
+        {"t": "callout", "kind": "debug", "title": "Orphaned rows", "text": "When a job crashes on a child whose parent is gone, look for a missing foreign key. A left join from child to parent where the parent's id is NULL lists the orphans. Clean them up, then add the constraint so the database refuses the next one."},
+        {"t": "callout", "kind": "ai", "title": "Constraints catch agent mistakes", "text": "When the model calls `issue_refund` with an order ID it made up, a foreign key rejects the write instead of storing a refund for nothing. A CHECK rejects a negative amount. These are guardrails that do not depend on the prompt."},
+        {"t": "check",
+          "q": "Duplicate accounts keep appearing for the same customer, differing only in letter case, such as `Ana@x.com` and `ana@x.com`. There is a UNIQUE constraint on `email`. What closes the gap?",
+          "options": ["A unique index on the lowercased email", "A CHECK that the email contains an @", "An application check before each insert", "A foreign key from users to emails"],
+          "answer": 0,
+          "explain": "A UNIQUE on the raw column treats different cases as different values. A unique index on `lower(email)` makes the database compare them the same way. An application check alone still loses the race between concurrent sign-ups."}
+      ]
+    },
+    {
+      "id": "d08-l4",
+      "title": "Migrations and ORMs",
+      "minutes": 11,
+      "blocks": [
+        {"t": "p", "text": "A **migration** is a versioned script that changes the schema, such as adding a column or an index. Migrations run in order, and a tool records which ones have run, so every environment ends up with the same schema. Alembic, common with SQLAlchemy, keeps the current version in a table of its own."},
+        {"t": "p", "text": "Many schema changes need a strong lock on the table. While a change waits for that lock, every new query on the table waits behind it. A change that is instant on an idle table can stall a busy one for as long as the oldest open transaction keeps running."},
+        {"t": "compare",
+          "caption": "Schema changes on a large, busy PostgreSQL table",
+          "columns": ["Change", "What happens", "Risk"],
+          "rows": [
+            ["Add a nullable column", "A catalog change, with a brief exclusive lock", "Low, unless it waits behind a long transaction"],
+            ["Change a column's type", "Usually rewrites the whole table and its indexes under an exclusive lock", "High: reads and writes block for the whole rewrite"],
+            ["Add NOT NULL to a column", "Scans every row to verify, under an exclusive lock", "Medium to high on large tables"],
+            ["Create an index", "Blocks writes until built, unless built concurrently", "High without the concurrent option"],
+            ["Add a foreign key", "Checks every existing row", "Medium; can be added unvalidated, then validated with a lighter lock"],
+            ["Drop a column", "A quick catalog change", "Running code that still reads the column starts failing"]
+          ],
+          "verdict": "Treat any change that rewrites or scans a large table as an operation to plan, not a routine deploy step."},
+        {"t": "flow",
+          "title": "Expand and contract: renaming `name` to `full_name` with no downtime",
+          "steps": [
+            {"actor": "Migration", "label": "Expand: add `full_name`, nullable", "detail": "A quick change. Old code ignores the new column.", "fail": "Run without a lock timeout, it can queue behind a long transaction and stall the table."},
+            {"actor": "API", "label": "Deploy code that writes both columns", "detail": "Every new or edited user now has both values.", "fail": "A write path that was missed leaves new rows with only the old column."},
+            {"actor": "Worker", "label": "Backfill old rows in batches", "detail": "Copy `name` into `full_name` a few thousand rows at a time, with short transactions.", "fail": "One giant UPDATE holds locks for its whole run and produces a burst of writes that replicas must replay."},
+            {"actor": "API", "label": "Deploy code that reads `full_name`", "detail": "Reads switch only after the backfill is verified.", "fail": "Switching early shows empty names for rows the backfill has not reached."},
+            {"actor": "API", "label": "Stop writing `name`", "detail": "No running code touches the old column any more.", "fail": "An old version still running during a rolling deploy breaks if the column vanishes too soon."},
+            {"actor": "Migration", "label": "Contract: drop `name`", "detail": "The last step, often in a later release.", "fail": "Dropping before every reader is gone produces errors in whatever still selects it."}
+          ]},
+        {"t": "callout", "kind": "debug", "title": "A migration locked a table", "text": "In `pg_stat_activity`, look for queries with wait event type `Lock` and find what blocks them with `pg_blocking_pids`. The usual chain is an old `idle in transaction` session, then the migration, then every request. Set a short `lock_timeout` in migrations so they fail fast instead of queuing."},
+        {"t": "h", "text": "What an ORM hides"},
+        {"t": "p", "text": "An **ORM**, or object-relational mapper, maps tables to classes and rows to objects, so you write Python and it writes the SQL. What it hides is when queries happen and how many. With **lazy loading**, related objects are fetched only when first accessed, one query at a time."},
+        {"t": "code",
+          "lang": "log",
+          "title": "SQLAlchemy with SQL logging on, while a loop reads each ticket's messages",
+          "code": "INFO sqlalchemy.engine.Engine SELECT tickets.id, tickets.status\nFROM tickets\nWHERE tickets.user_id = %(user_id_1)s\nINFO sqlalchemy.engine.Engine [generated in 0.00019s] {'user_id_1': 4410}\nINFO sqlalchemy.engine.Engine SELECT messages.id, messages.body\nFROM messages\nWHERE %(param_1)s = messages.ticket_id\nINFO sqlalchemy.engine.Engine [generated in 0.00012s] {'param_1': 812}\nINFO sqlalchemy.engine.Engine SELECT messages.id, messages.body\nFROM messages\nWHERE %(param_1)s = messages.ticket_id\nINFO sqlalchemy.engine.Engine [cached since 0.004s ago] {'param_1': 813}",
+          "notes": [
+            "One query loads the tickets, then one more query runs per ticket as the loop touches its messages. With 200 tickets that is 201 queries.",
+            "Nothing in the Python loop looks like database access. Only the SQL log shows it.",
+            "For SQLAlchemy, `echo=True` on the engine prints this. Most ORMs have a similar switch. Day 9 covers fixing this pattern."
+          ]},
+        {"t": "tradeoff",
+          "title": "ORM or raw SQL",
+          "options": [
+            {"name": "ORM", "gain": ["Less boilerplate for ordinary reads and writes", "Schema and code stay in one language", "Parameters are escaped for you"], "cost": ["Query count and shape are hidden", "Lazy loading causes many small queries", "Complex reports fight the abstraction"], "choose": "Choose this for routine create, read, update, and delete work, with SQL logging available when you debug."},
+            {"name": "Raw SQL", "gain": ["You see and control every query", "Full use of the database's features"], "cost": ["More code to write and keep in sync with the schema", "Easy to build queries unsafely by pasting strings"], "choose": "Choose this for reports, bulk operations, and hot paths where the exact query matters."}
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "The ORM model is not the schema", "text": "A model class can say a column is required while the database allows NULL, or the reverse. Data written by scripts or older code follows the database, not the class. When they disagree, believe the database and check its constraints directly."},
+        {"t": "reveal", "prompt": "A migration that adds a nullable column to `messages` took 0.2 seconds in staging. In production, the API stalled for four minutes while it ran. What most likely made the difference?", "answer": "The migration waited for its lock behind a long-running or idle-in-transaction session in production, and every query on `messages` queued behind the migration. Staging had no such session. A `lock_timeout` would have made it fail fast and retry instead."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "A report total doubled, or tripled, after someone added a join",
+      "causes": ["The new join is one-to-many, so each existing row repeats once per match", "Two child tables joined to the same parent multiply each other"],
+      "look": "The query's joins, and the row count before GROUP BY compared with the count of distinct parent IDs.",
+      "confirm": "`COUNT(*)` is larger than `COUNT(DISTINCT parent.id)` for the same rows.",
+      "fix": "Aggregate each child table separately and join the results, or filter with EXISTS instead of joining."
+    },
+    {
+      "symptom": "A filter returns no rows, or fewer than expected, on a column that has NULLs",
+      "causes": ["`= NULL` or `<> value` comparisons evaluate to UNKNOWN for NULL rows", "`NOT IN` over a list that contains a NULL"],
+      "look": "How many rows have NULL in the filtered column.",
+      "confirm": "Counts with `IS NULL` account exactly for the missing rows.",
+      "fix": "Use `IS NULL` or `IS NOT NULL` explicitly, and `NOT EXISTS` instead of `NOT IN`."
+    },
+    {
+      "symptom": "Every request touching one table hangs during a deploy, then recovers all at once",
+      "causes": ["A migration waits for a lock behind a long transaction, and new queries queue behind it", "A migration rewrites the table under an exclusive lock"],
+      "look": "`pg_stat_activity` during the stall: sessions waiting on `Lock`, and `idle in transaction` sessions with an old start time.",
+      "confirm": "`pg_blocking_pids` on the waiting queries leads to the migration, and from the migration to an old transaction.",
+      "fix": "Cancel the migration, then rerun it with a `lock_timeout`, or restructure it as expand and contract."
+    },
+    {
+      "symptom": "A nightly job crashes on messages whose ticket no longer exists",
+      "causes": ["No foreign key, so parent rows were deleted while children remained", "A cleanup script deletes parents directly"],
+      "look": "A left join from child to parent where the parent ID is NULL.",
+      "confirm": "Orphans exist and the table has no foreign key on that column.",
+      "fix": "Decide what orphans mean, clean them up, then add the foreign key with an explicit ON DELETE rule."
+    },
+    {
+      "symptom": "Two accounts exist for the same customer email",
+      "causes": ["Uniqueness is checked only in application code, which loses races", "The UNIQUE constraint is case-sensitive"],
+      "look": "Duplicate emails grouped by `lower(email)`, and their creation timestamps.",
+      "confirm": "Pairs created milliseconds apart, or differing only in letter case.",
+      "fix": "Merge the duplicates, then add a unique index on the normalized email."
+    },
+    {
+      "symptom": "Inserts fail with 'integer out of range' or 'reached maximum value of sequence'",
+      "causes": ["A 32-bit integer primary key ran out near 2.1 billion"],
+      "look": "The ID column's type and the sequence's current value.",
+      "confirm": "The sequence value is at the 32-bit maximum.",
+      "fix": "Move to a 64-bit ID with an expand-and-contract migration. Changing the type in place rewrites the table under a lock."
+    },
+    {
+      "symptom": "A backfill made the whole database slow and replicas fell behind",
+      "causes": ["One UPDATE over millions of rows in a single transaction", "No pause between batches"],
+      "look": "Running statements, their start times, and replica lag during the backfill.",
+      "confirm": "Slowness starts and ends with the backfill statement.",
+      "fix": "Backfill in small batches with short transactions. It takes longer in total but never holds the database for long."
+    },
+    {
+      "symptom": "An API returns 500 when a customer submits a form twice",
+      "causes": ["A unique or foreign key violation is raised and not translated", "The application assumes its own check already prevented duplicates"],
+      "look": "The exception in the logs: the constraint name and the DETAIL line.",
+      "confirm": "A `duplicate key value violates unique constraint` error appears at the time of the 500.",
+      "fix": "Catch the constraint error and return a 409 or 422 with a clear message. Keep the constraint."
+    },
+    {
+      "symptom": "A page that shows one list runs dozens or hundreds of queries",
+      "causes": ["ORM lazy loading inside a loop"],
+      "look": "The ORM's SQL log for one request.",
+      "confirm": "One query for the list, then one near-identical query per item.",
+      "fix": "Load related rows up front with the ORM's eager loading option. Day 9 covers this pattern."
+    }
+  ],
+  "glossary": [
+    {"term": "Primary key", "def": "The column or columns whose value identifies exactly one row in a table. It must be unique and not NULL."},
+    {"term": "Foreign key", "def": "A column holding another table's primary key, plus a constraint that the referenced row must exist."},
+    {"term": "Surrogate key", "def": "A generated identifier with no real-world meaning, such as an auto-increment integer or a UUID."},
+    {"term": "Natural key", "def": "A real-world value that happens to be unique, such as an email or order number. It can change, which makes it a risky primary key."},
+    {"term": "Inner join", "def": "A join that returns one row for each pair of rows matching the condition. Rows with no match on either side are dropped."},
+    {"term": "Left join", "def": "A join that keeps every row from the left table, filling the right side with NULLs where nothing matches."},
+    {"term": "GROUP BY", "def": "Collapses rows sharing the same key into one row per group, so aggregates such as SUM and COUNT are computed per group."},
+    {"term": "NULL", "def": "A marker for a missing or unknown value. Comparisons with it yield UNKNOWN, which WHERE treats as not true."},
+    {"term": "Normalization", "def": "Designing tables so each fact is stored once and referenced elsewhere, so an update touches one row."},
+    {"term": "Denormalization", "def": "Deliberately copying data into the rows that read it, to avoid joins, at the cost of keeping copies in sync."},
+    {"term": "Constraint", "def": "A rule the database checks on every write, such as NOT NULL, UNIQUE, CHECK, or FOREIGN KEY, rejecting rows that break it."},
+    {"term": "Migration", "def": "A versioned script that changes the schema, applied in order and recorded so each environment runs it once."},
+    {"term": "Expand and contract", "def": "Changing a schema with no downtime by adding the new shape, moving code and data over in steps, then removing the old shape."},
+    {"term": "ORM", "def": "Object-relational mapper: a library that maps tables to classes and rows to objects, generating SQL for you."}
+  ],
+  "apply": {
+    "title": "Read your own data model as a set of rules",
+    "minutes": 15,
+    "steps": [
+      "Pick the place your project stores structured data, such as eval results, conversation logs, or a SQLite or Postgres database. Write down each kind of record, its unique key, and which other records it points to.",
+      "For each pointer, write what happens if the target is deleted, and whether anything stops it today.",
+      "Find one value stored in two places, such as a model name kept with each result and in the run config. Decide whether the copy should follow the original or stay frozen.",
+      "If you use SQL or an ORM, turn on SQL logging (for SQLAlchemy, `echo=True` on the engine), run one script or page, and count the queries it emits."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d08-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["joins", "row-multiplication"],
+      "diagnostic": true,
+      "q": "A query joins each customer to their orders and to their support tickets, then sums order totals per customer. The grand total is about three times the sum of the orders table. What is the most likely cause?",
+      "options": [
+        "Orders were inserted twice by a retrying client",
+        "The join repeats each order once per ticket of the same customer",
+        "SUM counts NULL totals as zero and inflates the result",
+        "The GROUP BY is missing one of the selected columns"
+      ],
+      "answer": 1,
+      "explain": "Joining two child tables to the same parent produces one row per order-ticket pair, so each order is summed once per ticket. Duplicate inserts would also show in the orders table's own sum, which is correct here.",
+      "why": ["Duplicates in the table would inflate the table's own sum too, which matches the true total.", "", "SUM skips NULLs, and adding zero cannot inflate anything.", "A missing GROUP BY column causes an error in PostgreSQL, not a larger number."]
+    },
+    {
+      "id": "d08-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["null", "three-valued-logic"],
+      "artifact": {"lang": "sql", "code": "SELECT count(*) FROM tickets;                          -- 10,000\nSELECT count(*) FROM tickets WHERE priority = 'high';  -- 1,200\nSELECT count(*) FROM tickets WHERE priority <> 'high'; -- 6,300"},
+      "q": "Why do the last two counts not add up to 10,000?",
+      "options": [
+        "The counts ran at different moments while tickets were being inserted",
+        "`count(*)` skips rows that contain any NULL value",
+        "2,500 tickets have a NULL priority, and neither comparison is true for them",
+        "Some rows say 'High' with a capital letter and match neither filter"
+      ],
+      "answer": 2,
+      "explain": "For a NULL priority, both `= 'high'` and `<> 'high'` evaluate to UNKNOWN, so those rows fall out of both counts. Case differences are tempting, but 'High' is not equal to 'high', so those rows land in the second count.",
+      "why": ["Concurrent inserts could explain a handful of rows, not a gap of 2,500.", "`count(*)` counts every row; only `count(column)` skips NULLs.", "", "'High' is different from 'high', so those rows satisfy `<> 'high'` and are counted."]
+    },
+    {
+      "id": "d08-q03",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["keys", "uuid"],
+      "context": "Relay's web app shows tickets at `/tickets/1042`. A customer changes the number to 1043 and sees someone else's ticket.",
+      "q": "What is the real fix?",
+      "options": [
+        "Switch ticket IDs to random UUIDs so they cannot be guessed",
+        "Encrypt the ticket ID in the URL",
+        "Rate limit ticket lookups per customer",
+        "Check on the server that the ticket belongs to the caller"
+      ],
+      "answer": 3,
+      "explain": "The bug is a missing ownership check. Random UUIDs make IDs hard to guess, which is a useful extra layer, but any leaked or shared UUID still opens the ticket without the check.",
+      "why": ["UUIDs make guessing harder, but a leaked link still works without an ownership check.", "An encrypted ID is still a token that grants access if it leaks.", "Rate limits slow down guessing without stopping it.", ""]
+    },
+    {
+      "id": "d08-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["joins", "null"],
+      "context": "This report should list every user, with their open tickets if any. Users who have no open tickets are missing from it.",
+      "artifact": {"lang": "sql", "code": "SELECT u.email, t.id AS ticket_id\nFROM users u\nLEFT JOIN tickets t ON t.user_id = u.id\nWHERE t.status = 'open';"},
+      "q": "What is wrong?",
+      "options": [
+        "The WHERE on `t.status` drops the NULL rows the left join kept",
+        "A left join returns only users who have at least one ticket",
+        "The query needs `GROUP BY u.email` to keep every user",
+        "The join condition should compare emails instead of IDs"
+      ],
+      "answer": 0,
+      "explain": "For users without open tickets, the left join produces a row with NULL ticket columns, then `NULL = 'open'` is UNKNOWN and WHERE drops it. Moving `t.status = 'open'` into the ON clause keeps every user.",
+      "why": ["", "A left join keeps every left row; that is its purpose.", "Grouping cannot bring back rows that WHERE already removed.", "Joining on IDs is correct; emails are not the foreign key."]
+    },
+    {
+      "id": "d08-q05",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["normalization", "denormalization"],
+      "q": "Relay's ticket list joins tickets to users to show each customer's name. A teammate proposes copying the name into every ticket row. What does that trade?",
+      "options": [
+        "Less storage, in exchange for slower writes",
+        "Faster reads with no join, in exchange for keeping copies in sync",
+        "Stronger consistency, in exchange for more complex queries",
+        "Nothing, since Postgres keeps such copies in sync automatically"
+      ],
+      "answer": 1,
+      "explain": "Denormalizing removes the join from reads, and every name change must now update all copies or they drift. It uses more storage, not less, and weakens consistency rather than strengthening it.",
+      "why": ["Copies use more storage, not less.", "", "Copies weaken consistency, because they can disagree.", "Postgres does not update copies for you unless you build that yourself."]
+    },
+    {
+      "id": "d08-q06",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["migrations", "locks"],
+      "context": "During a 2 p.m. deploy, a migration ran `ALTER TABLE messages ADD COLUMN ...`. For six minutes every request touching messages hung, then everything recovered at once. The same migration took under a second in staging. During the incident, one session had been `idle in transaction` since 1:54 p.m.",
+      "q": "What is the most likely explanation?",
+      "options": [
+        "The new column forced a rewrite of the whole messages table",
+        "The API ran out of database connections during the deploy",
+        "The ALTER waited behind the idle transaction, and new queries queued behind the ALTER",
+        "Autovacuum locked the messages table at the same moment"
+      ],
+      "answer": 2,
+      "explain": "Adding a column needs a brief exclusive lock, which cannot be granted while another transaction holds any lock on the table. New queries queue behind the waiting ALTER, so the whole table stalls until the old transaction ends. A rewrite is tempting, but it would have been slow in staging too.",
+      "why": ["A rewrite would have been slow in staging too, and would not depend on an idle session.", "Connection exhaustion gives connection errors, and would not single out the messages table.", "", "Autovacuum does not take a lock that blocks ordinary reads and writes."]
+    },
+    {
+      "id": "d08-q07",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["constraints", "race-conditions"],
+      "q": "Relay's sign-up code checks that no user has an email before inserting. During a burst of sign-ups, duplicate accounts appeared. What is the reliable fix?",
+      "options": [
+        "Run the check twice before inserting",
+        "Keep a cache of known emails in Redis",
+        "Add a unique constraint so the database rejects the second insert",
+        "Run a nightly job that merges duplicates"
+      ],
+      "answer": 2,
+      "explain": "Two concurrent requests can both pass any check made before the insert. A unique constraint is enforced at the moment of the write, so exactly one insert succeeds. A nightly merge cleans up after the damage instead of preventing it.",
+      "why": ["Checking twice narrows the window but two requests can still both pass.", "A cache has the same race between reading and writing.", "", "A cleanup job repairs damage after customers have already seen it."]
+    },
+    {
+      "id": "d08-q08",
+      "type": "multi",
+      "level": 2,
+      "tags": ["keys", "uuid"],
+      "q": "Which of these are real costs of random (version 4) UUID primary keys compared with 64-bit auto-increment integers? Select all that apply.",
+      "options": [
+        "Each key, and every index entry and foreign key holding it, is larger",
+        "Inserts land at random places in the primary key index",
+        "IDs reveal how many orders the store takes",
+        "IDs collide often enough to need retry logic",
+        "Sorting by ID no longer follows creation order"
+      ],
+      "answers": [0, 1, 4],
+      "explain": "UUIDs are 16 bytes against 8, random values scatter inserts across the index, and their order means nothing. Revealing volume is a weakness of sequential integers, and random UUID collisions are vanishingly rare in practice."
+    },
+    {
+      "id": "d08-q09",
+      "type": "order",
+      "level": 2,
+      "tags": ["migrations", "expand-contract"],
+      "q": "Put the steps of renaming a column with no downtime in order.",
+      "items": [
+        "Add the new column, nullable",
+        "Deploy code that writes both the old and new columns",
+        "Backfill existing rows into the new column in small batches",
+        "Deploy code that reads from the new column",
+        "Stop writing the old column, then drop it"
+      ],
+      "explain": "At every step, both the running code and the code being rolled out work with the schema as it is. Backfilling before dual writes leaves a gap of rows written in between, and dropping early breaks any reader still running."
+    },
+    {
+      "id": "d08-q10",
+      "type": "match",
+      "level": 1,
+      "tags": ["constraints"],
+      "q": "Match each constraint to the bug it prevents.",
+      "pairs": [
+        ["NOT NULL", "A ticket saved without a status"],
+        ["UNIQUE", "Two accounts with the same email"],
+        ["CHECK", "A refund with a negative amount"],
+        ["FOREIGN KEY", "A message pointing at a ticket that does not exist"],
+        ["PRIMARY KEY", "Two rows that cannot be told apart"]
+      ],
+      "explain": "Each constraint is a small test the database runs on every write. Choosing the right one turns a class of bad data from 'possible and rare' into 'impossible'."
+    },
+    {
+      "id": "d08-q11",
+      "type": "open",
+      "level": 3,
+      "tags": ["foreign-keys", "orphans"],
+      "context": "Relay's nightly re-indexing job crashes on messages whose ticket no longer exists. The messages table has a `ticket_id` column but no foreign key. A cleanup script deletes old closed tickets.",
+      "q": "Explain how the orphans appeared, how you would find them, and what you would change so it cannot happen again.",
+      "rubric": [
+        "Without a foreign key, nothing stopped the cleanup script deleting tickets that still had messages",
+        "Finds orphans with a left join from messages to tickets where the ticket ID is NULL",
+        "Decides what to do with existing orphans before adding the constraint",
+        "Adds the foreign key with an explicit ON DELETE rule, such as cascade or restrict",
+        "Mentions adding it unvalidated then validating, or otherwise avoiding a long lock"
+      ],
+      "model": "The cleanup script deleted tickets, and with no foreign key the database let it leave their messages behind. A left join from messages to tickets where the ticket ID comes back NULL lists them. I would delete or archive those orphans, then add a foreign key on `messages.ticket_id` with an explicit ON DELETE rule: cascade if messages should go with their ticket, restrict if deletion should fail. On a large table I would add it unvalidated and validate it separately to avoid a long lock."
+    },
+    {
+      "id": "d08-q12",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["constraints", "agent-tools"],
+      "context": "After a prompt change, Relay's `issue_refund` tool started failing on some tickets. Customers get 'something went wrong' instead of a refund.",
+      "artifact": {"lang": "log", "code": "ERROR:  insert or update on table \"refunds\" violates foreign key constraint\n        \"refunds_order_id_fkey\"\nDETAIL:  Key (order_id)=(91822) is not present in table \"orders\"."},
+      "q": "What is the most likely cause?",
+      "options": [
+        "The orders table is locked by a running migration",
+        "The refund amount is larger than the order total",
+        "The model passes order IDs that do not exist, and the foreign key blocks them",
+        "The database user lacks permission to insert into refunds"
+      ],
+      "answer": 2,
+      "explain": "The error says the order ID does not exist in orders, and the failures began with a prompt change, so the model is supplying wrong IDs. The foreign key is doing its job. A lock would cause waiting rather than this error.",
+      "why": ["A lock makes the insert wait or time out; it does not raise a foreign key error.", "An amount rule would be a CHECK violation with a different message.", "", "A permission problem raises 'permission denied', not a constraint violation."]
+    }
+  ],
+  "drills": [
+    {
+      "id": "d08-x1",
+      "title": "Refunds doubled overnight",
+      "brief": "Finance says the 'Refunds issued by Relay' dashboard jumped from about $4,100 a day to almost $9,900 on Tuesday, and asks whether the agent is issuing duplicate refunds. On Monday evening an analyst added a 'refunds by tag' breakdown to the same dashboard. No change to the agent shipped this week.",
+      "artifact": {"lang": "text", "title": "Refunds dashboard, daily total", "code": "day    refunded\nSat    $4,050\nSun    $3,980\nMon    $4,210\nTue    $9,870\nWed    $9,640"},
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Disable the `issue_refund` tool until the agent is fixed",
+            "Read a sample of Tuesday's refund conversations",
+            "Compare the dashboard with a plain sum over the refunds table for Tuesday",
+            "Add a unique constraint on refunds to block duplicates"
+          ],
+          "answer": 2,
+          "explain": "A plain sum over the source table tells you in one query whether money really moved or only the report changed. Disabling the tool or adding constraints acts on a theory nobody has tested yet.",
+          "reveal": "A plain sum over refunds for Tuesday is $4,180, in line with the week. Payment records agree. The agent did not refund twice; the dashboard counts some refunds more than once."
+        },
+        {
+          "q": "The table is right and the dashboard is wrong. Where do you look?",
+          "options": [
+            "The refunds table's indexes",
+            "The dashboard query, especially anything changed on Monday",
+            "The payment provider's API logs",
+            "The dashboard tool's cache settings"
+          ],
+          "answer": 1,
+          "explain": "The number is computed by the query, and the query changed on Monday. Indexes affect speed, not results, and the provider's logs already agree with the table.",
+          "reveal": "To support the breakdown, the analyst added a join to `ticket_tags` in the base query that the total panel also uses.",
+          "artifact": {"lang": "sql", "code": "SELECT date(r.created_at) AS day,\n       SUM(r.amount_cents)  AS refunded_cents\nFROM refunds r\nJOIN tickets t      ON t.id = r.ticket_id\nJOIN ticket_tags tt ON tt.ticket_id = t.id\nGROUP BY day;"}
+        },
+        {
+          "q": "Why does this query inflate the total?",
+          "options": [
+            "The inner join drops refunds on untagged tickets",
+            "GROUP BY on the date merges refunds from different time zones",
+            "SUM ignores refunds whose amount is NULL",
+            "Each refund appears once per tag on its ticket"
+          ],
+          "answer": 3,
+          "explain": "A ticket with three tags produces three rows for the same refund, and SUM adds all three. The inner join does drop untagged tickets, which is also wrong, but that lowers the total rather than raising it.",
+          "reveal": "Tickets with refunds carry about 2.4 tags on average. Untagged tickets vanish from the total, and the rest are counted two to four times."
+        },
+        {
+          "q": "Which fix keeps the tag breakdown and makes the total correct?",
+          "options": [
+            "Compute the total from refunds alone, and build the tag breakdown as a separate query",
+            "Change `SUM` to `SUM(DISTINCT r.amount_cents)`",
+            "Change both joins to left joins",
+            "Divide the total by the average number of tags per ticket"
+          ],
+          "answer": 0,
+          "explain": "The total and the breakdown have different grains, one row per refund versus one row per refund and tag, so they need different queries. DISTINCT on amounts merges different refunds of equal size, and a left join keeps untagged refunds but still repeats tagged ones."
+        }
+      ],
+      "debrief": "Root cause: a one-to-many join to `ticket_tags` was added to a shared query, so each refund was counted once per tag. Duplicate refunds by the agent were the obvious suspect and were ruled out by one query against the source table. The fix gives each panel a query at its own grain. A dashboard test that compares the total with a plain sum over refunds would have caught it on Monday evening. The general lesson: before trusting a total after a join, ask how many matches each row can have."
+    },
+    {
+      "id": "d08-x2",
+      "title": "The deploy that froze the API",
+      "brief": "At 14:02 a deploy started. By 14:03 every Relay endpoint that reads messages was timing out and the load balancer reported 504s. Endpoints that do not touch messages, such as order lookups, are fine. The deploy includes a migration that changes `messages.id` from a 32-bit integer to bigint, because its sequence passed 1.9 billion.",
+      "steps": [
+        {
+          "q": "What do you check first?",
+          "options": [
+            "Roll the application back to the previous image",
+            "Add API pods to absorb the backlog",
+            "See what Postgres sessions are waiting on, and on whom",
+            "Restart Postgres to clear stuck connections"
+          ],
+          "answer": 2,
+          "explain": "Only endpoints touching one table are stuck, which points at a lock on that table. Looking at sessions costs seconds and shows the chain. Rolling back the image does not stop a migration already running in the database, and a restart kills every session blindly.",
+          "reveal": "Hundreds of API queries wait on a lock. So does the migration. One old session is idle inside an open transaction.",
+          "artifact": {"lang": "text", "title": "pg_stat_activity, abridged", "code": " pid  | state               | wait_event_type | wait_event | xact_start | query\n------+---------------------+-----------------+------------+------------+---------------------------\n 3117 | idle in transaction | Client          | ClientRead | 13:21:40   | SELECT count(*) FROM mes...\n 4502 | active              | Lock            | relation   | 14:02:05   | ALTER TABLE messages ALT...\n 4510 | active              | Lock            | relation   | 14:02:06   | SELECT id, role, body FR...\n 4511 | active              | Lock            | relation   | 14:02:06   | SELECT id, role, body FR...\n(180 more rows like 4510)"}
+        },
+        {
+          "q": "Which session is the root of the queue?",
+          "options": [
+            "3117, the transaction left open since 13:21",
+            "4502, the migration",
+            "4510, the first API query to wait",
+            "None of them; Postgres is simply overloaded"
+          ],
+          "answer": 0,
+          "explain": "The migration needs an exclusive lock and cannot get it while 3117's open transaction holds a lock on the table. The API queries wait behind the migration. 4502 blocks the API directly, but 3117 is what started the chain.",
+          "reveal": "`pg_blocking_pids(4502)` returns 3117. `pg_blocking_pids(4510)` returns 4502. Session 3117 is an analyst's notebook that ran a count at 13:21 and never committed."
+        },
+        {
+          "q": "API requests have been stuck for two minutes. What do you do right now?",
+          "options": [
+            "Terminate session 3117 so the migration can proceed",
+            "Cancel the migration's ALTER TABLE in session 4502",
+            "Raise `max_connections` so new requests get through",
+            "Restart the API pods"
+          ],
+          "answer": 1,
+          "explain": "Cancelling the ALTER releases the queue at once, because the notebook's lock does not conflict with ordinary reads and writes. Terminating 3117 is tempting, but it lets the type change start, and that rewrites the whole messages table under an exclusive lock for far longer.",
+          "reveal": "Within a second of cancelling 4502, the waiting queries complete and the 504s stop. The notebook session is closed after a message to the analyst."
+        },
+        {
+          "q": "How do you make the ID change safely?",
+          "options": [
+            "Rerun the same migration at 3 a.m., when traffic is low",
+            "Run the same migration with a longer statement timeout",
+            "Expand and contract: a new bigint column, batched backfill, a short switch, and a lock timeout",
+            "Drop and recreate the messages table with the new type"
+          ],
+          "answer": 2,
+          "explain": "The in-place type change rewrites a huge table under an exclusive lock whenever it runs, so a quiet hour only shrinks the audience for the outage. Expand and contract moves the data in small steps, and the lock timeout makes any step that would wait fail fast instead."
+        }
+      ],
+      "debrief": "Root cause: a table-rewriting migration queued behind a forgotten open transaction, and every query on messages queued behind the migration. Restarting things was the obvious move and would have cut the 504s only briefly; the chain was visible in `pg_stat_activity` within a minute. Fixes: a `lock_timeout` on every migration, `idle_in_transaction_session_timeout` so abandoned transactions end on their own, and expand and contract for type changes. The general lesson: a migration's risk depends on the locks it needs and on what else is holding locks, not on how fast it ran in staging."
+    }
+  ]
+}

@@ -104,6 +104,7 @@ code, kbd, .mono { font-family: var(--f-mono); }
 @media (max-width: 520px) { .sync-pill span:last-child { max-width: 150px; overflow: hidden; text-overflow: ellipsis; } }
 
 /* ---------- page frame ---------- */
+main:focus, main:focus-visible { outline: none; }
 main { max-width: 1120px; margin: 0 auto; padding-left: var(--gut-l); padding-right: var(--gut-r); padding-block: 28px 72px; display: block; outline: none; }
 .view { display: flex; flex-direction: column; gap: 28px; min-width: 0; }
 .eyebrow { font: 500 var(--s-xs)/1.2 var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
@@ -167,7 +168,7 @@ textarea { width: 100%; min-height: 110px; resize: vertical; line-height: 1.5; }
 
 /* ---------- trace waterfall ---------- */
 .trace { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
-.trace-head, .tr { display: grid; grid-template-columns: 52px minmax(0, 1fr) 76px minmax(260px, 46%); align-items: center; column-gap: 12px; padding: 0 14px; }
+.trace-head, .tr { display: grid; grid-template-columns: 52px minmax(0, 1fr) 92px minmax(260px, 46%); align-items: center; column-gap: 12px; padding: 0 14px; }
 .trace-head { font: 500 var(--s-xs)/1 var(--f-mono); color: var(--muted); border-bottom: 1px solid var(--line); padding-block: 10px; letter-spacing: .04em; text-transform: uppercase; }
 .axis { position: relative; height: 26px; }
 .axis span { position: absolute; top: 0; transform: translateX(-50%); font: 500 11px/1 var(--f-mono); color: var(--muted); text-transform: none; letter-spacing: 0; }
@@ -182,7 +183,7 @@ a.tr:hover { background: var(--sunk); }
 .tr .tname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .tr.is-phase .tname { font-weight: 600; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-2); }
 .tr.is-missing .tname { color: var(--muted); }
-.tr .tstat { font: 500 var(--s-xs)/1.2 var(--f-mono); color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
+.tr .tstat { font: 500 var(--s-xs)/1.2 var(--f-mono); color: var(--muted); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tr .tstat.done { color: var(--ok); }
 .track { position: relative; height: 26px; }
 .track .grid { position: absolute; inset: 0; background-image: linear-gradient(to right, var(--line) 1px, transparent 1px); background-size: calc(100% / 6) 100%; opacity: .7; }
@@ -197,7 +198,7 @@ a.tr:hover { background: var(--sunk); }
   .trace-head, .tr { grid-template-columns: 38px minmax(0, 1fr) 112px; column-gap: 10px; padding: 0 12px; }
   .trace-head .th-stat, .tr .tstat { display: none; }
   .tr { min-height: 44px; }
-  .tr .tname { white-space: normal; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; padding-block: 6px; }
+  .tr .tname { white-space: normal; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; margin-block: 6px; }
   .span-label { display: none; }
   .axis span:not(.cp):not(.edge) { display: none; }
 }

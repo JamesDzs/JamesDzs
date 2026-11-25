@@ -373,7 +373,7 @@
         {
           "t": "reveal",
           "prompt": "Relay's nightly eval scored the same, unchanged version at 71 percent on Monday and 77 percent on Tuesday, on the same 100 cases. Is something broken?",
-          "answer": "Not necessarily. With a non-deterministic agent, a 6-point swing on 100 cases is within ordinary run-to-run noise, since the margin there is up to about 10 points. Running each case three times and reporting the average would make the nightly number steadier."
+          "answer": "Not necessarily. If many cases pass only some of the time, the difference between two runs of the same version on 100 cases has a standard error of up to about 7 points, so a 6-point swing is ordinary. Check per-case results: many cases flipping in both directions means noise. Running each case three times would steady the nightly number."
         }
       ]
     },

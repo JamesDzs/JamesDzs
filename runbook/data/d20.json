@@ -1,0 +1,651 @@
+{
+  "id": "d20",
+  "day": 20,
+  "phase": "p4",
+  "title": "Shipping: Git, CI/CD, containers",
+  "tagline": "How a change travels from a laptop to a running service, and how to trace a running service back to the exact change.",
+  "minutes": 55,
+  "why": "When behavior changes in production, the first question is what changed, and the answer lives in Git history, a pipeline run, an image, or an environment variable. Each of these is a record you can read if you know where it is. This day teaches you to trace a running service back to the commit, dependencies, and configuration that built it, and to explain why a test passes on your laptop and fails in CI.",
+  "objectives": [
+    "Use log, blame, diff, and bisect to find the commit that introduced a behavior",
+    "Read a failing CI log and say which stage failed and whether the cause is code, environment, or pipeline",
+    "List what differs between a laptop, a CI runner, and production, and say which differences a container removes",
+    "Trace a running container back to the commit, image digest, and lockfile that produced it",
+    "Choose between pinning dependencies and staying current, and name what each costs"
+  ],
+  "lessons": [
+    {
+      "id": "d20-l1",
+      "title": "Git as a debugging tool",
+      "minutes": 14,
+      "blocks": [
+        {"t": "p", "text": "Git records each change as a **commit**: a snapshot of the files plus a message, an author, a time, and a pointer to the parent commit. That chain is a searchable history of every behavior the code has had. When something changed, Git can usually tell you which commit did it, who wrote it, and why."},
+        {"t": "p", "text": "A **branch** is a movable name that points at one commit. A **tag** is a name that should never move, used to mark releases such as `v2.15.0`. Both are only names. The commits are the real objects, and knowing that clears up most Git confusion."},
+        {"t": "h", "text": "Four questions, four commands"},
+        {"t": "compare",
+          "caption": "Git commands as investigation tools",
+          "columns": ["", "Answers", "Watch out for"],
+          "rows": [
+            ["`git log`", "What changed, when, and by whom, filtered by path, date, or text", "Squashed or merged commits can bundle many changes into one"],
+            ["`git blame`", "Which commit last touched each line of a file", "The last touch is often a reformat or rename, not the real change"],
+            ["`git diff`", "Exactly what differs between two commits, tags, or branches", "A diff between releases can be huge; narrow it by path"],
+            ["`git bisect`", "Which commit first made a check fail, by binary search", "Needs a check that gives the same answer every time on the same commit"]
+          ],
+          "verdict": "Start with log or diff between the last good release and the first bad one. Use blame to find whom to ask, and bisect when the range is too large to read."},
+        {"t": "code",
+          "lang": "shell",
+          "title": "Almost every refund is rejected after v2.15.0",
+          "code": "$ git log --oneline v2.14.0..v2.15.0 -- app/refunds/\n9c1e7a2 Retry refund on payment provider timeout\n41d0b3f Rename refund_amount to amount_cents\n\n$ git log -G \"max_refund\" --oneline -- app/refunds/\n41d0b3f Rename refund_amount to amount_cents\na03f9de Add per-ticket refund limit\n\n$ git blame --date=short -L 40,42 app/refunds/policy.py\na03f9de3 (Sam Lee    2024-11-20 40)     # max_refund is in dollars, see ticket 1182\n41d0b3f8 (Dana Ortiz 2025-01-09 41)     def within_limit(t, amount_cents):\n41d0b3f8 (Dana Ortiz 2025-01-09 42)         return amount_cents <= t.max_refund",
+          "notes": [
+            "`A..B -- path` lists commits in B that are not in A, limited to one directory: what shipped in this release for refunds.",
+            "`-G` finds commits whose diff adds or removes a line matching the text. `-S` finds commits that change how many times the text appears, so it misses an edit that keeps the count the same.",
+            "Blame shows the rename commit owns the comparison, while the older comment says the limit is in dollars. Cents compared with dollars makes a $50 limit act like $0.50. That unit mismatch is the lead.",
+            "Blame tells you whom to ask, not whom to fault. Read the commit message and its pull request before drawing conclusions."
+          ]},
+        {"t": "h", "text": "Merge, rebase, revert, reset"},
+        {"t": "compare",
+          "caption": "Two ways to bring a branch into main",
+          "columns": ["", "Merge", "Rebase"],
+          "rows": [
+            ["What it does", "Adds a commit with two parents joining the histories", "Replays the branch's commits on top of main as new commits"],
+            ["History", "Shows what actually happened, including parallel work", "A straight line that reads as if work happened in sequence"],
+            ["Rewrites commits", "No", "Yes, the replayed commits get new IDs"],
+            ["For bisect and log", "Merge commits add noise", "Easy to read and bisect"],
+            ["Safe on", "Any branch", "Only commits nobody else has pulled"]
+          ],
+          "verdict": "Rebase your own branch to tidy it before merging. Never rebase commits others already have, because their copies no longer match yours."},
+        {"t": "list", "items": [
+          "**`git revert <commit>`** makes a new commit that undoes an old one. History stays intact, so it is the safe undo on a shared branch.",
+          "**`git reset`** moves the branch name to another commit. Later commits drop off the branch, which breaks everyone who already has them once it is force-pushed."
+        ]},
+        {"t": "callout", "kind": "pitfall", "title": "Force-pushing a reset on main", "text": "Resetting main and force-pushing removes commits that teammates, CI, and possibly a deployed image were built from. Production can end up running a commit that no longer appears on any branch. Use revert on shared branches."},
+        {"t": "p", "text": "**Trunk-based development** means everyone merges small changes into main at least daily, hiding unfinished work behind feature flags. **Long-lived feature branches** keep work isolated for weeks, then merge in one large step. The choice decides how small the units are that you later have to search through."},
+        {"t": "tradeoff",
+          "title": "How long branches live",
+          "options": [
+            {"name": "Trunk-based", "gain": ["Small diffs that are easy to review and bisect", "Conflicts surface within a day"], "cost": ["Needs fast, reliable CI", "Unfinished work ships turned off behind flags"], "choose": "Choose this when CI is quick and trustworthy, which suits a small team like Relay's."},
+            {"name": "Long-lived feature branches", "gain": ["Isolated work without flags", "Main is untouched until the merge"], "cost": ["One large merge mixing many changes", "Bisect lands on a huge commit", "Conflicts pile up"], "choose": "Choose this for large experiments that may be thrown away, and keep them rebased on main."}
+          ]},
+        {"t": "check",
+          "q": "A release went out with a bad commit. Main has eight newer commits from three people. What is the safe way to undo only the bad commit?",
+          "options": ["Revert it, creating a new commit that undoes it", "Reset main to before it and force-push", "Rebase main interactively to drop it"],
+          "answer": 0,
+          "explain": "Revert adds history instead of rewriting it, so everyone's copy of main stays valid. Reset and rebase both rewrite main, which breaks the eight commits others already have."},
+        {"t": "callout", "kind": "debug", "title": "First find the commit production runs", "text": "Before reading any diff, confirm which commit is running. A version endpoint, a log field, or an image label holding the commit SHA turns 'what changed' into one `git diff` between two SHAs. Without it, you may be debugging code that is not deployed."},
+        {"t": "callout", "kind": "ai", "title": "Prompts belong in Git too", "text": "When Relay's eval score drops, `git log` on the prompts directory answers 'what changed' the same way it does for code, provided prompts and tool descriptions live in the repository instead of a dashboard."},
+        {"t": "reveal", "prompt": "Bisect between v2.14.0 and v2.15.0 covers 64 commits. About how many test runs does it need, and what must be true of the test?", "answer": "About six, since each run halves the range and 2 to the sixth power is 64. The test must give the same result on the same commit every time. A flaky test sends bisect into the wrong half, and it then names an innocent commit with full confidence."}
+      ]
+    },
+    {
+      "id": "d20-l2",
+      "title": "CI/CD pipelines",
+      "minutes": 13,
+      "blocks": [
+        {"t": "p", "text": "**Continuous integration** (CI) runs automated checks on every change in a clean environment. A **pipeline** is the ordered series of stages it runs, and each stage gates the next. Continuous delivery and continuous deployment extend the same pipeline to production."},
+        {"t": "flow",
+          "title": "Relay's pipeline, from push to production",
+          "steps": [
+            {"actor": "Git host", "label": "Push opens a pull request", "detail": "The CI system starts a fresh **runner**, a temporary machine that keeps nothing from earlier runs.", "fail": "No checks appear on the pull request: a webhook or permissions problem."},
+            {"actor": "Runner", "label": "Lint and type check", "detail": "Fast checks run first so trivial mistakes fail in seconds.", "fail": "A linter version different from the laptop's flags code that passes locally."},
+            {"actor": "Runner", "label": "Unit and integration tests", "detail": "Tests run against real Postgres and Redis started as containers for the run.", "fail": "Tests that depend on time, order, or network pass locally and fail here."},
+            {"actor": "Runner", "label": "Build the image", "detail": "One image is built from the commit and tagged with its SHA. Dependency layers are cached between runs.", "fail": "Builds become slow when the cache is lost, or skip a needed rebuild when a stale cache is reused."},
+            {"actor": "Runner", "label": "Scan", "detail": "The image and dependencies are checked for known vulnerabilities and committed secrets.", "fail": "A newly published advisory blocks a release whose code did not change."},
+            {"actor": "Registry", "label": "Store the artifact", "detail": "The image is pushed to the registry. Every later stage deploys this exact image.", "fail": "The push fails on expired registry credentials."},
+            {"actor": "Deployer", "label": "Deploy to staging, then production", "detail": "Staging receives the image automatically. Production receives it after a gate: an approval or passing checks in staging.", "fail": "Staging passes and production fails, because config, data, or traffic differ."}
+          ]},
+        {"t": "compare",
+          "caption": "The last step of the pipeline",
+          "columns": ["", "Continuous delivery", "Continuous deployment"],
+          "rows": [
+            ["Production deploy", "A person approves it", "Runs automatically"],
+            ["Every merged change", "Is ready to ship", "Ships"],
+            ["Needs", "A main branch that is always releasable", "Strong tests, canaries, and fast rollback"],
+            ["Typical risk", "Changes batch up between approvals", "A bad change reaches users within minutes"]
+          ],
+          "verdict": "Both require main to be releasable at all times. Continuous deployment fits when tests and monitoring catch problems faster than a human approver would."},
+        {"t": "h", "text": "Why the pipeline fails when your laptop passes"},
+        {"t": "code",
+          "lang": "log",
+          "title": "A CI run that fails before any test runs",
+          "code": "Run pip install -r requirements.txt\nSuccessfully installed anyio fastapi httpx pydantic pytest uvicorn\nRun pytest -q\n==================================== ERRORS ====================================\n_____________________ ERROR collecting tests/test_budget.py _____________________\nImportError while importing test module '/home/runner/work/relay/tests/test_budget.py'.\nTraceback:\ntests/test_budget.py:3: in <module>\n    from app.budget import count_tokens\napp/budget.py:1: in <module>\n    import tiktoken\nE   ModuleNotFoundError: No module named 'tiktoken'\n=========================== short test summary info ============================\nERROR tests/test_budget.py\n!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!\n1 error in 1.92s\nError: Process completed with exit code 2.",
+          "notes": [
+            "The install step succeeded, so network and package index access are fine. The failure is at test collection, before any test ran.",
+            "A `ModuleNotFoundError` for a package the code imports means it exists on the laptop and not in `requirements.txt`. Someone installed it by hand.",
+            "pytest's exit code 2 means the run was interrupted, here by a collection error. Exit code 1 would mean tests ran and some failed.",
+            "Read a CI log from the first error, not the last line. The final line says only that the step failed."
+          ]},
+        {"t": "list", "items": [
+          "**Undeclared dependencies**: installed by hand on the laptop, missing from the requirements file.",
+          "**Leftover state**: a local database, cache, or generated file that a clean runner does not have.",
+          "**Uncommitted files**: a config file or fixture that exists only in your working copy.",
+          "**Missing secrets**: CI does not have your personal keys, and pull requests from forks often run with no secrets at all.",
+          "**Order and parallelism**: CI may run tests in parallel or in another order, exposing shared state.",
+          "**Resources and network**: smaller runners hit timeouts, and outbound network may be blocked or rate-limited."
+        ]},
+        {"t": "callout", "kind": "debug", "title": "Rerun the same commit before reading code", "text": "If a rerun of the same commit passes, suspect a flaky test or the runner. If a commit that passed yesterday fails today, something outside the repository changed: a dependency release, a runner image, an expired secret."},
+        {"t": "check",
+          "q": "Lint and tests pass in CI, then the image build fails because `config/defaults.yaml` is not found. On the developer's laptop the build works. What is the most likely cause?",
+          "options": ["The file exists locally but was never committed", "The runner's Docker cache is stale", "A test deleted the file before the build ran"],
+          "answer": 0,
+          "explain": "The runner builds from a fresh checkout, so it only has committed files. A file in your working copy, perhaps matched by `.gitignore`, exists on the laptop alone. A stale cache would reuse old files rather than lose them."},
+        {"t": "callout", "kind": "ai", "title": "Evals as a pipeline gate", "text": "Relay's eval can gate a prompt or model change the way tests gate code. Count infrastructure errors separately from graded failures, and treat a run with many errors as an incomplete gate instead of a low score."},
+        {"t": "callout", "kind": "pitfall", "title": "Retrying a red pipeline until it goes green", "text": "Rerunning hides whatever made it red. If a step needs several attempts, record which test failed and how often. A test that fails one run in ten is reporting a real race, timeout, or ordering bug."},
+        {"t": "reveal", "prompt": "Tests pass on every laptop and fail in CI about one run in five, each time a different test. What kind of cause does that pattern point to?", "answer": "Shared state or ordering between tests, exposed by CI's parallel or randomized order, or timing on a slower runner. A missing dependency or secret would fail every run at the same place. Look for what the failing tests share, such as a table, a file, or a clock."}
+      ]
+    },
+    {
+      "id": "d20-l3",
+      "title": "Containers and images",
+      "minutes": 14,
+      "blocks": [
+        {"t": "p", "text": "An **image** is a packaged filesystem plus metadata: the OS userland, the language runtime, your dependencies, your code, and the command to start. A **container** is a running process started from an image and isolated from other processes by the kernel. One image can start many identical containers."},
+        {"t": "p", "text": "A **Dockerfile** is the recipe for an image. Each instruction adds a **layer**, a set of file changes stacked on the layers below. Docker reuses a cached layer when the instruction and its inputs have not changed, so the order of instructions decides how fast builds are."},
+        {"t": "code",
+          "lang": "text",
+          "title": "Dockerfile for Relay's API",
+          "code": "FROM python:3.12-slim\nWORKDIR /app\n\nCOPY requirements.lock .\nRUN pip install --no-cache-dir -r requirements.lock\n\nCOPY . .\n\nUSER 1000\nCMD [\"uvicorn\", \"app.main:app\", \"--host\", \"0.0.0.0\", \"--port\", \"8000\"]",
+          "notes": [
+            "`python:3.12-slim` is a tag the publisher moves to newer patch builds. Two builds a month apart can start from different base images.",
+            "The lockfile is copied and installed before the code. A code change then reuses the cached dependency layer, and the build takes seconds.",
+            "`COPY . .` copies the whole build context. Without a `.dockerignore`, that can include `.env` files, local databases, and the `.git` directory.",
+            "Nothing here sets API keys or the database URL. Those arrive at run time as environment variables, so one image can run in every environment.",
+            "`USER 1000` runs the process as a non-root user, which limits what a compromised process can do."
+          ]},
+        {"t": "compare",
+          "caption": "Containers and virtual machines",
+          "columns": ["", "Container", "Virtual machine"],
+          "rows": [
+            ["Isolated by", "Kernel features on a shared host", "A hypervisor emulating separate machines"],
+            ["Kernel", "Shares the host's kernel", "Runs its own kernel"],
+            ["Typical start time", "Seconds or less", "Tens of seconds or more"],
+            ["Contains", "The app and its userland", "A whole operating system"],
+            ["Isolation strength", "Weaker; a kernel flaw exposes every container", "Stronger boundary between tenants"]
+          ],
+          "verdict": "Containers package and ship applications. VMs isolate tenants and are usually the hosts that containers run on in the cloud."},
+        {"t": "h", "text": "'Works on my machine', itemized"},
+        {"t": "p", "text": "The phrase means two environments differ in a way nobody wrote down. Listing the differences turns a shrug into a checklist, and shows which ones a container actually removes."},
+        {"t": "compare",
+          "caption": "What differs between a laptop and a server",
+          "columns": ["", "Example difference", "Does the image remove it?"],
+          "rows": [
+            ["Language runtime", "Python 3.11 on the laptop, 3.12 on the server", "Yes, the image fixes it"],
+            ["Installed packages", "Versions installed by hand months ago", "Yes, if installed from a lockfile"],
+            ["System libraries", "OpenSSL, libc, image codecs", "Yes, they come from the base image"],
+            ["CPU architecture", "ARM laptop, x86 server", "No, the image must be built for each"],
+            ["Kernel and limits", "Memory limits, open file limits", "No, containers share the host kernel"],
+            ["Config and secrets", "A local `.env`, personal API keys", "No, they are injected at run time"],
+            ["Network and data", "VPN, internal DNS, a seeded local database", "No"]
+          ],
+          "verdict": "An image removes differences inside the image. Everything injected at run time, and everything at or below the kernel, still differs and still needs checking."},
+        {"t": "callout", "kind": "pitfall", "title": "File names that differ only in case", "text": "macOS filesystems are case-insensitive by default, and Linux filesystems are case-sensitive. Code that opens `Prompts/system.txt` when the directory is named `prompts` works on a Mac and fails in CI and production."},
+        {"t": "h", "text": "Registries and tags"},
+        {"t": "p", "text": "A **registry** stores images by name and tag, such as `relay-api:3f9c2ab`. A tag is a movable label, and `latest` is only the tag Docker uses when none is given, not a promise of the newest build. The **digest**, a content hash written `sha256:...`, never changes for a given image, so it is the one reference that guarantees the same bytes."},
+        {"t": "tradeoff",
+          "title": "A moving tag or an immutable one",
+          "options": [
+            {"name": "`latest` or another moving tag", "gain": ["Picks up new builds without editing deploy config"], "cost": ["Hosts that pull at different times run different code", "Rollback has no name to return to", "Nobody can tell from the tag what is running"], "choose": "Choose this only for local experiments."},
+            {"name": "Commit SHA tag or digest", "gain": ["The tag names the exact commit built", "Rollback is redeploying the previous tag", "Every host runs the same bytes"], "cost": ["Deploy config changes for every release", "Needs discipline to never reuse a tag"], "choose": "Choose this for anything deployed: tag with the commit SHA, and pin by digest where the platform allows."}
+          ]},
+        {"t": "check",
+          "q": "Two Relay worker pods from the same deployment run `relay-worker:latest`. They started a week apart. One handles a new job type and the other rejects it. What explains this?",
+          "options": ["`latest` pointed at different images when each pod pulled it", "One pod holds a corrupted copy of the image", "The queue routes the new job type to only one pod"],
+          "answer": 0,
+          "explain": "Each pod pulled whatever `latest` meant on the day it started, so they run different builds under one name. Corruption would fail to start, and the evidence shows one pod rejecting the job, not missing it."},
+        {"t": "callout", "kind": "debug", "title": "Read what a running container was built from", "text": "Get the image digest from the platform, then read the image's labels. If the build stamped the commit SHA, for example in the standard `org.opencontainers.image.revision` label, you can go straight to that commit in Git."},
+        {"t": "reveal", "prompt": "An image built on an ARM laptop fails to start on an x86 server with `exec format error`. What does that tell you?", "answer": "The binaries in the image were built for a different CPU architecture than the host. Containers run native code on the host's kernel, so an image must be built for each architecture it will run on, for example as a multi-architecture image."}
+      ]
+    },
+    {
+      "id": "d20-l4",
+      "title": "Config, environments, and reproducibility",
+      "minutes": 12,
+      "blocks": [
+        {"t": "p", "text": "A system is reproducible when the same inputs give the same running behavior. For a service the inputs are code, dependencies, configuration, and data. Git versions the code. Lockfiles, immutable images, and explicit configuration cover the next two, and each gap between them is a way for behavior to change with no code change."},
+        {"t": "p", "text": "The **twelve-factor** approach keeps config in the environment. Anything that differs between deploys, such as database URLs, API keys, and feature switches, is read from environment variables instead of being committed to the code. The same image then runs in development, staging, and production with different settings."},
+        {"t": "layers",
+          "title": "What decides the behavior of one running Relay container",
+          "layers": [
+            {"name": "Code", "role": "The commit, identified by its SHA.", "breaks": "Production runs a commit nobody can find when images are built from a laptop."},
+            {"name": "Dependencies", "role": "Exact package versions from the lockfile, installed into the image.", "breaks": "Without a lockfile, a fresh install picks up new releases and behavior drifts."},
+            {"name": "Base image", "role": "OS userland, runtime, and system libraries.", "breaks": "A moving base tag changes the Python patch version or OpenSSL underneath you."},
+            {"name": "Configuration", "role": "Environment variables and config files set at deploy time.", "breaks": "One environment has a stale or misspelled variable and the code silently uses a default."},
+            {"name": "Secrets", "role": "Keys and passwords from a secret manager.", "breaks": "A key for the wrong environment causes 401s in that environment only."},
+            {"name": "Data and providers", "role": "Database contents and the external APIs, including the LLM.", "breaks": "A provider updates the model behind an alias and outputs change with nothing deployed."}
+          ]},
+        {"t": "code",
+          "lang": "diff",
+          "title": "Installed packages in two CI runs of the same commit",
+          "code": "--- pip freeze, build 1841 (passed), commit 7be21c0\n+++ pip freeze, build 1857 (failed), commit 7be21c0\n@@ -4,5 +4,5 @@\n anyio==4.6.0\n-backoffkit==1.9.4\n+backoffkit==2.0.0\n fastapi==0.115.0\n llm-sdk==1.12.0\n uvicorn==0.30.6",
+          "notes": [
+            "Same commit, different installed versions. The change came from outside the repository, which is why `git log` shows nothing.",
+            "`backoffkit` does not appear in `requirements.txt`. It is a **transitive dependency**, one pulled in by `llm-sdk`, so pinning only top-level packages would not have held it.",
+            "A major version change from 1 to 2 signals breaking changes under semantic versioning.",
+            "A lockfile listing every package with its exact version would have kept 1.9.4 until someone updated it on purpose."
+          ]},
+        {"t": "tradeoff",
+          "title": "Pin dependencies or stay current",
+          "options": [
+            {"name": "Ranges, always latest", "gain": ["Fixes and features arrive automatically", "No update chores"], "cost": ["Any build can change behavior with no commit", "An upstream release can break CI overnight"], "choose": "Choose this for libraries you publish, where your users' lockfiles do the pinning."},
+            {"name": "Lockfile, updated rarely", "gain": ["Identical versions in every build", "Every behavior change has a commit"], "cost": ["Security fixes wait until someone updates", "Updates pile up into large, risky jumps"], "choose": "Choose this for a short-lived project or a frozen release branch."},
+            {"name": "Lockfile plus scheduled update PRs", "gain": ["Updates arrive as reviewable commits that run the tests", "Small, frequent version jumps"], "cost": ["A steady stream of pull requests to review"], "choose": "Choose this as the default for services such as Relay: pinned builds, updated on purpose."}
+          ]},
+        {"t": "callout", "kind": "debug", "title": "Behavior changed and nobody deployed code", "text": "Check in order: installed dependency versions between builds, the base image digest, recent changes to environment variables and secrets, the model ID the provider reports in responses, and the data. Each has a record somewhere. Git is only the first place to look."},
+        {"t": "h", "text": "Parity and immutable artifacts"},
+        {"t": "p", "text": "**Environment parity** means staging resembles production closely enough that passing in staging predicts passing in production. The gaps that matter most are versions of backing services, configuration, data volume, and traffic. A staging table with ten rows will never reveal a missing index."},
+        {"t": "p", "text": "An **immutable artifact** is built once, given a unique name, and never changed. The same image moves from staging to production, and only configuration differs. A fix means a new commit and a new artifact, so every running build has a name you can look up."},
+        {"t": "callout", "kind": "pitfall", "title": "A default that hides a missing variable", "text": "`os.getenv('LLM_TIMEOUT_S', '600')` turns a misspelled variable name into a silent ten-minute timeout. For values that must differ per environment, fail at startup when they are missing."},
+        {"t": "callout", "kind": "ai", "title": "Model aliases are unpinned dependencies", "text": "Calling a model through a moving alias works like an unpinned package: outputs can change with nothing deployed. Pin the dated model version in config, log the model ID on every call, and change it in a commit that your eval runs against."},
+        {"t": "check",
+          "q": "Relay's refund flow passes in staging and fails in production with a 401 from the payment provider. Both run the same image digest. Where do you look first?",
+          "options": ["The payment API key configured for production", "The refund code in the last release's diff", "The base image the release was built from"],
+          "answer": 0,
+          "explain": "The same digest means the same code, dependencies, and base image, so the difference must be something injected at run time. A 401 points at credentials, and production's key is the likely suspect."},
+        {"t": "reveal", "prompt": "Production misbehaves and all you have is the running container. Which three facts let you reproduce it exactly, and where does each come from?", "answer": "The commit SHA, from an image label or version endpoint. The exact dependency set, from the lockfile at that commit or from the image itself. The effective configuration, from the deployment config or a startup log of non-secret settings. With those you can run the same artifact with the same settings."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Works on my machine, fails in CI",
+      "causes": ["Package installed by hand, missing from the requirements file", "File exists only in the local working copy", "Secret available locally but not in CI", "Tests depend on order, time zone, or shared state"],
+      "look": "The first error in the CI log and the stage it occurred in, not the final exit line.",
+      "confirm": "A fresh clone installed into a clean environment or container on your laptop reproduces the failure.",
+      "fix": "Declare the dependency, commit the file, or provide the secret, then run tests locally in the CI image. The cost is a slower local loop."
+    },
+    {
+      "symptom": "Same commit passed yesterday and fails today",
+      "causes": ["An unpinned dependency released a new version", "The runner or base image was updated", "A secret or certificate expired"],
+      "look": "Installed package versions in both runs' logs, and the runner and base image versions.",
+      "confirm": "Diffing the installed package lists from the two runs shows a changed version.",
+      "fix": "Pin every package with a lockfile and take updates through scheduled pull requests. You trade automatic fixes for controlled ones."
+    },
+    {
+      "symptom": "Production runs code nobody can find in Git",
+      "causes": ["Image built and pushed from a laptop", "Commit removed by a force-push", "Fix left on an unmerged branch", "A moving tag such as `latest` was deployed"],
+      "look": "The running image digest, its labels, and the registry's push history, including who pushed.",
+      "confirm": "The image has no commit label, was pushed by a person instead of CI, or its commit is on no main or release branch.",
+      "fix": "Build only in CI from a commit, label the SHA, deploy by SHA tag or digest, and deny people push access to the production registry. Urgent fixes then wait for the pipeline."
+    },
+    {
+      "symptom": "Behavior changed with no code change",
+      "causes": ["Dependency drift from unpinned versions", "Base image tag moved", "Provider changed the model behind an alias", "Config or secret edited outside Git"],
+      "look": "Dependency versions, base image digest, config change history, and the model ID in recent responses.",
+      "confirm": "Exactly one of these inputs differs between the last good and first bad run.",
+      "fix": "Pin the input that moved, and record it so the next change has a commit. Pinning means updates become deliberate work."
+    },
+    {
+      "symptom": "Wrong environment variable in one environment",
+      "causes": ["Stale value copied from an old environment", "Misspelled name with a default fallback", "Secret meant for a different environment"],
+      "look": "The effective non-secret config each environment logs at startup, diffed side by side.",
+      "confirm": "The environments differ in that variable, and the behavior follows the value.",
+      "fix": "Validate required config at startup and keep per-environment config in version control, referring to secrets by name. Missing values then fail loudly at deploy time."
+    },
+    {
+      "symptom": "Every image build reinstalls all dependencies",
+      "causes": ["Code is copied before dependencies are installed", "The CI layer cache is not restored between runs"],
+      "look": "The build log: which steps are reported as cached and which run again.",
+      "confirm": "The dependency install step reruns when only application code changed.",
+      "fix": "Copy the lockfile and install before copying code, and restore the cache in CI. Rebuild without cache on a schedule so base image fixes still arrive."
+    },
+    {
+      "symptom": "`exec format error` when a container starts",
+      "causes": ["Image built for a different CPU architecture than the host"],
+      "look": "The architectures listed in the image's registry manifest, and the host's architecture.",
+      "confirm": "The image lists only arm64 and the host is x86-64, or the reverse.",
+      "fix": "Build multi-architecture images, or build on the target architecture. Builds take longer."
+    },
+    {
+      "symptom": "git bisect names a commit that cannot have caused the bug",
+      "causes": ["The check is flaky and gave different results on the same commit", "Something outside the repository changed during the bisect"],
+      "look": "Run the check several times on the named commit and on its parent.",
+      "confirm": "The result changes between runs of the same commit.",
+      "fix": "Make the check deterministic, or repeat it at each step and require a consistent answer. Bisect gets slower and stays truthful."
+    }
+  ],
+  "glossary": [
+    {"term": "Commit", "def": "A snapshot of the files with a message, author, time, and a pointer to its parent commit. Identified by a hash, its SHA."},
+    {"term": "Branch", "def": "A movable name that points at one commit and advances as new commits are added."},
+    {"term": "Tag", "def": "A name for one commit that should never move, used to mark releases."},
+    {"term": "Merge vs rebase", "def": "A merge joins two histories with a two-parent commit. A rebase replays commits onto a new base, creating new commits and a straight history."},
+    {"term": "Revert vs reset", "def": "Revert adds a commit that undoes an earlier one. Reset moves a branch to another commit, dropping later commits from it."},
+    {"term": "git bisect", "def": "A binary search over commits that finds the first one where a check fails, in about log2 of the range steps."},
+    {"term": "Trunk-based development", "def": "Everyone merges small changes into main at least daily, hiding unfinished features behind flags."},
+    {"term": "Continuous integration", "def": "Running automated checks on every change in a clean environment, so integration problems appear within minutes."},
+    {"term": "Continuous delivery vs deployment", "def": "Delivery keeps every change ready to ship with a manual production step. Deployment ships every passing change automatically."},
+    {"term": "Image and container", "def": "An image is a packaged filesystem and start command. A container is a running process started from an image and isolated by the kernel."},
+    {"term": "Layer", "def": "The file changes made by one Dockerfile instruction. Unchanged layers are reused from cache."},
+    {"term": "Digest", "def": "A content hash that identifies one exact image. Unlike a tag, it can never point at different bytes."},
+    {"term": "Lockfile", "def": "A file listing every dependency, including transitive ones, at an exact version, so every install is identical."},
+    {"term": "Immutable artifact", "def": "A build output created once with a unique name and never changed. The same artifact is promoted from staging to production."}
+  ],
+  "apply": {
+    "title": "Trace your own project from running code back to Git",
+    "minutes": 15,
+    "steps": [
+      "Run `git log --oneline -p -- <your prompts or config path>` and find the last commit that changed what your model is told. Note whether its message explains why.",
+      "Create a fresh virtual environment, install only from your requirements file, and run your tests or main script. Each import error is an undeclared dependency.",
+      "Compare `pip freeze` in your usual environment with your requirements file. Mark every package without an exact version, and every installed package the file never mentions.",
+      "List every environment variable your project reads and the default it falls back to. Mark each default that would hide a typo or a missing value."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d20-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["image-tags", "containers"],
+      "diagnostic": true,
+      "q": "A service is deployed from the image `api:latest`. What does the tag `latest` guarantee about the image?",
+      "options": [
+        "That it is the most recently built image",
+        "Nothing about content; it is a movable label",
+        "That every host pulling it gets identical bytes",
+        "That it passed the CI pipeline before being pushed"
+      ],
+      "answer": 1,
+      "explain": "`latest` is the default tag name used when none is given, and whoever pushes can point it anywhere. Many assume it means newest, but a later push to another tag leaves it unchanged. Only a digest guarantees identical bytes.",
+      "why": ["It points at whatever was last pushed with that tag, which may not be the newest build.", "", "The tag can move between pulls, so two hosts can get different images.", "Any account with push access can move it, with or without CI."]
+    },
+    {
+      "id": "d20-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["works-on-my-machine", "ci"],
+      "context": "A test passes on a developer's laptop in New York. In CI it fails, but only for runs that start in the evening, New York time. The runner's clock is set to UTC.",
+      "artifact": {"lang": "log", "title": "CI run", "code": "2025-03-11T00:42:07Z  Run pytest -q\n    def test_ticket_due_today():\n        ticket = make_ticket(created_at=now_in(\"America/New_York\"))\n>       assert ticket.due_date == date.today()\nE       AssertionError: assert datetime.date(2025, 3, 10) == datetime.date(2025, 3, 11)\nFAILED tests/test_sla.py::test_ticket_due_today - AssertionError\n1 failed, 411 passed in 48.20s"},
+      "q": "What is the most likely cause?",
+      "options": [
+        "The runner has a different Python version with different date handling",
+        "The test shares state with the 411 other tests and is flaky",
+        "`date.today()` uses the runner's UTC date while the ticket uses New York's date",
+        "The runner's clock has drifted by several hours"
+      ],
+      "answer": 2,
+      "explain": "At 00:42 UTC on March 11 it is still the evening of March 10 in New York. The ticket's date comes from New York time and `date.today()` from the runner's UTC clock, so they differ only in the evening. The timestamp shows the clock is correct, not drifted.",
+      "why": ["Date arithmetic does not change between Python versions in a way that depends on the hour of day.", "Shared state would not explain failures that depend on the time the run starts.", "", "00:42Z is a plausible, correct UTC time for a New York evening run; the clocks agree, the time zones differ."]
+    },
+    {
+      "id": "d20-q03",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["git", "merge-vs-rebase"],
+      "q": "When is rebasing a branch safe?",
+      "options": [
+        "Whenever the branch has fewer than ten commits",
+        "Only on main, to keep its history straight",
+        "When nobody else has pulled the commits being rebased",
+        "Only after the branch has already been merged"
+      ],
+      "answer": 2,
+      "explain": "A rebase creates new commits to replace the old ones. Anyone holding the old commits now has a diverged history, so rebasing is safe only on commits that exist nowhere else. Rebasing main is the most dangerous case.",
+      "why": ["The number of commits does not matter; whether others have them does.", "Main is shared by everyone, so rewriting it causes the most damage.", "", "After a merge, the commits are on main and shared, so rewriting them breaks others."]
+    },
+    {
+      "id": "d20-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["git-bisect", "flaky-tests"],
+      "context": "An automated `git bisect run` over 120 commits named commit e72a0c5 as the first bad commit. That commit changes only the README. The check script asks the live LLM API a question and fails if the answer does not mention the return policy.",
+      "q": "What most likely happened?",
+      "options": [
+        "The README change broke the application build",
+        "The check gave different results on the same code, misleading bisect",
+        "Bisect skipped the real bad commit because it was a merge",
+        "The good starting point was already broken"
+      ],
+      "answer": 1,
+      "explain": "A check that depends on a live model's wording is not deterministic, so one wrong answer sends bisect into the wrong half and it confidently names an innocent commit. Rerunning the check several times on e72a0c5 and its parent would show the results vary.",
+      "why": ["A README is not part of the build or the code path.", "", "Bisect tests merge commits like any other; it does not skip them.", "A broken starting point would make bisect blame the first commit after it, which is possible but far less likely than a nondeterministic check."]
+    },
+    {
+      "id": "d20-q05",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["containers-vs-vms"],
+      "q": "A platform runs code from untrusted customers side by side on shared hosts. Why might it choose virtual machines over plain containers?",
+      "options": [
+        "Each VM has its own kernel, a stronger boundary between tenants",
+        "Containers cannot limit CPU or memory per tenant",
+        "VMs start faster than containers and scale more easily",
+        "Containers need a separate kernel for every tenant"
+      ],
+      "answer": 0,
+      "explain": "Containers share the host kernel, so a kernel flaw can expose every tenant on the host. A VM puts a hypervisor and a separate kernel between tenants. Containers can limit CPU and memory, and they start faster than VMs.",
+      "why": ["", "Containers do limit CPU and memory per container through kernel features.", "Containers usually start faster than VMs, not slower.", "This is reversed: containers share one kernel, which is the weakness."]
+    },
+    {
+      "id": "d20-q06",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["docker-layers", "ci"],
+      "context": "Every build of this image takes about four minutes, even when only one Python file changed.",
+      "artifact": {"lang": "text", "title": "Dockerfile and build log", "code": "FROM python:3.12-slim\nWORKDIR /app\nCOPY . .\nRUN pip install -r requirements.lock\nCMD [\"uvicorn\", \"app.main:app\", \"--host\", \"0.0.0.0\"]\n\n#6 [2/4] WORKDIR /app  CACHED\n#7 [3/4] COPY . .\n#8 [4/4] RUN pip install -r requirements.lock\n#8 DONE 212.4s"},
+      "q": "Why is the build slow?",
+      "options": [
+        "The registry is slow to accept large images",
+        "Code is copied before dependencies install, so any change reruns the install",
+        "The base image tag forces a fresh download on every build",
+        "pip ignores the lockfile and resolves every version again"
+      ],
+      "answer": 1,
+      "explain": "A layer is reused only if everything before it is unchanged. Copying all code first means any edit invalidates the install layer, which then takes 212 seconds. Copying the lockfile and installing before copying code fixes it. The log shows earlier steps cached, so the base image is not the problem.",
+      "why": ["The time is spent in the install step, before any push.", "", "The WORKDIR step is cached, so the base image layer was reused.", "pip installs from the lockfile as told; the step reruns because its cache was invalidated."]
+    },
+    {
+      "id": "d20-q07",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["config", "twelve-factor"],
+      "q": "What is the twelve-factor way to give Relay's image a different database URL in staging and production?",
+      "options": [
+        "Build a separate image per environment with the URL inside",
+        "Commit both URLs and choose one by the machine's hostname",
+        "Ask the database for its own URL when the app starts",
+        "Read it from an environment variable set by each deployment"
+      ],
+      "answer": 3,
+      "explain": "Config that varies by deploy lives in the environment, so one immutable image runs everywhere. Building per-environment images means staging tested a different artifact from the one production runs.",
+      "why": ["Separate images break the guarantee that production runs what staging tested.", "Hostname tricks put environment knowledge into code and break when hosts change.", "The app needs the URL to reach the database in the first place.", ""]
+    },
+    {
+      "id": "d20-q08",
+      "type": "multi",
+      "level": 2,
+      "tags": ["works-on-my-machine", "containers"],
+      "q": "Which of these differences does running your tests inside the production image remove? Select all that apply.",
+      "options": [
+        "A different Python patch version",
+        "Packages installed by hand on the laptop",
+        "A different OpenSSL version",
+        "An API key that CI does not have",
+        "An ARM laptop versus x86 servers",
+        "A local database seeded with test data"
+      ],
+      "answers": [0, 1, 2],
+      "explain": "The image fixes the runtime, the installed packages, and the system libraries. Secrets and data are injected or reached at run time, and CPU architecture belongs to the host, so those differences remain."
+    },
+    {
+      "id": "d20-q09",
+      "type": "order",
+      "level": 2,
+      "tags": ["ci", "immutable-artifacts"],
+      "q": "Put the path of one change to Relay in order.",
+      "items": [
+        "A commit is pushed and a pull request opened",
+        "Lint and tests run on a fresh runner",
+        "One image is built and tagged with the commit SHA",
+        "The image is pushed to the registry",
+        "Staging deploys the image and its checks pass",
+        "The same image is promoted to production"
+      ],
+      "explain": "Cheap checks gate the expensive build, the build produces one immutable artifact, and that same artifact moves through environments. Rebuilding for production would throw away what staging proved."
+    },
+    {
+      "id": "d20-q10",
+      "type": "match",
+      "level": 3,
+      "tags": ["ci", "dependency-drift", "config"],
+      "q": "Match each symptom to its most likely cause.",
+      "pairs": [
+        ["`ModuleNotFoundError` only in CI", "Package installed by hand, missing from requirements"],
+        ["Same commit green yesterday, red today", "An unpinned dependency released a new version"],
+        ["`exec format error` at container start", "Image built for another CPU architecture"],
+        ["Two pods of one deployment behave differently", "A moving tag pulled at different times"],
+        ["401 in production only, same image digest", "Wrong or expired secret in that environment"]
+      ],
+      "explain": "Each symptom points at one input to the running system: declared dependencies, resolved versions, architecture, image identity, or injected secrets. Asking which input differs is faster than reading code."
+    },
+    {
+      "id": "d20-q11",
+      "type": "open",
+      "level": 2,
+      "tags": ["containers", "works-on-my-machine"],
+      "q": "A teammate says, 'It works in my container, so it will work in production.' Explain what the container does guarantee and what it does not.",
+      "rubric": [
+        "The image fixes runtime, installed packages, and system libraries",
+        "Configuration and secrets are injected at run time and can differ",
+        "Kernel, resource limits, and CPU architecture come from the host",
+        "Network, data, and external services such as the LLM provider differ",
+        "Traffic and scale in production are not reproduced locally"
+      ],
+      "model": "The image guarantees the same runtime, packages, and system libraries wherever it runs. It does not carry configuration or secrets, which production injects separately, and it shares the host's kernel, limits, and CPU architecture. Production also has different data, network paths, external services, and far more traffic, so a container removes one class of differences and leaves the rest to check."
+    },
+    {
+      "id": "d20-q12",
+      "type": "multi",
+      "level": 2,
+      "tags": ["dependency-drift", "reproducibility"],
+      "context": "Relay's answers changed style overnight. No commit was merged to main.",
+      "q": "Which of these could explain a behavior change with no code change? Select all that apply.",
+      "options": [
+        "A pod restart pulled a rebuilt image with a newer unpinned dependency",
+        "The provider pointed the model alias Relay uses at a newer model",
+        "Someone edited an environment variable in the deploy system",
+        "A commit was added to a feature branch that was never deployed",
+        "A teammate rebased their local branch"
+      ],
+      "answers": [0, 1, 2],
+      "explain": "Dependencies, model aliases, and runtime configuration all change behavior without a commit to main. Code on an undeployed branch or a local rebase never reaches production, so it cannot change what users see."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d20-x1",
+      "title": "Production cites last year's return policy",
+      "brief": "Since release 2.16 went out yesterday, support leads report that Relay in production quotes an outdated return policy. Staging, running the same release, quotes the current one. Release 2.16 changed the retrieval prompt, and the teammate who wrote it is offline.",
+      "steps": [
+        {
+          "q": "What do you establish first?",
+          "options": [
+            "Revert the retrieval prompt change in production",
+            "Confirm that staging and production run the same image digest",
+            "Re-run the full eval suite in staging",
+            "Rebuild the production help-center index"
+          ],
+          "answer": 1,
+          "explain": "If both environments run the same digest, the code and prompt are identical and the difference must come from configuration or data. That halves the search in one command. Reverting the prompt acts on the obvious suspect without evidence, and staging already shows the prompt works.",
+          "reveal": "Both environments run the same digest, built from the same commit.",
+          "artifact": {"lang": "text", "title": "Running images", "code": "environment  image digest            revision  release\nstaging      sha256:7c41e9a0d2b3...  1a9f3e7   2.16\nproduction   sha256:7c41e9a0d2b3...  1a9f3e7   2.16"}
+        },
+        {
+          "q": "The code is identical. What do you compare next?",
+          "options": [
+            "The prompt diff in release 2.16",
+            "The LLM provider's status page",
+            "The effective configuration of the two environments",
+            "The sizes of the two databases"
+          ],
+          "answer": 2,
+          "explain": "Same image means the remaining inputs are configuration, secrets, and data. Configuration is the cheapest to diff and the most likely to point at a stale source. The prompt is identical in both, and a provider issue would affect staging too.",
+          "reveal": "Production points retrieval at an index named for last autumn. The log level difference is expected.",
+          "artifact": {"lang": "diff", "title": "Effective config, staging vs production", "code": "--- staging\n+++ production\n-HELP_CENTER_INDEX=articles_current\n+HELP_CENTER_INDEX=articles_2024q3\n LLM_MODEL=model-2025-01-15\n-LOG_LEVEL=debug\n+LOG_LEVEL=info"}
+        },
+        {
+          "q": "The production value has not changed in months. How do you find out why it matters only since 2.16?",
+          "options": [
+            "Run `git log -S \"HELP_CENTER_INDEX\"` to find when the code started reading it",
+            "Assume someone deleted the current index from production yesterday",
+            "Rebuild the old index and see whether answers improve",
+            "Ask the provider whether retrieval behavior changed"
+          ],
+          "answer": 0,
+          "explain": "A value that was always wrong but only now matters suggests the code began using it recently. Searching history for the variable name finds the commit that added the first reference. The other options test guesses the evidence does not support.",
+          "reveal": "Commit 5d20c4e in release 2.16, 'Read index name from config', replaced a hard-coded `articles_current`. Before that, the variable was set in production and ignored.",
+          "artifact": {"lang": "shell", "code": "$ git log -S \"HELP_CENTER_INDEX\" --oneline\n5d20c4e Read index name from config instead of hard-coding it"}
+        },
+        {
+          "q": "What is the right fix?",
+          "options": [
+            "Revert release 2.16 so the index name is hard-coded as before",
+            "Copy staging's whole environment file into production",
+            "Delete the old index so that a wrong name fails loudly at startup",
+            "Correct the value and keep each environment's config in Git"
+          ],
+          "answer": 3,
+          "explain": "Correcting the value fixes users now. Keeping config in version control makes the next stale value visible in review, and logging effective non-secret settings at startup makes the diff you just did a one-minute job. Copying staging's file would import staging database URLs and keys into production.",
+          "reveal": "After the value is corrected and pods restart, production cites the current policy."
+        }
+      ],
+      "debrief": "Root cause: production had carried a stale `HELP_CENTER_INDEX` for months, and release 2.16 started reading it. The prompt change was the plausible wrong cause, ruled out by identical image digests. Keep per-environment config in Git, review it like code, log the effective settings at startup, and fail when a referenced resource does not exist. The general lesson: when the same artifact behaves differently in two places, diff the inputs that are injected at run time."
+    },
+    {
+      "id": "d20-x2",
+      "title": "Refunds capped at $50 by code nobody can find",
+      "brief": "Customers report that Relay refuses refunds above $50. The product rule, and the code on main, cap refunds at $500. Production deploys `relay-api:latest`. Last Friday night an engineer fixed an urgent refund timeout bug during an incident.",
+      "artifact": {"lang": "log", "title": "Production API", "code": "11:02:44 WARN refunds: cap reached ticket=88213 amount_cents=7400 cap_cents=5000\n11:05:10 WARN refunds: cap reached ticket=88240 amount_cents=12900 cap_cents=5000"},
+      "steps": [
+        {
+          "q": "What do you establish first?",
+          "options": [
+            "Which image production runs, and who built and pushed it",
+            "Whether the payment provider imposes a $50 limit",
+            "Change the cap on main and deploy an urgent fix",
+            "Ask the Friday engineer and wait for an answer"
+          ],
+          "answer": 0,
+          "explain": "The log shows the cap comes from Relay's own code, and main says $500, so production is running something other than main. The registry records what runs and who pushed it. An urgent deploy from main would also remove Friday's timeout fix if it never reached main.",
+          "reveal": "The running image was pushed on Friday night from a person's account, not by CI, and carries no commit label. Thursday's image was built by CI from commit 7be21c0.",
+          "artifact": {"lang": "text", "title": "Registry history for relay-api:latest", "code": "digest            pushed           by             revision label\nsha256:9f3c1e0b   Fri 23:48 UTC    d.ortiz        (none)\nsha256:41ab77d2   Thu 16:05 UTC    ci-bot         7be21c0"}
+        },
+        {
+          "q": "How do you find the code that image was built from?",
+          "options": [
+            "Run `git blame` on main's refund policy file",
+            "Search every branch's history for changes to the cap constant",
+            "Rebuild the image from main and compare behavior",
+            "Read Friday's incident channel for pasted code"
+          ],
+          "answer": 1,
+          "explain": "Main does not contain the running code, so blame on main cannot find it. A history search across all branches, including unmerged ones, finds any commit that changed the cap. The incident channel may help later, but the repository is the faster and more reliable record.",
+          "reveal": "A commit on an unmerged hotfix branch lowered the cap while the engineer was testing. The same branch holds the real timeout fix.",
+          "artifact": {"lang": "shell", "code": "$ git log --all -G \"REFUND_CAP_CENTS\" --oneline -- app/refunds/\n3e1d9a0 (origin/hotfix-refund-timeout) TEMP lower cap while testing timeout\na03f9de Add per-ticket refund limit\n$ git log --oneline main..origin/hotfix-refund-timeout\n3e1d9a0 TEMP lower cap while testing timeout\n8b2f7c1 Retry refund once on payment provider timeout"}
+        },
+        {
+          "q": "Production still needs the timeout fix. What do you do?",
+          "options": [
+            "Redeploy Thursday's CI image",
+            "Merge the hotfix branch into main as it is",
+            "Edit the cap inside the running container",
+            "Put only the timeout fix on main and deploy it through CI"
+          ],
+          "answer": 3,
+          "explain": "Bringing over only the timeout commit, without the temporary cap, gives production both fixes through the normal path with a traceable SHA. Thursday's image would bring back the timeout bug, and merging the branch as is ships the $50 cap again.",
+          "reveal": "Commit 8b2f7c1 is cherry-picked to main, built by CI as `relay-api:4c90e1a`, and deployed. Refunds above $50 succeed."
+        },
+        {
+          "q": "What prevents a repeat?",
+          "options": [
+            "Ask engineers to post hotfix code in the incident channel",
+            "Allow only CI to push production images, tag them by SHA, and deploy by that tag",
+            "Delete unmerged branches every week",
+            "Keep `latest` but rebuild it from main every night"
+          ],
+          "answer": 1,
+          "explain": "If only CI can push, every production image comes from a commit, carries its SHA, and can be found in Git. Nightly rebuilds of `latest` would still let a manual push sit in production until the next night, and still leave the tag meaningless.",
+          "reveal": "The team removes human push rights to the production registry and adds a fast path in CI for incident fixes."
+        }
+      ],
+      "debrief": "Root cause: during an incident, an image was built on a laptop from an unmerged branch that included a temporary cap, pushed as `latest`, and deployed. Main never contained the running code, so nobody could find it. Build only in CI, label every image with its commit, deploy by SHA, and give incidents a fast but traceable path. The general lesson: you can only debug production from Git if production was built from Git."
+    }
+  ]
+}

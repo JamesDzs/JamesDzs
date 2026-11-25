@@ -17,65 +17,160 @@
     {
       "id": "d18-l1",
       "title": "Partial failure and the fallacies",
-      "minutes": 12,
+      "minutes": 11,
       "blocks": [
-        {"t": "p", "text": "Inside one process, a function call either returns or raises. Across a network, a call can succeed, fail, or time out, and a timeout does not tell you which of the first two happened. This is **partial failure**: some parts of the system work while others do not, and a caller often cannot tell which."},
-        {"t": "p", "text": "Engineers at Sun Microsystems wrote down a list of assumptions that people make about networks and that are false. They are worth reading as a checklist, because almost every distributed-systems bug traces back to one of them."},
-        {"t": "list", "items": [
-          "The network is reliable.",
-          "Latency is zero.",
-          "Bandwidth is infinite.",
-          "The network is secure.",
-          "Topology does not change.",
-          "There is one administrator.",
-          "Transport cost is zero.",
-          "The network is homogeneous."
-        ]},
-        {"t": "compare",
+        {
+          "t": "p",
+          "text": "Inside one process, a function call either returns or raises. Across a network, a call can succeed, fail, or time out, and a timeout does not tell you which of the first two happened. This is **partial failure**: some parts of the system work while others do not, and a caller often cannot tell which."
+        },
+        {
+          "t": "p",
+          "text": "Engineers at Sun Microsystems wrote down a list of assumptions that people make about networks and that are false. They are worth reading as a checklist, because almost every distributed-systems bug traces back to one of them."
+        },
+        {
+          "t": "list",
+          "items": [
+            "The network is reliable.",
+            "Latency is zero.",
+            "Bandwidth is infinite.",
+            "The network is secure.",
+            "Topology does not change.",
+            "There is one administrator.",
+            "Transport cost is zero.",
+            "The network is homogeneous."
+          ]
+        },
+        {
+          "t": "compare",
           "caption": "Relay calls the payment provider to issue a refund",
-          "columns": ["", "Success response", "Error response", "Timeout"],
-          "rows": [
-            ["What you know", "The refund happened", "It was refused, if the error is from the provider", "Nothing about the outcome"],
-            ["Did money move", "Yes", "Usually no", "Maybe"],
-            ["Safe to retry", "No need", "Depends on the error", "Only with an idempotency key"],
-            ["Next step", "Record it", "Read the error type", "Ask the provider, or retry with the same key"]
+          "columns": [
+            "",
+            "Success response",
+            "Error response",
+            "Timeout"
           ],
-          "verdict": "Treat a timeout as unknown. Design calls with side effects so that asking again, or retrying with the same idempotency key, settles the outcome."},
-        {"t": "code",
+          "rows": [
+            [
+              "What you know",
+              "The refund happened",
+              "It was refused, if the error is from the provider",
+              "Nothing about the outcome"
+            ],
+            [
+              "Did money move",
+              "Yes",
+              "Usually no",
+              "Maybe"
+            ],
+            [
+              "Safe to retry",
+              "No need",
+              "Depends on the error",
+              "Only with an idempotency key"
+            ],
+            [
+              "Next step",
+              "Record it",
+              "Read the error type",
+              "Ask the provider, or retry with the same key"
+            ]
+          ],
+          "verdict": "Treat a timeout as unknown. Design calls with side effects so that asking again, or retrying with the same idempotency key, settles the outcome."
+        },
+        {
+          "t": "code",
           "lang": "log",
           "title": "Two sides of the same refund",
-          "code": "relay-api   10:14:02.000 POST https://payments.example/refunds key=rf_9921 start\nrelay-api   10:14:12.001 refund rf_9921 TIMEOUT after 10.0s, marking failed\nrelay-api   10:14:12.004 retrying refund for ticket 9921 with key=rf_9921b\n\npayments    10:14:02.140 refund key=rf_9921 received\npayments    10:14:13.870 refund key=rf_9921 completed amount=39.00\npayments    10:14:12.150 refund key=rf_9921b received\npayments    10:14:14.020 refund key=rf_9921b completed amount=39.00",
+          "code": "relay-api   10:14:02.000 POST https://payments.example/refunds key=rf_9921 start\nrelay-api   10:14:12.001 refund rf_9921 TIMEOUT after 10.0s, marking failed\nrelay-api   10:14:12.004 retrying refund for ticket 9921 with key=rf_9921b\n\npayments    10:14:02.140 refund key=rf_9921 received\npayments    10:14:12.150 refund key=rf_9921b received\npayments    10:14:13.870 refund key=rf_9921 completed amount=39.00\npayments    10:14:14.020 refund key=rf_9921b completed amount=39.00",
           "notes": [
             "Relay gave up at 10 seconds. The provider finished the first refund at about 11.9 seconds. Both statements are true.",
             "Relay logged 'failed', which was wrong. A timeout should be recorded as unknown.",
             "The retry used a new key, so the provider treated it as a different refund. Reusing `rf_9921` would have returned the first result instead."
-          ]},
-        {"t": "p", "text": "Slow is worse than down. A service that is down refuses connections within milliseconds, and the caller moves on. A service that is slow holds every caller's thread, connection, and memory while they wait. Callers pile up behind it, and their own callers pile up behind them."},
-        {"t": "callout", "kind": "pitfall", "title": "Logging a timeout as a failure", "text": "A timeout means the caller stopped waiting. The remote side may still finish the work. Code that marks a timed-out refund as failed and then retries with a fresh key produces exactly the double refund in the log above."},
-        {"t": "callout", "kind": "ai", "title": "The LLM API is the slowest dependency Relay has", "text": "A database query takes milliseconds; an LLM call can take tens of seconds, and its latency varies with output length and provider load. When the provider slows down, every Relay worker holding an open LLM call is stuck, which is the 'slow is worse than down' case in its purest form."},
-        {"t": "check",
+          ]
+        },
+        {
+          "t": "p",
+          "text": "Slow is worse than down. A service that is down refuses connections within milliseconds, and the caller moves on. A service that is slow holds every caller's thread, connection, and memory while they wait. Callers pile up behind it, and their own callers pile up behind them."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Logging a timeout as a failure",
+          "text": "A timeout means the caller stopped waiting. The remote side may still finish the work. Code that marks a timed-out refund as failed and then retries with a fresh key produces exactly the double refund in the log above."
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "The LLM API is the slowest dependency Relay has",
+          "text": "A database query takes milliseconds; an LLM call can take tens of seconds, and its latency varies with output length and provider load. When the provider slows down, every Relay worker holding an open LLM call is stuck, which is the 'slow is worse than down' case in its purest form."
+        },
+        {
+          "t": "check",
           "q": "Relay's call to the payment provider times out after 10 seconds. What does Relay know about the refund?",
-          "options": ["It failed, because no success response arrived", "It may or may not have happened", "It succeeded, because the request was sent"],
+          "options": [
+            "It failed, because no success response arrived",
+            "It may or may not have happened",
+            "It succeeded, because the request was sent"
+          ],
           "answer": 1,
-          "explain": "The request may have been lost, processed and the reply lost, or still be running. The timeout only says Relay stopped waiting, so the outcome must be checked or the call retried with the same idempotency key."},
-        {"t": "reveal", "prompt": "Why does a dependency that refuses connections usually cause less damage upstream than one that accepts connections and then hangs?", "answer": "A refused connection fails in milliseconds, so the caller's thread is free at once and it can return an error or a fallback. A hang holds the caller's thread and connection until a timeout fires, and if there is no timeout, forever. Held resources are what spread the failure."}
+          "explain": "The request may have been lost, processed and the reply lost, or still be running. The timeout only says Relay stopped waiting, so the outcome must be checked or the call retried with the same idempotency key."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Why does a dependency that refuses connections usually cause less damage upstream than one that accepts connections and then hangs?",
+          "answer": "A refused connection fails in milliseconds, so the caller's thread is free at once and it can return an error or a fallback. A hang holds the caller's thread and connection until a timeout fires, and if there is no timeout, forever. Held resources are what spread the failure."
+        }
       ]
     },
     {
       "id": "d18-l2",
       "title": "Timeouts, retries, backoff, and jitter",
-      "minutes": 15,
+      "minutes": 14,
       "blocks": [
-        {"t": "p", "text": "Every remote call needs a **timeout**, a limit on how long the caller will wait. Some clients have no limit by default: Python's `requests` library waits indefinitely unless you pass a timeout. A call with no timeout turns any hang downstream into a hang in your service."},
-        {"t": "tradeoff",
+        {
+          "t": "p",
+          "text": "Every remote call needs a **timeout**, a limit on how long the caller will wait. Some clients have no limit by default: Python's `requests` library waits indefinitely unless you pass a timeout. A call with no timeout turns any hang downstream into a hang in your service."
+        },
+        {
+          "t": "tradeoff",
           "title": "Long timeout vs short timeout",
           "options": [
-            {"name": "Long timeout", "gain": ["Slow but valid calls complete", "Fewer false failures"], "cost": ["Threads and connections held during a hang", "Callers upstream may give up first anyway"], "choose": "Choose this for work with no user waiting, such as a batch job, and for calls known to be slow, such as a long LLM generation."},
-            {"name": "Short timeout", "gain": ["Frees resources fast when a dependency hangs", "Keeps the user-facing deadline"], "cost": ["Cuts off the slow tail of healthy calls", "More retries, which add load"], "choose": "Choose this on the path of a user request, set a little above the dependency's normal p99."}
-          ]},
-        {"t": "h", "text": "A timeout budget across a call chain"},
-        {"t": "p", "text": "A request passes through several hops, each with its own timeout. The **timeout budget** is the user-facing deadline divided among them. Each hop must finish within the time its caller has left. When an inner timeout is longer than an outer one, the outer layer gives up and returns an error while the inner layer keeps working on a request nobody will receive."},
-        {"t": "code",
+            {
+              "name": "Long timeout",
+              "gain": [
+                "Slow but valid calls complete",
+                "Fewer false failures"
+              ],
+              "cost": [
+                "Threads and connections held during a hang",
+                "Callers upstream may give up first anyway"
+              ],
+              "choose": "Choose this for work with no user waiting, such as a batch job, and for calls known to be slow, such as a long LLM generation."
+            },
+            {
+              "name": "Short timeout",
+              "gain": [
+                "Frees resources fast when a dependency hangs",
+                "Keeps the user-facing deadline"
+              ],
+              "cost": [
+                "Cuts off the slow tail of healthy calls",
+                "More retries, which add load"
+              ],
+              "choose": "Choose this on the path of a user request, set a little above the dependency's normal p99."
+            }
+          ]
+        },
+        {
+          "t": "h",
+          "text": "A timeout budget across a call chain"
+        },
+        {
+          "t": "p",
+          "text": "A request passes through several hops, each with its own timeout. The **timeout budget** is the user-facing deadline divided among them. Each hop must finish within the time its caller has left. When an inner timeout is longer than an outer one, the outer layer gives up and returns an error while the inner layer keeps working on a request nobody will receive."
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "Relay's chat request: worked budget",
           "code": "BEFORE                timeout  attempts  worst case\nload balancer             30s        1        30s\nnginx -> API              60s        1        60s\nAPI -> pgvector search     5s        3        15s\nAPI -> LLM API            60s        3       180s\nworst case inside API: 15s + 180s = 195s; the user got a 504 at 30s\n\nAFTER                 timeout  attempts  worst case\nload balancer             30s        1        30s\nnginx -> API              29s        1        29s\nAPI deadline              28s, set when the request arrives\nAPI -> pgvector search   1.5s        2         3s\nAPI -> LLM API      20s or time left     1        20s\nworst case inside API: 3s + 20s = 23s, under the 28s deadline",
@@ -84,10 +179,18 @@
             "After the fix, every layer is shorter than the layer above it, with a margin for processing.",
             "The API passes the time left to each call instead of a fixed number, so a slow search leaves less for the LLM, not more total time.",
             "LLM retries moved out of the request. A failed generation now returns a clear error, or goes to a queue."
-          ]},
-        {"t": "p", "text": "Retry only failures that are likely to be transient, such as a timeout, a 503, or a 429, and only operations that are safe to repeat: reads, or writes carrying an idempotency key. Wait longer before each attempt with **exponential backoff**, for example 1, 2, then 4 seconds, capped. Add **jitter**, a random amount, so that clients that failed together do not retry together."},
-        {"t": "h", "text": "Retry storms"},
-        {"t": "code",
+          ]
+        },
+        {
+          "t": "p",
+          "text": "Retry only failures that are likely to be transient, such as a timeout, a 503, or a 429, and only operations that are safe to repeat: reads, or writes carrying an idempotency key. Wait longer before each attempt with **exponential backoff**, for example 1, 2, then 4 seconds, capped. Add **jitter**, a random amount, so that clients that failed together do not retry together."
+        },
+        {
+          "t": "h",
+          "text": "Retry storms"
+        },
+        {
+          "t": "code",
           "lang": "text",
           "title": "Retry amplification, worked",
           "code": "Retries at every layer, 3 attempts each, database down:\n  web app -> API -> tools service -> Postgres\n  attempts reaching Postgres per user action = 3 x 3 x 3 = 27\n  normal 200 actions/s  ->  up to 5,400 queries/s at the database\n\nSynchronized retries after an outage, no jitter:\n  10,000 clients waiting, each retries on a fixed timer\n  service returns at capacity 2,000 req/s\n  first second: 10,000 retries + new traffic -> overloaded again\n\nSame clients with retries spread at random over 30s:\n  10,000 / 30 = about 333 extra req/s on top of normal traffic",
@@ -95,77 +198,251 @@
             "Retries multiply across layers. Retry at one layer, usually the outermost one that knows whether the user still cares.",
             "A **retry storm** is retry traffic large enough to keep a recovering service down. Without jitter, the retries arrive as one wave.",
             "A retry budget, such as allowing retries up to 10 percent of normal traffic, caps the extra load no matter how many calls fail."
-          ]},
-        {"t": "callout", "kind": "debug", "title": "Recovery followed by a second outage", "text": "Plot request rate across the recovery moment. A rate several times normal, in spikes at a fixed interval, with most requests marked as retries, is a retry storm. Confirm with retry-attempt counts in access logs or client metrics. The fix is backoff with jitter on the clients and load shedding at the edge until the wave passes."},
-        {"t": "callout", "kind": "ai", "title": "Timeouts for a slow, costly dependency", "text": "With streaming, set two limits: time to first token, and the longest allowed gap between chunks, instead of one total timeout that a long valid answer can exceed. Every retry of a generation costs tokens and adds the full latency again. When the provider returns an overload error, fast retries from every client add to the overload."},
-        {"t": "check",
+          ]
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Recovery followed by a second outage",
+          "text": "Plot request rate across the recovery moment. A rate several times normal, in spikes at a fixed interval, with most requests marked as retries, is a retry storm. Confirm with retry-attempt counts in access logs or client metrics. The fix is backoff with jitter on the clients and load shedding at the edge until the wave passes."
+        },
+        {
+          "t": "callout",
+          "kind": "ai",
+          "title": "Timeouts for a slow, costly dependency",
+          "text": "With streaming, set two limits: time to first token, and the longest allowed gap between chunks, instead of one total timeout that a long valid answer can exceed. Every retry of a generation costs tokens and adds the full latency again. When the provider returns an overload error, fast retries from every client add to the overload."
+        },
+        {
+          "t": "check",
           "q": "The web app, the API, and the tools service each make up to 3 attempts. Postgres is down. How many queries can one user action send to Postgres?",
-          "options": ["3", "9", "27"],
+          "options": [
+            "3",
+            "9",
+            "27"
+          ],
           "answer": 2,
-          "explain": "Each of the web app's 3 attempts causes 3 API attempts, and each of those causes 3 tools-service attempts: 3 times 3 times 3. Adding attempts at each layer multiplies them."},
-        {"t": "reveal", "prompt": "Ten thousand clients all retry on a fixed 5-second timer. Why does adding jitter help even though the total number of retries is unchanged?", "answer": "The service fails on peak rate, not on totals. Without jitter, the retries arrive in the same second as one wave far above capacity. Spread randomly over a window, the same retries become a modest extra rate the service can absorb."}
+          "explain": "Each of the web app's 3 attempts causes 3 API attempts, and each of those causes 3 tools-service attempts: 3 times 3 times 3. Adding attempts at each layer multiplies them."
+        },
+        {
+          "t": "reveal",
+          "prompt": "Ten thousand clients all retry on a fixed 5-second timer. Why does adding jitter help even though the total number of retries is unchanged?",
+          "answer": "The service fails on peak rate, not on totals. Without jitter, the retries arrive in the same second as one wave far above capacity. Spread randomly over a window, the same retries become a modest extra rate the service can absorb."
+        }
       ]
     },
     {
       "id": "d18-l3",
       "title": "Circuit breakers, bulkheads, and load shedding",
-      "minutes": 15,
+      "minutes": 14,
       "blocks": [
-        {"t": "p", "text": "Timeouts and retries protect a single call. Four more patterns protect a whole service from a dependency in trouble: stop calling it for a while, keep its trouble in its own compartment, refuse work you cannot finish, and keep offering a reduced service. Without them, one slow component becomes a **cascading failure**, where each layer's distress causes the next layer's."},
-        {"t": "flow",
+        {
+          "t": "p",
+          "text": "Timeouts and retries protect a single call. Four more patterns protect a whole service from a dependency in trouble: stop calling it for a while, keep its trouble in its own compartment, refuse work you cannot finish, and keep offering a reduced service. Without them, one slow component becomes a **cascading failure**, where each layer's distress causes the next layer's."
+        },
+        {
+          "t": "flow",
           "title": "A cascading failure in Relay, step by step",
           "steps": [
-            {"actor": "Postgres", "label": "One query becomes slow", "detail": "A deploy changes the `lookup_order` query so it no longer uses an index. It now takes about 8 seconds instead of 20 milliseconds.", "fail": "p99 latency of `lookup_order` jumps. Nothing else looks wrong yet."},
-            {"actor": "API", "label": "The connection pool fills", "detail": "Each order lookup holds a database connection for 8 seconds. The pool, shared by every endpoint, runs out.", "fail": "Logs show pool timeouts: requests waiting for a connection give up."},
-            {"actor": "API", "label": "Every worker is waiting", "detail": "All API workers or threads are blocked on the pool. Endpoints that never touch orders queue behind them.", "fail": "Help-center search and login slow down although they use healthy tables."},
-            {"actor": "Load balancer", "label": "Health checks time out", "detail": "The health endpoint waits in the same queue and misses its deadline. Instances are marked unhealthy and removed.", "fail": "502 and 504 rates climb; instances flap in and out of rotation."},
-            {"actor": "Web app", "label": "Clients retry", "detail": "The web app retries each 504 up to three times, and the remaining instances take the extra load.", "fail": "Request rate rises while the success rate falls."},
-            {"actor": "Worker", "label": "Jobs time out and requeue", "detail": "Triage jobs that call the API time out and are retried, adding more load.", "fail": "Queue depth climbs, and the backlog will hit the API on recovery."},
-            {"actor": "Everyone", "label": "Total outage", "detail": "Every user-facing feature fails. The root cause is one query on one table.", "fail": "The incident looks like 'everything broke at once', which hides where it started."}
-          ]},
-        {"t": "compare",
+            {
+              "actor": "Postgres",
+              "label": "One query becomes slow",
+              "detail": "A deploy changes the `lookup_order` query so it no longer uses an index. It now takes about 8 seconds instead of 20 milliseconds.",
+              "fail": "p99 latency of `lookup_order` jumps. Nothing else looks wrong yet."
+            },
+            {
+              "actor": "API",
+              "label": "The connection pool fills",
+              "detail": "Each order lookup holds a database connection for 8 seconds. The pool, shared by every endpoint, runs out.",
+              "fail": "Logs show pool timeouts: requests waiting for a connection give up."
+            },
+            {
+              "actor": "API",
+              "label": "Every worker is waiting",
+              "detail": "All API workers or threads are blocked on the pool. Endpoints that never touch orders queue behind them.",
+              "fail": "Help-center search and login slow down although they use healthy tables."
+            },
+            {
+              "actor": "Load balancer",
+              "label": "Health checks time out",
+              "detail": "The health endpoint waits in the same queue and misses its deadline. Instances are marked unhealthy and removed.",
+              "fail": "502 and 504 rates climb; instances flap in and out of rotation."
+            },
+            {
+              "actor": "Web app",
+              "label": "Clients retry",
+              "detail": "The web app retries each 504 up to three times, and the remaining instances take the extra load.",
+              "fail": "Request rate rises while the success rate falls."
+            },
+            {
+              "actor": "Worker",
+              "label": "Jobs time out and requeue",
+              "detail": "Triage jobs that call the API time out and are retried, adding more load.",
+              "fail": "Queue depth climbs, and the backlog will hit the API on recovery."
+            },
+            {
+              "actor": "Everyone",
+              "label": "Total outage",
+              "detail": "Every user-facing feature fails. The root cause is one query on one table.",
+              "fail": "The incident looks like 'everything broke at once', which hides where it started."
+            }
+          ]
+        },
+        {
+          "t": "compare",
           "caption": "Patterns that contain a failing dependency",
-          "columns": ["", "What it does", "Where it cuts the cascade above", "What it costs"],
-          "rows": [
-            ["Circuit breaker", "Stops calling a failing dependency for a cooldown, failing at once", "Order lookups fail fast instead of holding connections", "Some calls fail that might have succeeded"],
-            ["Bulkhead", "Gives each dependency its own pool of connections or workers", "Order lookups exhaust only their own pool", "Pools sized separately; idle capacity in each"],
-            ["Load shedding", "Rejects excess work early with 503", "Accepted requests still finish within the deadline", "Some users are refused outright"],
-            ["Graceful degradation", "Serves a reduced feature when a part fails", "Chat answers without order status instead of failing", "More code paths to build and test"]
+          "columns": [
+            "",
+            "What it does",
+            "Where it cuts the cascade above",
+            "What it costs"
           ],
-          "verdict": "Use timeouts everywhere, bulkheads around dependencies that can hang, circuit breakers on calls that fail in bursts, and load shedding at the edge."},
-        {"t": "p", "text": "A **circuit breaker** has three states. Closed: calls pass through and failures are counted. Open: after failures cross a threshold, calls fail immediately for a cooldown period, without touching the dependency. Half-open: after the cooldown, a few trial calls go through; success closes the breaker, failure opens it again."},
-        {"t": "tradeoff",
+          "rows": [
+            [
+              "Circuit breaker",
+              "Stops calling a failing dependency for a cooldown, failing at once",
+              "Order lookups fail fast instead of holding connections",
+              "Some calls fail that might have succeeded"
+            ],
+            [
+              "Bulkhead",
+              "Gives each dependency its own pool of connections or workers",
+              "Order lookups exhaust only their own pool",
+              "Pools sized separately; idle capacity in each"
+            ],
+            [
+              "Load shedding",
+              "Rejects excess work early with 503",
+              "Accepted requests still finish within the deadline",
+              "Some users are refused outright"
+            ],
+            [
+              "Graceful degradation",
+              "Serves a reduced feature when a part fails",
+              "Chat answers without order status instead of failing",
+              "More code paths to build and test"
+            ]
+          ],
+          "verdict": "Use timeouts everywhere, bulkheads around dependencies that can hang, circuit breakers on calls that fail in bursts, and load shedding at the edge."
+        },
+        {
+          "t": "p",
+          "text": "A **circuit breaker** has three states. Closed: calls pass through and failures are counted. Open: after failures cross a threshold, calls fail immediately for a cooldown period, without touching the dependency. Half-open: after the cooldown, a few trial calls go through; success closes the breaker, failure opens it again."
+        },
+        {
+          "t": "tradeoff",
           "title": "Retry vs fail fast",
           "options": [
-            {"name": "Retry", "gain": ["Rides out brief network blips", "Users rarely see transient errors"], "cost": ["Multiplies load on a struggling dependency", "Adds latency to every failed call"], "choose": "Choose this when failures are rare and independent, and the operation is idempotent."},
-            {"name": "Fail fast", "gain": ["Frees resources at once", "Gives the dependency room to recover"], "cost": ["Users see errors or a degraded answer", "Needs a fallback worth showing"], "choose": "Choose this when failures are widespread, such as when the breaker is open or the dependency signals overload."}
-          ]},
-        {"t": "p", "text": "**Load shedding** means refusing work you cannot finish in time, as early and cheaply as possible, so that the work you accept succeeds. Shed the least important traffic first. For Relay, the nightly eval harness and the re-indexing jobs should be refused before a customer's chat message."},
-        {"t": "callout", "kind": "debug", "title": "One slow dependency exhausts every thread upstream", "text": "When every endpoint slows at once, look at what the busy workers are waiting on, not at which endpoint is loudest. A stack dump of a live worker, for example with `py-spy dump`, or the in-flight spans in your tracing tool, will show nearly all of them blocked in the same call. That call's dependency is where the cascade started."},
-        {"t": "callout", "kind": "pitfall", "title": "Health checks that test dependencies", "text": "If the health endpoint queries Postgres, a slow database marks every API instance unhealthy at once, and the load balancer removes them all. A failing dependency becomes a full outage. Keep the check that decides whether to restart an instance about the process itself."},
-        {"t": "check",
+            {
+              "name": "Retry",
+              "gain": [
+                "Rides out brief network blips",
+                "Users rarely see transient errors"
+              ],
+              "cost": [
+                "Multiplies load on a struggling dependency",
+                "Adds latency to every failed call"
+              ],
+              "choose": "Choose this when failures are rare and independent, and the operation is idempotent."
+            },
+            {
+              "name": "Fail fast",
+              "gain": [
+                "Frees resources at once",
+                "Gives the dependency room to recover"
+              ],
+              "cost": [
+                "Users see errors or a degraded answer",
+                "Needs a fallback worth showing"
+              ],
+              "choose": "Choose this when failures are widespread, such as when the breaker is open or the dependency signals overload."
+            }
+          ]
+        },
+        {
+          "t": "p",
+          "text": "**Load shedding** means refusing work you cannot finish in time, as early and cheaply as possible, so that the work you accept succeeds. Shed the least important traffic first. For Relay, the nightly eval harness and the re-indexing jobs should be refused before a customer's chat message."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "One slow dependency exhausts every thread upstream",
+          "text": "When every endpoint slows at once, look at what the busy workers are waiting on, not at which endpoint is loudest. A stack dump of a live worker, for example with `py-spy dump`, or the in-flight spans in your tracing tool, will show nearly all of them blocked in the same call. That call's dependency is where the cascade started."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Health checks that test dependencies",
+          "text": "If the health endpoint queries Postgres, a slow database marks every API instance unhealthy at once, and the load balancer removes them all. A failing dependency becomes a full outage. Keep the check that decides whether to restart an instance about the process itself."
+        },
+        {
+          "t": "check",
           "q": "A circuit breaker around Relay's calls to the payment provider has been open for its 30-second cooldown. What happens next?",
-          "options": ["It closes and lets all traffic through", "It lets a few trial calls through to test the provider", "It stays open until an operator resets it"],
+          "options": [
+            "It closes and lets all traffic through",
+            "It lets a few trial calls through to test the provider",
+            "It stays open until an operator resets it"
+          ],
           "answer": 1,
-          "explain": "After the cooldown the breaker goes half-open and admits a few trial calls. Closing at once would send the full load to a provider that may still be failing, which is the mistake the half-open state exists to avoid."},
-        {"t": "reveal", "prompt": "In the cascade above, which single change would most likely have kept help-center search and login working?", "answer": "A bulkhead: a separate connection pool, or separate workers, for order lookups. The slow query would have exhausted only that pool, and every other endpoint would have kept its connections. A statement timeout on the database would also have limited how long each slow query held a connection."}
+          "explain": "After the cooldown the breaker goes half-open and admits a few trial calls. Closing at once would send the full load to a provider that may still be failing, which is the mistake the half-open state exists to avoid."
+        },
+        {
+          "t": "reveal",
+          "prompt": "In the cascade above, which single change would most likely have kept help-center search and login working?",
+          "answer": "A bulkhead: a separate connection pool, or separate workers, for order lookups. The slow query would have exhausted only that pool, and every other endpoint would have kept its connections. A statement timeout on the database would also have limited how long each slow query held a connection."
+        }
       ]
     },
     {
       "id": "d18-l4",
       "title": "Consistency across services",
-      "minutes": 13,
+      "minutes": 12,
       "blocks": [
-        {"t": "p", "text": "Inside one database, a transaction makes several writes succeed or fail together. A business action that spans services, each with its own data, has no such transaction. A Relay refund touches Relay's Postgres, the payment provider, and the email provider. Any of them can fail after the others have succeeded."},
-        {"t": "p", "text": "**Two-phase commit** (2PC) is the classic attempt at one transaction across systems. A coordinator asks every participant to prepare, meaning to promise it can commit, while holding its locks. If all agree, the coordinator tells them all to commit. If the coordinator dies after the prepare, participants wait with locks held until it returns."},
-        {"t": "p", "text": "A **saga** splits the action into a sequence of local transactions, each in one service, and pairs each with a **compensating action** that undoes its effect, such as refunding a charge or cancelling an order. If a later step fails, the saga runs the compensations for the steps already done. In between, other readers can see the partial state."},
-        {"t": "tradeoff",
+        {
+          "t": "p",
+          "text": "Inside one database, a transaction makes several writes succeed or fail together. A business action that spans services, each with its own data, has no such transaction. A Relay refund touches Relay's Postgres, the payment provider, and the email provider. Any of them can fail after the others have succeeded."
+        },
+        {
+          "t": "p",
+          "text": "**Two-phase commit** (2PC) is the classic attempt at one transaction across systems. A coordinator asks every participant to prepare, meaning to promise it can commit, while holding its locks. If all agree, the coordinator tells them all to commit. If the coordinator dies after the prepare, participants wait with locks held until it returns."
+        },
+        {
+          "t": "p",
+          "text": "A **saga** splits the action into a sequence of local transactions, each in one service, and pairs each with a **compensating action** that undoes its effect, such as refunding a charge or cancelling an order. If a later step fails, the saga runs the compensations for the steps already done. In between, other readers can see the partial state."
+        },
+        {
+          "t": "tradeoff",
           "title": "Two-phase commit vs saga",
           "options": [
-            {"name": "Two-phase commit", "gain": ["All-or-nothing outcome", "No intermediate state visible"], "cost": ["Every participant must support the protocol", "Locks held across the network", "Blocks if the coordinator fails"], "choose": "Choose this only inside infrastructure you control where every participant supports it, such as some databases and message brokers."},
-            {"name": "Saga", "gain": ["Works with external APIs", "No locks held across services"], "cost": ["Partial states are visible", "Compensations must be designed and can fail too", "Harder to reason about"], "choose": "Choose this for business flows across services or third parties, such as order, charge, and ship."}
-          ]},
-        {"t": "code",
+            {
+              "name": "Two-phase commit",
+              "gain": [
+                "All-or-nothing outcome",
+                "No intermediate state visible"
+              ],
+              "cost": [
+                "Every participant must support the protocol",
+                "Locks held across the network",
+                "Blocks if the coordinator fails"
+              ],
+              "choose": "Choose this only inside infrastructure you control where every participant supports it, such as some databases and message brokers."
+            },
+            {
+              "name": "Saga",
+              "gain": [
+                "Works with external APIs",
+                "No locks held across services"
+              ],
+              "cost": [
+                "Partial states are visible",
+                "Compensations must be designed and can fail too",
+                "Harder to reason about"
+              ],
+              "choose": "Choose this for business flows across services or third parties, such as order, charge, and ship."
+            }
+          ]
+        },
+        {
+          "t": "code",
           "lang": "log",
           "title": "Order charged but never created",
           "code": "11:20:04.118 checkout charge ok provider_charge=ch_7781 amount=129.00\n11:20:04.120 checkout inserting order for cart c_552\n11:20:04.402 checkout ERROR deadlock detected, transaction rolled back\n11:20:04.403 checkout returning 500 to client\n\nreconcile 02:00 provider charges without a matching order: 3\n  ch_7781  129.00  cart c_552",
@@ -173,110 +450,227 @@
             "The charge, an external effect, happened before the local write. When the write rolled back, nothing undid the charge.",
             "A saga would record the order as pending first, charge with the order ID as idempotency key, then confirm, and refund if confirmation fails.",
             "The nightly reconciliation job, comparing provider charges with orders, is the safety net that found it."
-          ]},
-        {"t": "compare",
+          ]
+        },
+        {
+          "t": "compare",
           "caption": "During a network partition, each side must choose",
-          "columns": ["", "Choose consistency", "Choose availability"],
-          "rows": [
-            ["Writes on the cut-off side", "Refused until the partition heals", "Accepted, and may conflict"],
-            ["What users see", "Errors or read-only mode", "The app works, maybe with stale data"],
-            ["After healing", "Nothing to reconcile", "Conflicts to merge or resolve"],
-            ["Fits", "Money, stock counts, unique usernames", "Carts, drafts, chat history, view counts"]
+          "columns": [
+            "",
+            "Choose consistency",
+            "Choose availability"
           ],
-          "verdict": "Decide per piece of data. Relay should refuse refunds it cannot record consistently, and can keep accepting chat messages."},
-        {"t": "p", "text": "Clocks on different machines disagree. Each drifts, and time-sync services such as NTP keep them close, often within milliseconds, but a clock can be further off or jump. Never order events from two machines by their wall-clock timestamps. Use one source of order, such as a database sequence or a version number, and measure durations with a monotonic clock, which never runs backwards."},
-        {"t": "p", "text": "Some systems need several machines to agree on one fact, such as which node is the leader. They use a consensus algorithm such as Raft or Paxos, which needs a majority, or **quorum**, to decide. Three nodes tolerate one failure; five tolerate two. Use a system that does this, such as etcd, rather than writing it yourself."},
-        {"t": "callout", "kind": "debug", "title": "Timestamps from two machines disagree", "text": "If a worker log says a job finished before the API log says it was enqueued, suspect clock skew before suspecting causality bugs. Check the time-sync status on both hosts. Then reorder the events by something both sides share, such as a message ID with a sequence number, or a trace with parent and child spans."},
-        {"t": "callout", "kind": "pitfall", "title": "Compensation is not undo", "text": "A refund is a second transaction that the customer sees on their statement. An email cannot be unsent. Order the steps of a saga so that the ones hardest to compensate come last."},
-        {"t": "check",
+          "rows": [
+            [
+              "Writes on the cut-off side",
+              "Refused until the partition heals",
+              "Accepted, and may conflict"
+            ],
+            [
+              "What users see",
+              "Errors or read-only mode",
+              "The app works, maybe with stale data"
+            ],
+            [
+              "After healing",
+              "Nothing to reconcile",
+              "Conflicts to merge or resolve"
+            ],
+            [
+              "Fits",
+              "Money, stock counts, unique usernames",
+              "Carts, drafts, chat history, view counts"
+            ]
+          ],
+          "verdict": "Decide per piece of data. Relay should refuse refunds it cannot record consistently, and can keep accepting chat messages."
+        },
+        {
+          "t": "p",
+          "text": "Clocks on different machines disagree. Each drifts, and time-sync services such as NTP keep them close, often within milliseconds, but a clock can be further off or jump. Never order events from two machines by their wall-clock timestamps. Use one source of order, such as a database sequence or a version number, and measure durations with a monotonic clock, which never runs backwards."
+        },
+        {
+          "t": "p",
+          "text": "Some systems need several machines to agree on one fact, such as which node is the leader. They use a consensus algorithm such as Raft or Paxos, which needs a majority, or **quorum**, to decide. Three nodes tolerate one failure; five tolerate two. Use a system that does this, such as etcd, rather than writing it yourself."
+        },
+        {
+          "t": "callout",
+          "kind": "debug",
+          "title": "Timestamps from two machines disagree",
+          "text": "If a worker log says a job finished before the API log says it was enqueued, suspect clock skew before suspecting causality bugs. Check the time-sync status on both hosts. Then reorder the events by something both sides share, such as a message ID with a sequence number, or a trace with parent and child spans."
+        },
+        {
+          "t": "callout",
+          "kind": "pitfall",
+          "title": "Compensation is not undo",
+          "text": "A refund is a second transaction that the customer sees on their statement. An email cannot be unsent. Order the steps of a saga so that the ones hardest to compensate come last."
+        },
+        {
+          "t": "check",
           "q": "Relay's refund flow updates Relay's database and calls an external payment provider. Why is two-phase commit not an option?",
-          "options": ["The provider's API does not take part in a prepare and commit protocol", "Two-phase commit only works inside a single database", "Two-phase commit cannot handle money amounts"],
+          "options": [
+            "The provider's API does not take part in a prepare and commit protocol",
+            "Two-phase commit only works inside a single database",
+            "Two-phase commit cannot handle money amounts"
+          ],
           "answer": 0,
-          "explain": "2PC needs every participant to accept a prepare and hold the outcome until told to commit. A third-party HTTP API does not do that, so the flow must be a saga with idempotency keys and compensation."},
-        {"t": "reveal", "prompt": "A five-node consensus cluster loses two nodes. Can it still elect a leader? What about after losing three?", "answer": "With two lost, three of five remain, which is a majority, so it can still decide. With three lost, two remain, which is not a majority, so it stops accepting decisions rather than risk two leaders."}
+          "explain": "2PC needs every participant to accept a prepare and hold the outcome until told to commit. A third-party HTTP API does not do that, so the flow must be a saga with idempotency keys and compensation."
+        },
+        {
+          "t": "reveal",
+          "prompt": "A five-node consensus cluster loses two nodes. Can it still elect a leader? What about after losing three?",
+          "answer": "With two lost, three of five remain, which is a majority, so it can still decide. With three lost, two remain, which is not a majority, so it stops accepting decisions rather than risk two leaders."
+        }
       ]
     }
   ],
   "fieldGuide": [
     {
       "symptom": "Every endpoint is slow at once, including ones that do not use the failing feature",
-      "causes": ["One slow dependency holds every worker or connection in a shared pool", "No timeout on a call that is hanging"],
+      "causes": [
+        "One slow dependency holds every worker or connection in a shared pool",
+        "No timeout on a call that is hanging"
+      ],
       "look": "What busy workers are blocked on: a stack dump of a live worker, or in-flight spans grouped by dependency.",
       "confirm": "Nearly all workers or connections are waiting in the same call, and that call's latency rose first.",
       "fix": "Timeouts on that call, a bulkhead pool for it, and a statement timeout in the database. Shorter limits cut off some slow valid calls."
     },
     {
       "symptom": "Service recovers, then falls over again within a minute",
-      "causes": ["Retry storm: clients retry in sync without jitter", "Queued work and backlog flushed at once on recovery"],
+      "causes": [
+        "Retry storm: clients retry in sync without jitter",
+        "Queued work and backlog flushed at once on recovery"
+      ],
       "look": "Request rate across the recovery moment, and the share of requests that are retries.",
       "confirm": "Rate several times normal, arriving in spikes at a fixed interval.",
       "fix": "Exponential backoff with jitter and capped attempts on clients; shed load at the edge until the wave passes."
     },
     {
       "symptom": "Order charged but never created",
-      "causes": ["External charge made before the local write, which then rolled back", "Process died between the two steps"],
+      "causes": [
+        "External charge made before the local write, which then rolled back",
+        "Process died between the two steps"
+      ],
       "look": "The provider's charge list against orders for the same window, matched by idempotency key or cart ID.",
       "confirm": "A charge exists with no matching order row.",
       "fix": "Saga ordering: create the order as pending first, charge with its ID as the idempotency key, compensate on failure, and reconcile nightly."
     },
     {
       "symptom": "Timestamps from two machines disagree: a job finished before it was enqueued",
-      "causes": ["Clock skew between hosts", "A clock jumped after a time-sync correction"],
+      "causes": [
+        "Clock skew between hosts",
+        "A clock jumped after a time-sync correction"
+      ],
       "look": "Time-sync status on both hosts, and a shared ordering source such as message IDs or trace spans.",
       "confirm": "The offset between hosts roughly equals the impossible gap in the logs.",
       "fix": "Fix time sync, order by a sequence or version, and measure durations with a monotonic clock."
     },
     {
       "symptom": "Client timed out, but the action happened anyway, sometimes twice",
-      "causes": ["The callee finished after the caller gave up", "Retry sent with a new idempotency key"],
+      "causes": [
+        "The callee finished after the caller gave up",
+        "Retry sent with a new idempotency key"
+      ],
       "look": "Callee logs for the request after the caller's timeout moment.",
       "confirm": "The callee completed the first request after the caller's timeout, and again on the retry.",
       "fix": "Treat timeouts as unknown, reuse the same idempotency key on retry, and check status before acting again."
     },
     {
       "symptom": "504 from the load balancer while the API logs the same request finishing with 200 later",
-      "causes": ["Inner timeouts longer than the outer deadline", "Retries inside the request exceed the budget"],
+      "causes": [
+        "Inner timeouts longer than the outer deadline",
+        "Retries inside the request exceed the budget"
+      ],
       "look": "The timeout and attempt count at each hop compared with the load balancer's limit.",
       "confirm": "API completion time for the request is beyond the load balancer's timeout.",
       "fix": "Set a deadline at entry, pass the remaining time to each call, and keep each hop shorter than its caller."
     },
     {
       "symptom": "LLM calls hang for minutes with no error",
-      "causes": ["HTTP client with no timeout", "Streaming call with no limit on the gap between chunks"],
+      "causes": [
+        "HTTP client with no timeout",
+        "Streaming call with no limit on the gap between chunks"
+      ],
       "look": "The client's timeout configuration, and in-flight call durations.",
       "confirm": "Calls stuck far beyond the provider's normal latency, with no timeout ever firing.",
       "fix": "Set connect, first-token, and idle-gap timeouts. Too short and long valid answers get cut off."
     },
     {
       "symptom": "Load balancer removes all instances at once while one dependency is slow",
-      "causes": ["Health check queries a dependency, so its slowness fails every instance's check"],
+      "causes": [
+        "Health check queries a dependency, so its slowness fails every instance's check"
+      ],
       "look": "What the health endpoint calls, and its latency during the incident.",
       "confirm": "Health checks fail on every instance at the same time the dependency slowed.",
       "fix": "Keep restart decisions about the process itself; report dependency trouble through metrics and degraded responses."
     },
     {
       "symptom": "Two scheduler instances both run the nightly job",
-      "causes": ["Both believe they are leader after a network split or a lock that expired", "No leader election at all"],
+      "causes": [
+        "Both believe they are leader after a network split or a lock that expired",
+        "No leader election at all"
+      ],
       "look": "Scheduler logs on each instance for leadership claims and lock renewals.",
       "confirm": "Both instances log that they hold leadership for overlapping periods.",
       "fix": "Use a lease from a consensus-backed store, check a fencing token before acting, and make the job idempotent."
     }
   ],
   "glossary": [
-    {"term": "Partial failure", "def": "Some components of a system fail while others keep working, and callers often cannot tell which parts succeeded."},
-    {"term": "Timeout", "def": "A limit on how long a caller waits for a response. When it fires, the outcome of the call is unknown, not failed."},
-    {"term": "Timeout budget", "def": "The user-facing deadline divided across the hops of a call chain, so each hop finishes within the time its caller has left."},
-    {"term": "Jitter", "def": "A random amount added to a retry wait so that clients that failed together do not retry together."},
-    {"term": "Retry storm", "def": "Retry traffic large enough to overload a dependency, often keeping it down after it recovers, or multiplied across layers."},
-    {"term": "Retry budget", "def": "A cap on retries as a fraction of normal traffic, so failures cannot multiply load without limit."},
-    {"term": "Cascading failure", "def": "A failure that spreads from one component to the layers that depend on it, usually through exhausted threads, connections, or retries."},
-    {"term": "Circuit breaker", "def": "A wrapper that stops calling a failing dependency for a cooldown, then admits a few trial calls before resuming."},
-    {"term": "Bulkhead", "def": "A separate pool of connections or workers per dependency, so one dependency's trouble cannot exhaust shared resources."},
-    {"term": "Load shedding", "def": "Rejecting excess or low-priority work early, usually with 503, so the work that is accepted completes in time."},
-    {"term": "Two-phase commit", "def": "A protocol where a coordinator asks all participants to prepare, then to commit, giving one outcome. Blocks if the coordinator fails mid-way."},
-    {"term": "Saga", "def": "A multi-service action built from local transactions, each with a compensating action that undoes its effect if a later step fails."},
-    {"term": "Clock skew", "def": "The difference between the clocks of two machines. Makes cross-machine wall-clock timestamps unreliable for ordering events."},
-    {"term": "Quorum", "def": "A majority of nodes in a cluster. Consensus systems need a quorum to decide, so a cluster of 2n+1 nodes tolerates n failures."}
+    {
+      "term": "Partial failure",
+      "def": "Some components of a system fail while others keep working, and callers often cannot tell which parts succeeded."
+    },
+    {
+      "term": "Timeout",
+      "def": "A limit on how long a caller waits for a response. When it fires, the outcome of the call is unknown, not failed."
+    },
+    {
+      "term": "Timeout budget",
+      "def": "The user-facing deadline divided across the hops of a call chain, so each hop finishes within the time its caller has left."
+    },
+    {
+      "term": "Jitter",
+      "def": "A random amount added to a retry wait so that clients that failed together do not retry together."
+    },
+    {
+      "term": "Retry storm",
+      "def": "Retry traffic large enough to overload a dependency, often keeping it down after it recovers, or multiplied across layers."
+    },
+    {
+      "term": "Retry budget",
+      "def": "A cap on retries as a fraction of normal traffic, so failures cannot multiply load without limit."
+    },
+    {
+      "term": "Cascading failure",
+      "def": "A failure that spreads from one component to the layers that depend on it, usually through exhausted threads, connections, or retries."
+    },
+    {
+      "term": "Circuit breaker",
+      "def": "A wrapper that stops calling a failing dependency for a cooldown, then admits a few trial calls before resuming."
+    },
+    {
+      "term": "Bulkhead",
+      "def": "A separate pool of connections or workers per dependency, so one dependency's trouble cannot exhaust shared resources."
+    },
+    {
+      "term": "Load shedding",
+      "def": "Rejecting excess or low-priority work early, usually with 503, so the work that is accepted completes in time."
+    },
+    {
+      "term": "Two-phase commit",
+      "def": "A protocol where a coordinator asks all participants to prepare, then to commit, giving one outcome. Blocks if the coordinator fails mid-way."
+    },
+    {
+      "term": "Saga",
+      "def": "A multi-service action built from local transactions, each with a compensating action that undoes its effect if a later step fails."
+    },
+    {
+      "term": "Clock skew",
+      "def": "The difference between the clocks of two machines. Makes cross-machine wall-clock timestamps unreliable for ordering events."
+    },
+    {
+      "term": "Quorum",
+      "def": "A majority of nodes in a cluster. Consensus systems need a quorum to decide, so a cluster of 2n+1 nodes tolerates n failures."
+    }
   ],
   "apply": {
     "title": "Draw the timeout budget of one of your own requests",
@@ -293,7 +687,10 @@
       "id": "d18-q01",
       "type": "mcq",
       "level": 2,
-      "tags": ["partial-failure", "timeouts"],
+      "tags": [
+        "partial-failure",
+        "timeouts"
+      ],
       "diagnostic": true,
       "q": "A service calls a payment API to create a charge and gets no response before its 10-second timeout. What can it conclude about the charge?",
       "options": [
@@ -304,15 +701,28 @@
       ],
       "answer": 2,
       "explain": "A timeout only means the caller stopped waiting. The request may have been lost, completed with the reply lost, or still be running. Treating it as a failure and retrying without the same idempotency key is how double charges happen.",
-      "why": ["The charge may have completed after the caller stopped waiting.", "The request may never have arrived, or may have been refused.", "", "Nothing in a timeout says why; overload is one possibility among several."]
+      "why": [
+        "The charge may have completed after the caller stopped waiting.",
+        "The request may never have arrived, or may have been refused.",
+        "",
+        "Nothing in a timeout says why; overload is one possibility among several."
+      ]
     },
     {
       "id": "d18-q02",
       "type": "mcq",
       "level": 3,
-      "tags": ["timeout-budget", "timeouts", "logs"],
+      "tags": [
+        "timeout-budget",
+        "timeouts",
+        "logs"
+      ],
       "context": "Users see intermittent 504 errors from Relay's chat. The load balancer's timeout is 30 seconds.",
-      "artifact": {"lang": "log", "title": "load balancer and API logs for one request", "code": "lb   10:00:30.002 req=r_77 POST /api/chat 504 upstream timed out (30s)\napi  10:00:00.010 req=r_77 llm attempt=1 start timeout=60s\napi  10:00:22.400 req=r_77 llm attempt=1 error=overloaded\napi  10:00:23.410 req=r_77 llm attempt=2 start timeout=60s\napi  10:00:41.950 req=r_77 llm attempt=2 ok\napi  10:00:42.100 req=r_77 POST /api/chat 200 duration=42.09s"},
+      "artifact": {
+        "lang": "log",
+        "title": "load balancer and API logs for one request",
+        "code": "lb   10:00:30.002 req=r_77 POST /api/chat 504 upstream timed out (30s)\napi  10:00:00.010 req=r_77 llm attempt=1 start timeout=60s\napi  10:00:22.400 req=r_77 llm attempt=1 error=overloaded\napi  10:00:23.410 req=r_77 llm attempt=2 start timeout=60s\napi  10:00:41.950 req=r_77 llm attempt=2 ok\napi  10:00:42.100 req=r_77 POST /api/chat 200 duration=42.09s"
+      },
       "q": "What is the root problem?",
       "options": [
         "The LLM provider is down and every call fails",
@@ -322,13 +732,21 @@
       ],
       "answer": 1,
       "explain": "The API allows up to 60 seconds per attempt and retries, so a request can run well past the 30 seconds the load balancer waits. The API finished with 200 at 42 seconds for a client that had already received a 504. Raising the outer timeout is tempting but only moves the mismatch.",
-      "why": ["The second attempt succeeded, so the provider is up.", "", "Raising it leaves the inner layers able to exceed any limit; the inner budget is the defect.", "The API itself logged a 42-second duration; the delay is in the API, not in buffering."]
+      "why": [
+        "The second attempt succeeded, so the provider is up.",
+        "",
+        "Raising it leaves the inner layers able to exceed any limit; the inner budget is the defect.",
+        "The API itself logged a 42-second duration; the delay is in the API, not in buffering."
+      ]
     },
     {
       "id": "d18-q03",
       "type": "mcq",
       "level": 2,
-      "tags": ["retries", "retry-storm"],
+      "tags": [
+        "retries",
+        "retry-storm"
+      ],
       "q": "Relay's web app, API, and tools service each retry a failed call up to 3 total attempts. Postgres goes down. Normal load is 200 user actions per second. What load can reach Postgres?",
       "options": [
         "Up to 600 queries per second",
@@ -338,15 +756,27 @@
       ],
       "answer": 2,
       "explain": "Attempts multiply across layers: 3 times 3 times 3 is 27 attempts per action, and 27 times 200 is 5,400. The tempting answer adds attempts per layer or counts only two layers, which hides how fast nested retries grow.",
-      "why": ["That counts retries at one layer only.", "That counts two layers: 9 times 200.", "", "That would require a fourth layer of retries."]
+      "why": [
+        "That counts retries at one layer only.",
+        "That counts two layers: 9 times 200.",
+        "",
+        "That would require a fourth layer of retries."
+      ]
     },
     {
       "id": "d18-q04",
       "type": "mcq",
       "level": 3,
-      "tags": ["retry-storm", "jitter"],
+      "tags": [
+        "retry-storm",
+        "jitter"
+      ],
       "context": "Relay's API was down for four minutes because of a bad config, which was rolled back at 09:04. The pods are healthy, but 503s continued until 09:20.",
-      "artifact": {"lang": "text", "title": "API request rate per second, after rollback", "code": "09:04:00  2,610   09:04:05  2,580   09:04:10  2,640\n09:04:01    410   09:04:06    395   09:04:11    420\n09:04:02    405   09:04:07    400   09:04:12    410\nnormal rate: about 400/s   capacity: about 800/s\nrequests with header x-retry-attempt >= 1 at 09:04:05: 84%"},
+      "artifact": {
+        "lang": "text",
+        "title": "API request rate per second, after rollback",
+        "code": "09:04:00  2,610   09:04:05  2,580   09:04:10  2,640\n09:04:01    410   09:04:06    395   09:04:11    420\n09:04:02    405   09:04:07    400   09:04:12    410\nnormal rate: about 400/s   capacity: about 800/s\nrequests with header x-retry-attempt >= 1 at 09:04:05: 84%"
+      },
       "q": "What is the most likely cause of the continued 503s?",
       "options": [
         "The rollback did not take effect on some pods",
@@ -356,47 +786,74 @@
       ],
       "answer": 1,
       "explain": "Spikes of more than three times capacity every 5 seconds, with normal traffic in between and most requests marked as retries, is a synchronized retry wave. Each wave is rejected and returns 5 seconds later. A bad pod would fail evenly, not in timed spikes.",
-      "why": ["Leftover bad pods would cause steady errors, not spikes every 5 seconds.", "", "A campaign raises traffic smoothly and would not be 84 percent retries.", "A pool limit would not produce a 5-second rhythm in the request rate."]
+      "why": [
+        "Leftover bad pods would cause steady errors, not spikes every 5 seconds.",
+        "",
+        "A campaign raises traffic smoothly and would not be 84 percent retries.",
+        "A pool limit would not produce a 5-second rhythm in the request rate."
+      ]
     },
     {
       "id": "d18-q05",
       "type": "mcq",
       "level": 3,
-      "tags": ["cascading-failure", "bulkhead"],
+      "tags": [
+        "cascading-failure",
+        "bulkhead"
+      ],
       "context": "All of Relay's endpoints became slow at 11:34, including help-center search, which only reads the articles table. A stack dump was taken from one API worker.",
-      "artifact": {"lang": "text", "title": "py-spy dump, one worker, 8 threads", "code": "Thread 1-6 (idle=False):\n    wait (psycopg/waiting.py)\n    execute (psycopg/cursor.py)\n    lookup_order (relay/tools/orders.py:42)\nThread 7-8 (idle=False):\n    _do_get (sqlalchemy/pool/impl.py)\n    connect (sqlalchemy/engine/base.py)\n    search_articles (relay/help/search.py:18)"},
+      "artifact": {
+        "lang": "text",
+        "title": "py-spy dump, one worker, 8 threads, summarized",
+        "code": "Thread 1-6 (idle=False):\n    wait (psycopg/waiting.py)\n    execute (psycopg/cursor.py)\n    lookup_order (relay/tools/orders.py:42)\nThread 7-8 (idle=False):\n    _do_get (sqlalchemy/pool/impl.py)\n    connect (sqlalchemy/engine/base.py)\n    search_articles (relay/help/search.py:18)"
+      },
       "q": "Which conclusion fits the evidence?",
       "options": [
         "Help-center search has a slow query of its own",
-        "The order query is slow and holds the shared pool",
         "The worker is CPU-bound and starving its threads",
-        "The LLM provider is slow and blocking every worker"
+        "The LLM provider is slow and blocking every worker",
+        "The order query is slow and holds the shared pool"
       ],
-      "answer": 1,
+      "answer": 3,
       "explain": "Six threads are inside the order query, waiting on the database. The two search threads have not reached the database at all; they are waiting for a connection from the pool. Search is a victim of the order query, which is the tempting misreading.",
-      "why": ["The search threads are still waiting for a connection, so their query has not started.", "", "Every thread is waiting on I/O or a pool, none is computing.", "No thread is in an LLM call."]
+      "why": [
+        "The search threads are still waiting for a connection, so their query has not started.",
+        "Every thread is waiting on I/O or a pool, none is computing.",
+        "No thread is in an LLM call.",
+        ""
+      ]
     },
     {
       "id": "d18-q06",
       "type": "mcq",
       "level": 2,
-      "tags": ["circuit-breaker"],
+      "tags": [
+        "circuit-breaker"
+      ],
       "q": "What is the purpose of a circuit breaker's half-open state?",
       "options": [
-        "To let half the traffic through while the dependency is slow",
         "To probe with a few trial calls before resuming full traffic",
+        "To let half the traffic through while the dependency is slow",
         "To retry every failed call once before giving up",
         "To queue calls until an operator closes the breaker"
       ],
-      "answer": 1,
+      "answer": 0,
       "explain": "After the cooldown, a few trial calls test whether the dependency has recovered. Success closes the breaker; failure reopens it. Sending full traffic at once, or a fixed half of it, could knock over a dependency that is barely back.",
-      "why": ["Half-open admits a small number of probes, not a fixed share of traffic.", "", "Per-call retry is a different mechanism, and the breaker exists partly to limit it.", "Breakers reset themselves on the outcome of the trial calls, without an operator."]
+      "why": [
+        "",
+        "Half-open admits a small number of probes, not a fixed share of traffic.",
+        "Per-call retry is a different mechanism, and the breaker exists partly to limit it.",
+        "Breakers reset themselves on the outcome of the trial calls, without an operator."
+      ]
     },
     {
       "id": "d18-q07",
       "type": "mcq",
       "level": 2,
-      "tags": ["saga", "two-phase-commit"],
+      "tags": [
+        "saga",
+        "two-phase-commit"
+      ],
       "context": "Relay's checkout charges a card through an external payment provider, creates an order in Postgres, and sends a confirmation email.",
       "q": "What is the most reliable design for this flow?",
       "options": [
@@ -407,15 +864,26 @@
       ],
       "answer": 2,
       "explain": "The provider and the email service cannot take part in two-phase commit, so the flow needs local steps with compensation. Creating the pending order first means a charge always has a record to attach to, and the idempotency key makes retries safe. Charging first is the order-charged-never-created bug.",
-      "why": ["An external HTTP API cannot prepare and hold a commit for a coordinator.", "If the order write fails after the charge, money moves with no order.", "", "Confirming an order before payment invites unpaid orders and changes the product."]
+      "why": [
+        "An external HTTP API cannot prepare and hold a commit for a coordinator.",
+        "If the order write fails after the charge, money moves with no order.",
+        "",
+        "Confirming an order before payment invites unpaid orders and changes the product."
+      ]
     },
     {
       "id": "d18-q08",
       "type": "mcq",
       "level": 3,
-      "tags": ["clocks", "logs"],
+      "tags": [
+        "clocks",
+        "logs"
+      ],
       "context": "While debugging, you find these two lines for the same job. The API and the worker run on different hosts.",
-      "artifact": {"lang": "log", "code": "api     10:00:01.200 enqueued job=triage:9921 msg=m_51\nworker  10:00:00.950 finished job=triage:9921 msg=m_51 duration=0.4s"},
+      "artifact": {
+        "lang": "log",
+        "code": "api     10:00:01.200 enqueued job=triage:9921 msg=m_51\nworker  10:00:00.950 finished job=triage:9921 msg=m_51 duration=0.4s"
+      },
       "q": "What is the most likely explanation?",
       "options": [
         "The worker processed a stale copy from an earlier enqueue",
@@ -425,13 +893,22 @@
       ],
       "answer": 3,
       "explain": "The same message ID cannot be finished before it is enqueued, so the timestamps, not the events, are wrong. A host clock running roughly a second behind explains it. Reordering lines would not change the timestamps printed inside them.",
-      "why": ["The message ID matches, so this is the same enqueue.", "A broker cannot deliver a message it has not received.", "Reordering changes the sequence of lines, not the times written in them.", ""]
+      "why": [
+        "The message ID matches, so this is the same enqueue.",
+        "A broker cannot deliver a message it has not received.",
+        "Reordering changes the sequence of lines, not the times written in them.",
+        ""
+      ]
     },
     {
       "id": "d18-q09",
       "type": "multi",
       "level": 2,
-      "tags": ["retries", "jitter", "timeout-budget"],
+      "tags": [
+        "retries",
+        "jitter",
+        "timeout-budget"
+      ],
       "q": "Which of these belong in a safe retry policy for calls from Relay's API to a dependency? Select all that apply.",
       "options": [
         "Retry only idempotent calls or calls carrying an idempotency key",
@@ -441,14 +918,21 @@
         "Retry 400 validation errors in case the server was confused",
         "Make each attempt fit within the request's remaining deadline"
       ],
-      "answers": [0, 1, 3, 5],
+      "answers": [
+        0,
+        1,
+        3,
+        5
+      ],
       "explain": "Safe retries repeat only what can be repeated, spread out over time, stay capped, and respect the deadline. Retrying at every layer multiplies load, and a 400 will fail the same way every time, so retrying it only adds load."
     },
     {
       "id": "d18-q10",
       "type": "order",
       "level": 2,
-      "tags": ["cascading-failure"],
+      "tags": [
+        "cascading-failure"
+      ],
       "q": "Put the stages of this cascading failure in the order they happen.",
       "items": [
         "A deploy makes one database query slow",
@@ -463,14 +947,33 @@
       "id": "d18-q11",
       "type": "match",
       "level": 1,
-      "tags": ["circuit-breaker", "bulkhead", "jitter"],
+      "tags": [
+        "circuit-breaker",
+        "bulkhead",
+        "jitter"
+      ],
       "q": "Match each pattern to what it does.",
       "pairs": [
-        ["Circuit breaker", "Stops calling a failing dependency for a cooldown"],
-        ["Bulkhead", "Gives each dependency its own pool of resources"],
-        ["Load shedding", "Rejects excess work early so accepted work finishes"],
-        ["Graceful degradation", "Serves a reduced feature when one part fails"],
-        ["Jitter", "Randomizes retry timing so clients do not retry together"]
+        [
+          "Circuit breaker",
+          "Stops calling a failing dependency for a cooldown"
+        ],
+        [
+          "Bulkhead",
+          "Gives each dependency its own pool of resources"
+        ],
+        [
+          "Load shedding",
+          "Rejects excess work early so accepted work finishes"
+        ],
+        [
+          "Graceful degradation",
+          "Serves a reduced feature when one part fails"
+        ],
+        [
+          "Jitter",
+          "Randomizes retry timing so clients do not retry together"
+        ]
       ],
       "explain": "Each pattern contains failure at a different point: the call, the resource pool, the front door, the feature, and the retry schedule. Most robust services use several together."
     },
@@ -478,7 +981,11 @@
       "id": "d18-q12",
       "type": "open",
       "level": 3,
-      "tags": ["timeout-budget", "retries", "llm-api"],
+      "tags": [
+        "timeout-budget",
+        "retries",
+        "llm-api"
+      ],
       "context": "Relay's chat endpoint sits behind a load balancer with a 30-second timeout. It runs a pgvector search, then one LLM call that takes 5 to 15 seconds normally. The LLM client currently has a 120-second timeout and 3 attempts.",
       "q": "Propose timeouts and a retry policy for this endpoint, and explain your choices.",
       "rubric": [
@@ -496,20 +1003,27 @@
       "id": "d18-x1",
       "title": "Everything is slow, and chat is failing first",
       "brief": "At 11:40 alerts fire for 504s on every Relay endpoint, including help-center search and login. Chat fails most. The on-call engineer suspects the LLM provider, because chat depends on it. A deploy went out at 11:30 that changed how the `lookup_order` tool searches by customer email.",
-      "artifact": {"lang": "text", "title": "p99 latency by endpoint", "code": "endpoint             11:25    11:35    11:40\n/api/chat            9.1s    24.0s    30.0s (504)\n/api/help/search     0.2s     6.8s    30.0s (504)\n/api/login           0.1s     5.9s    30.0s (504)\n/healthz             0.01s    4.2s    timeout"},
+      "artifact": {
+        "lang": "text",
+        "title": "p99 latency by endpoint",
+        "code": "endpoint             11:25    11:35    11:40\n/api/chat            9.1s    24.0s    30.0s (504)\n/api/help/search     0.2s     6.8s    30.0s (504)\n/api/login           0.1s     5.9s    30.0s (504)\n/healthz             0.01s    4.2s    timeout"
+      },
       "steps": [
         {
           "q": "What do you check first?",
           "options": [
-            "Switch chat to a fallback LLM provider",
-            "See what busy API workers are waiting on, with a stack dump or in-flight spans",
-            "Restart all API pods to clear stuck requests",
+            "Switch chat over to a fallback LLM provider",
+            "Check what the busy API workers are blocked on",
+            "Restart all API pods to clear the stuck requests",
             "Scale the API deployment to twice as many pods"
           ],
           "answer": 1,
           "explain": "Login and search do not call the LLM, yet they are slow too, so the cause is something they share. Seeing what workers are blocked on names the shared resource. Restarting or scaling puts fresh workers into the same trap.",
           "reveal": "Nearly every thread is either inside the `lookup_order` query or waiting to get a connection from the pool. No thread is in an LLM call.",
-          "artifact": {"lang": "log", "code": "11:41:02 api-3 QueuePool limit of size 10 overflow 5 reached, connection timed out, timeout 5.00\n11:41:02 api-5 QueuePool limit of size 10 overflow 5 reached, connection timed out, timeout 5.00\n11:41:03 postgres duration: 8213 ms  statement: SELECT ... FROM orders WHERE lower(customer_email) = $1"}
+          "artifact": {
+            "lang": "log",
+            "code": "11:41:02 api-3 QueuePool limit of size 10 overflow 5 reached, connection timed out, timeout 5.00\n11:41:02 api-5 QueuePool limit of size 10 overflow 5 reached, connection timed out, timeout 5.00\n11:41:03 postgres duration: 8213 ms  statement: SELECT ... FROM orders WHERE lower(customer_email) = $1"
+          }
         },
         {
           "q": "Why are search and login failing when they do not touch orders?",
@@ -554,7 +1068,11 @@
       "id": "d18-x2",
       "title": "The rollback worked, but the outage did not end",
       "brief": "A bad config took Relay's API down from 09:00 to 09:04. The rollback finished at 09:04 and every pod passes its health check, yet customers see 503 errors until well after 09:15. The API normally handles about 400 requests per second and can serve about 800.",
-      "artifact": {"lang": "text", "title": "API, after rollback", "code": "time      req/s   503/s   pods_ready\n09:04:00  2,610   1,800   8/8\n09:04:01    410       0   8/8\n09:04:05  2,580   1,780   8/8\n09:04:06    395       0   8/8"},
+      "artifact": {
+        "lang": "text",
+        "title": "API, after rollback",
+        "code": "time      req/s   503/s   pods_ready\n09:04:00  2,610   1,800   8/8\n09:04:01    410       0   8/8\n09:04:05  2,580   1,780   8/8\n09:04:06    395       0   8/8"
+      },
       "steps": [
         {
           "q": "What do you check first?",
@@ -571,10 +1089,10 @@
         {
           "q": "Why does the service not recover on its own?",
           "options": [
-            "Each rejected request returns 5 seconds later with the others, so every wave exceeds capacity again",
-            "Some pods still run the bad config and reject traffic",
-            "The database is still recovering from the outage",
-            "The load balancer is still draining the old pods"
+            "Rejected requests return together 5 seconds later, over capacity again",
+            "Some pods still run the bad config and reject part of the traffic",
+            "The database is still recovering from the four-minute outage",
+            "The load balancer is still draining connections from the old pods"
           ],
           "answer": 0,
           "explain": "Clients that failed during the outage all retry on the same timer, so their retries keep arriving together. Most of each wave is rejected, and the rejected requests rejoin the next wave. Pods with bad config would fail between spikes too.",
@@ -602,7 +1120,7 @@
           ],
           "answer": 1,
           "explain": "Backoff spreads one client's retries over time, jitter spreads different clients apart, and a cap and Retry-After let the server set the pace. Removing retries makes every brief blip visible to users; faster or scheduled retries make the wave worse.",
-          "reveal": "Replayed against the same outage in a load test, retries spread over 30 seconds add about 330 requests per second on top of normal traffic, well under capacity."
+          "reveal": "Replayed in a load test, the roughly 2,200 retries in each wave, spread over 30 seconds, add about 75 requests per second on top of normal traffic, well under capacity."
         }
       ],
       "debrief": "Root cause: the web app retried on a fixed 5-second timer with no limit or jitter, so clients that failed during the outage came back as synchronized waves above capacity. The rollback had worked; the second outage came from the retries. Load shedding at the edge stopped it, and backoff with jitter, capped attempts, and Retry-After prevent it. A test that recovers from a short outage under realistic client behavior would have caught it. Check retry shape before blaming the release."

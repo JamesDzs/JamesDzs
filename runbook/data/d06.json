@@ -1,0 +1,643 @@
+{
+  "id": "d06",
+  "day": 6,
+  "phase": "p2",
+  "title": "Debugging as a method",
+  "tagline": "A repeatable loop for going from 'it is broken' to the line, config, or row that broke it, without guessing.",
+  "minutes": 60,
+  "why": "Banging your head on a bug usually means guessing: changing things that feel likely and hoping. A method replaces that with cheap experiments, each of which rules out half of what is left. This day is the core skill the rest of the course feeds, and the one you will use every week.",
+  "objectives": [
+    "Write a problem statement with expected behavior, actual behavior, scope, and start time, and ask what changed",
+    "Choose between reproducing first and reading code first, and between logging, a debugger, and a failing test",
+    "Bisect a failure over commits, layers, config, data, or time, and estimate how many steps it will take",
+    "Read a chained Python traceback bottom up and separate the root cause from the error that reached the top",
+    "Recognize when a fix made an error disappear without explaining it"
+  ],
+  "lessons": [
+    {
+      "id": "d06-l1",
+      "title": "The loop: observe, hypothesize, test, narrow",
+      "minutes": 15,
+      "blocks": [
+        {"t": "p", "text": "Debugging is running experiments. You hold a set of possible causes, run the cheapest test that rules out a large part of that set, and repeat until one cause is left that explains every observation. Guessing skips the middle step: it applies fixes and waits to see whether the symptom goes away."},
+        {"t": "flow",
+          "title": "The debugging loop",
+          "steps": [
+            {"actor": "You", "label": "State expected vs actual, precisely", "detail": "What should happen, what happens instead, for whom, since when, how often.", "fail": "A vague statement such as 'chat is broken' makes every theory look plausible."},
+            {"actor": "You", "label": "Ask what changed", "detail": "Deploys, config, dependencies, data, traffic, upstream providers, and the clock.", "fail": "Skipping this sends you into the code when the cause is a config edit at 14:02."},
+            {"actor": "You", "label": "List hypotheses and rank them", "detail": "Rank by likelihood and by how cheap each is to test. A cheap test of a medium suspect often comes first.", "fail": "Holding only one hypothesis turns every result into confirmation."},
+            {"actor": "You", "label": "Predict, then test one thing", "detail": "Write what you expect to see if the hypothesis is true, then change or measure exactly one thing.", "fail": "Changing three settings at once leaves you unable to say which one mattered."},
+            {"actor": "Notebook", "label": "Record the result and what it rules out", "detail": "A timestamped line per experiment: what you did, what you saw, what is now excluded.", "fail": "Without notes you retest the same idea an hour later, or hand over nothing."},
+            {"actor": "You", "label": "Narrow and repeat until one cause explains all", "detail": "Stop only when the cause accounts for every observation, including when it started and who it affects.", "fail": "Stopping when the symptom vanishes leaves the cause in place."}
+          ]},
+        {"t": "code",
+          "lang": "text",
+          "title": "A debugging notebook, first fifteen minutes",
+          "code": "14:20 STATEMENT  Expected: POST /chat returns a reply. Actual: 500 for ~8% of\n                 requests since 14:05. Text-only tickets fine. Staging fine.\n14:22 CHANGED?   Deploy v2.14 at 13:40. Config: none. Provider status: green.\n14:24 H1 deploy  H2 one bad pod  H3 specific ticket data  H4 upstream LLM\n14:26 TEST       500s by pod: spread evenly over all 6 pods.   -> H2 out\n14:29 TEST       500s by tool called: all inside lookup_order. -> H4 unlikely\n14:31 TEST       500s by ticket: all have attachments.         -> H3 up\n14:33 NOTE       v2.14 went out 25 min before the first 500. Check timing again.",
+          "notes": [
+            "The statement names scope (8 percent, attachments) and a start time. Both are evidence.",
+            "Each test is a grouping of data you already have. None changes production.",
+            "The deploy is the first suspect, but the 25-minute gap does not fit a deploy that affects every request. The notebook keeps that doubt visible."
+          ]},
+        {"t": "compare",
+          "caption": "Two ways to run the same experiment",
+          "columns": ["", "Weak experiment", "Strong experiment"],
+          "rows": [
+            ["What it changes", "Three settings at once", "One thing"],
+            ["Prediction", "None written down", "'If the pool is exhausted, errors stop at pool size 40'"],
+            ["If the symptom changes", "You cannot say why", "One hypothesis gains, the others lose"],
+            ["If nothing changes", "Nothing learned", "A hypothesis is ruled out and recorded"],
+            ["Cost", "Often a deploy", "Often a query over existing logs"]
+          ],
+          "verdict": "Prefer experiments that read existing evidence over ones that change the system. Grouping failures by pod, version, tenant, or input costs minutes and often halves the search."},
+        {"t": "callout", "kind": "rule", "title": "What changed? Check these first", "text": "Code deploys, config and feature flags, dependency versions, the data (a new customer, a new order format, a table that crossed a size), traffic shape, upstream providers, and the clock (certificate expiry, month-end, daylight saving time). Most production bugs start at a change."},
+        {"t": "callout", "kind": "pitfall", "title": "The change that happened nearby is not always the cause", "text": "A deploy shortly before an incident is the most tempting suspect and is often right. It is wrong when the timing does not quite fit, or when the failures are limited to inputs the deploy did not touch. Check the timing to the minute and the scope before you blame it."},
+        {"t": "tradeoff",
+          "title": "Customers are failing and a recent deploy is suspect",
+          "options": [
+            {"name": "Roll back", "gain": ["Fastest way to stop the damage", "Tests the deploy hypothesis as a side effect"], "cost": ["Loses the new features for a while", "Unsafe if a migration or data change cannot be undone"], "choose": "Choose this when the deploy plausibly caused it, rollback is safe, and you do not yet know the fix."},
+            {"name": "Fix forward", "gain": ["Keeps the rest of the release", "No risk from reversing a migration"], "cost": ["Customers keep failing while you write and ship the fix", "A rushed fix can add a second bug"], "choose": "Choose this when the cause is understood, the fix is small, or rolling back is unsafe."}
+          ]},
+        {"t": "callout", "kind": "ai", "title": "What changed, for an LLM system", "text": "Add the model version, the prompt, the tool schemas, the retrieval index, and the eval dataset to the list. Outputs vary from run to run, so a single rerun is not a test: run the case several times and compare rates."},
+        {"t": "check",
+          "q": "Relay's 500s started at 14:05. A deploy went out at 13:40, and every 500 involves a ticket with an attachment. What should you check before rolling back?",
+          "options": ["Whether the deploy changed anything about attachments", "Whether Postgres CPU is high", "Whether the LLM provider is degraded"],
+          "answer": 0,
+          "explain": "The scope says attachments, and the timing leaves a 25-minute gap. If the deploy never touched attachment handling, something else changed at 14:05, such as a new attachment type arriving. One look at the diff splits the two."}
+      ]
+    },
+    {
+      "id": "d06-l2",
+      "title": "Reproduce and reduce",
+      "minutes": 15,
+      "blocks": [
+        {"t": "p", "text": "A **reproduction** is a way to make the failure happen on demand. With one, each experiment takes seconds. Without one, each experiment waits for production to fail again. Most of the time spent on a hard bug is spent getting a reliable reproduction, and then the fix is quick."},
+        {"t": "tradeoff",
+          "title": "Where to start on a new bug",
+          "options": [
+            {"name": "Reproduce first", "gain": ["Every later test is fast and certain", "You can confirm the fix by watching the failure stop"], "cost": ["Capturing inputs and environment takes time", "Some failures depend on production load or data"], "choose": "Choose this for most bugs, and always before claiming a fix."},
+            {"name": "Read the code first", "gain": ["Fast when the traceback points at an obvious line", "Works when a reproduction is impossible"], "cost": ["Code shows what should happen, not what did", "Easy to find a plausible bug that is not this bug"], "choose": "Choose this when the evidence already points at a few lines, then confirm with a reproduction."}
+          ]},
+        {"t": "list", "items": [
+          "The exact request: body, headers, user, ticket, and time.",
+          "The versions: commit, image tag, dependency lockfile.",
+          "The effective config: environment variables and flags as the process saw them, not as the file says.",
+          "For an LLM call, the full request: system prompt, messages, tools, model, temperature.",
+          "The data the request touched: the order, the ticket, the retrieved chunks."
+        ]},
+        {"t": "h", "text": "Reduce it to the smallest failing case"},
+        {"t": "p", "text": "A **minimal reproduction** is the smallest input and setup that still fails. Remove half of what is left; if it still fails, keep the cut, otherwise put it back and try the other half. A 40-message conversation that breaks the agent usually shrinks to one message and one tool result, and the cause is then easy to see."},
+        {"t": "compare",
+          "caption": "Why it works locally and fails in production",
+          "columns": ["Difference", "Typical example", "How to check"],
+          "rows": [
+            ["Config", "A flag on in production, off locally", "Print effective config in both and diff"],
+            ["Data", "A row with an unusual format or size", "Replay the exact production input locally"],
+            ["Dependencies", "A library a minor version apart", "Diff installed versions, not just the lockfile"],
+            ["Concurrency", "Many workers, real traffic, races", "Replay with parallel requests"],
+            ["Network path", "A proxy, a timeout, TLS in between", "Call each hop directly"],
+            ["Permissions and secrets", "A key scoped differently", "Check which identity the process runs as"]
+          ],
+          "verdict": "Do not guess which difference matters. Make the local setup more like production one difference at a time until it fails, and the last change you made is the cause."},
+        {"t": "callout", "kind": "debug", "title": "Works locally, fails in production", "text": "First replay the exact failing input locally. If it now fails, the cause is the data, and you have a reproduction. If it still passes, the cause is the environment: diff effective config and installed versions next, since those are cheap, before suspecting concurrency."},
+        {"t": "h", "text": "Intermittent failures"},
+        {"t": "p", "text": "A bug that fails one time in fifty is not random. Something differs between the failing run and the others: a race between two requests, a particular input, one bad instance, a timeout under load, or randomness in the code or the model. Your job is to find the attribute that separates failures from successes, and to raise the failure rate so each test gives an answer."},
+        {"t": "code",
+          "lang": "text",
+          "title": "400 replays of a failing chat request, grouped",
+          "code": "condition                         runs   failures\nsequential, one at a time          200          0\ntwo messages, same ticket, <50ms   100         31\ntwo messages, different tickets    100          0\n\nfailures by worker:   w1: 8   w2: 7   w3: 9   w4: 7\nfailure text (all 31): duplicate key value violates unique\n                       constraint \"messages_ticket_id_seq_key\"",
+          "notes": [
+            "The rate went from about 2 percent in production to 31 percent under one condition. That condition is the clue.",
+            "Failures spread evenly over workers, so a single bad instance is ruled out.",
+            "Only concurrent messages on the **same** ticket fail. That points at a race on per-ticket state."
+          ]},
+        {"t": "tradeoff",
+          "title": "How to look inside the failure",
+          "options": [
+            {"name": "Add logging", "gain": ["Works in production and on rare failures", "Leaves a record for next time"], "cost": ["Each round needs a deploy or a restart", "Too much logging buries the signal"], "choose": "Choose this when the bug only happens in production or too rarely to catch live."},
+            {"name": "Attach a debugger", "gain": ["See every variable at the moment of failure", "No redeploy per question"], "cost": ["Needs a local or reproducible failure", "Pausing changes timing and can hide races"], "choose": "Choose this when you can reproduce locally and the question is what the state looks like."},
+            {"name": "Write a failing test", "gain": ["Reproduction in one command", "Stays as a guard against the bug returning"], "cost": ["Needs a reproduction first", "Hard for failures that need real load or services"], "choose": "Choose this as soon as you can reproduce, before writing the fix."}
+          ]},
+        {"t": "callout", "kind": "ai", "title": "Reproducing an LLM failure", "text": "Store the full request that produced a bad answer, then replay it 20 times and count how often it fails. Temperature 0 reduces variation but does not guarantee identical outputs. A failure rate is a usable reproduction, and a fix should move it to near zero."},
+        {"t": "check",
+          "q": "A tool call fails one time in fifty in production. Replaying the same request 200 times locally never fails. What is the best next move?",
+          "options": ["Conclude the bug is fixed in the current code", "Replay with production-like concurrency and compare failure rates", "Add a retry around the tool call"],
+          "answer": 1,
+          "explain": "The local run removed something production has. Concurrency is a common missing ingredient, and adding it back while measuring the rate tests that difference directly. A retry hides the failure without explaining it."}
+      ]
+    },
+    {
+      "id": "d06-l3",
+      "title": "Bisecting everything",
+      "minutes": 15,
+      "blocks": [
+        {"t": "p", "text": "**Bisection** is binary search applied to a bug. When you have a known good state and a known bad state, test the midpoint. Whichever half the midpoint falls in, the other half is cleared. Each test halves what is left, so 1,000 suspects take about 10 tests, while checking them in order of suspicion can take hundreds."},
+        {"t": "compare",
+          "caption": "Things you can bisect",
+          "columns": ["Dimension", "Good and bad ends", "The midpoint test"],
+          "rows": [
+            ["Commits", "Last release that worked, current head", "Build the middle commit and run the reproduction"],
+            ["Request path", "Browser fails, database is fine", "Call the middle hop directly, such as FastAPI behind nginx"],
+            ["Config", "Staging works, production fails", "Apply half of production's differing settings to staging"],
+            ["Data", "A batch of 10,000 rows fails", "Run the first 5,000 alone"],
+            ["Time", "Fine at 09:00, broken at 15:00", "Check the error rate at 12:00 in metrics"],
+            ["Prompt edits", "Old prompt passes the eval, new one fails", "Apply half of the edits and rerun"]
+          ],
+          "verdict": "Bisect whenever you can name a good state and a bad state and test any point between them. The hard part is a reliable test, not the search."},
+        {"t": "code",
+          "lang": "shell",
+          "title": "Bisecting a refund failure over 75 commits",
+          "code": "$ git bisect start\n$ git bisect bad HEAD\n$ git bisect good v2.13\nBisecting: 37 revisions left to test after this (roughly 5 steps)\n$ git bisect run ./scripts/repro_refund.sh\nrunning './scripts/repro_refund.sh'\n...\nrunning './scripts/repro_refund.sh'\na91c3e7 is the first bad commit\ncommit a91c3e7\n    Parse refund amounts with Decimal instead of float\n$ git bisect reset",
+          "notes": [
+            "`v2.13` is the last state known to work. Without a trusted good end, bisection has nothing to search between.",
+            "`git bisect run` uses the script's exit code: zero marks a commit good, most non-zero codes mark it bad.",
+            "The result is the commit where behavior changed. That commit may have exposed an older bug rather than written a new one, so read it before blaming its author."
+          ]},
+        {"t": "callout", "kind": "pitfall", "title": "Bisecting with a flaky test", "text": "If the reproduction fails one time in five, a bad commit can pass and be marked good, and bisection confidently names an innocent commit. Make the test reliable first, or run it several times per step and mark a commit good only if every run passes."},
+        {"t": "h", "text": "Bisecting the request path"},
+        {"t": "layers",
+          "title": "Relay's request path, and the midpoint test at each layer",
+          "layers": [
+            {"name": "Browser", "role": "Sends the request and shows the result.", "breaks": "Console errors and failed network calls show what the browser saw, but not why."},
+            {"name": "Load balancer", "role": "Terminates TLS and spreads traffic across nginx nodes.", "breaks": "Its own logs show whether a request reached a backend and the status it got back."},
+            {"name": "nginx", "role": "Proxies to the FastAPI workers.", "breaks": "Access and error logs show the upstream status and upstream time. A 502 with tiny upstream time means the app never answered."},
+            {"name": "FastAPI", "role": "Runs the handler and the agent loop.", "breaks": "Calling it directly from inside the network splits the path: works directly means the fault is above it."},
+            {"name": "Postgres and Redis", "role": "Hold tickets, orders, cache, and counters.", "breaks": "Running the handler's query by hand shows whether the data or the query is wrong."},
+            {"name": "LLM API", "role": "Generates replies and tool calls.", "breaks": "Replaying the logged request shows whether the model's output or your handling of it is wrong."}
+          ]},
+        {"t": "p", "text": "Start in the middle. If calling FastAPI directly fails the same way, the browser, load balancer, and nginx are cleared in one step. If it works, the fault is above it, and you test nginx next. The same move works on config: when staging and production differ in 40 settings, copy 20 of production's values into staging and see which half carries the bug."},
+        {"t": "callout", "kind": "debug", "title": "Bisecting over time", "text": "When something broke but nobody knows when, use metrics to find the first bad minute. Narrow the window by halves on the error rate graph, then list every change in the minutes before it: deploys, config reloads, cron jobs, certificate renewals, provider incidents."},
+        {"t": "callout", "kind": "ai", "title": "Bisecting an eval regression", "text": "A new prompt with six edits drops the pass rate. Apply three edits and rerun on the same dataset and model, then halve again. Each rerun must be large enough, or repeated enough, that the difference is bigger than run-to-run noise, or the bisection follows noise."},
+        {"t": "check",
+          "q": "About 1,000 commits separate the last good release from the bad one. With a reliable reproduction script, roughly how many builds will bisection need?",
+          "options": ["About 10", "About 100", "About 500"],
+          "answer": 0,
+          "explain": "Each step halves the range, and 2 to the 10th is 1,024, so about 10 steps. Testing commits one by one in a guessed order could take hundreds, which is the whole case for bisecting."},
+        {"t": "reveal", "prompt": "A nightly batch job fails on one of 10,000 help-center articles, and the error does not say which. How would you find the article, and how many runs should it take?", "answer": "Split the articles in half and run each half. Keep the half that fails and split again. About 14 runs isolate one article out of 10,000, since 2 to the 14th is 16,384. Then fix the job's error message so it names the article next time."}
+      ]
+    },
+    {
+      "id": "d06-l4",
+      "title": "Reading errors and stack traces, and the traps",
+      "minutes": 15,
+      "blocks": [
+        {"t": "p", "text": "An error message tells you where the program noticed a problem. That is often not where the problem began. A **stack trace** lists the chain of function calls active at that moment, and reading it well means finding the first place a wrong value appeared, then asking why it was wrong."},
+        {"t": "code",
+          "lang": "python",
+          "title": "A chained traceback from Relay's agent",
+          "code": "Traceback (most recent call last):\n  File \"/app/relay/tools/orders.py\", line 38, in lookup_order\n    order = await fetch_order(int(args[\"order_id\"]))\nValueError: invalid literal for int() with base 10: 'A-8812'\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/app/relay/api/chat.py\", line 88, in chat\n    reply = await run_agent_turn(ticket, message)\n  File \"/app/relay/agent/loop.py\", line 132, in run_agent_turn\n    result = await call_tool(name, args)\n  File \"/app/relay/agent/tools.py\", line 57, in call_tool\n    raise ToolError(f\"{name} failed\") from exc\nrelay.agent.tools.ToolError: lookup_order failed",
+          "notes": [
+            "'Most recent call last' means the bottom frame of each block is where that exception was raised. Read each block from the bottom up.",
+            "The last line, `ToolError: lookup_order failed`, is what your error tracker shows. It describes the symptom.",
+            "'The above exception was the direct cause' means the code wrapped an earlier error with `raise ... from`. The first block is the original.",
+            "The root error is a `ValueError` on `'A-8812'`. The question to ask next is why an order id has a prefix, not how to stop `int()` from failing."
+          ]},
+        {"t": "list", "style": "number", "items": [
+          "Read the last line: the exception type and message.",
+          "Look for chain markers and scroll to the first block, which holds the original error.",
+          "In that block, find the bottom frame in your own code, skipping library frames.",
+          "Note the values involved, from the message or from logs for that request id.",
+          "Ask where that value came from, and follow it upstream until it was last correct."
+        ]},
+        {"t": "compare",
+          "caption": "How an earlier error shows up, or does not",
+          "columns": ["What the code did", "What you see", "What it means"],
+          "rows": [
+            ["Raised a new error `from` the old one", "'The above exception was the direct cause of the following exception'", "A deliberate wrap; the first block is the original"],
+            ["Raised inside an `except` block without `from`", "'During handling of the above exception, another exception occurred'", "The error handler itself failed; the first block is still the original"],
+            ["Raised `from None`", "Only the new error", "The cause was hidden on purpose; look in logs"],
+            ["Caught and returned a default, or logged only the message", "No traceback, and a strange value later", "The evidence is gone; the failure surfaces far away"]
+          ],
+          "verdict": "When a traceback seems to start in the middle of nowhere, look for a swallowed or hidden cause upstream of it."},
+        {"t": "callout", "kind": "pitfall", "title": "The error that points far from its cause", "text": "`AttributeError: 'NoneType' object has no attribute 'status'` in the reply formatter usually means some earlier function returned `None` instead of failing. Search for the broad `except` that turned a real error into `None`, and make it log the full traceback or re-raise."},
+        {"t": "h", "text": "The traps"},
+        {"t": "compare",
+          "caption": "Four ways a competent person gets stuck",
+          "columns": ["Trap", "What it sounds like", "The counter-move"],
+          "rows": [
+            ["Confirmation bias", "'It must be the cache, and look, here is a cache miss'", "Ask what you would see if your theory were false, and look for that"],
+            ["Fixing the symptom", "'I wrapped it in try/except and the error is gone'", "Require an explanation for why it started, not just that it stopped"],
+            ["Blaming the newest code", "'It broke after the deploy, so revert my PR'", "Check the timing to the minute and whether the deploy touches the failing path"],
+            ["Trusting a stale log", "'The log says the flag is off'", "Check the timestamp, the host, and the environment of every line you rely on"]
+          ],
+          "verdict": "All four feel like progress. The defense is the notebook: a written prediction for each test makes a wrong theory visible."},
+        {"t": "callout", "kind": "debug", "title": "The fix made the error disappear without explaining it", "text": "Raising a timeout, adding a retry, or catching an exception can stop the error while the cause stays. Test your explanation: remove the fix, recreate the original condition, and watch the failure return. If you cannot say why it started when it did, you have not found it."},
+        {"t": "callout", "kind": "ai", "title": "Agents hide tracebacks from you", "text": "When a tool raises, Relay returns the error text to the model as a tool result, and the model often apologizes or works around it. The final answer looks fine or vaguely wrong. Read the tool results in the trajectory, and log the full traceback on the server side."},
+        {"t": "check",
+          "q": "Your error tracker groups a spike under `ToolError: lookup_order failed`. Where is the most useful information?",
+          "options": ["In the ToolError's own line, which names the failing tool", "In the first traceback block of the chain, above the 'direct cause' line", "In the FastAPI frame at the top of the second block"],
+          "answer": 1,
+          "explain": "The ToolError is a wrapper that names the symptom. The chain marker says an earlier exception caused it, and that first block holds the original type, message, and the line in your code where the bad value was used."},
+        {"t": "reveal", "prompt": "A teammate fixed the 'A-8812' traceback by stripping everything before the dash. Errors stopped. What question should you ask before accepting the fix?", "answer": "Is order 'A-8812' the same order as 8812? If the prefix marks a different sales channel, stripping it fetches the wrong customer's order and returns it confidently. The fix removed the error without explaining why ids changed format."}
+      ]
+    }
+  ],
+  "fieldGuide": [
+    {
+      "symptom": "Works locally, fails in production",
+      "causes": ["Production data the local setup never sees", "Different effective config or flags", "Different installed dependency versions", "Concurrency or a proxy only production has"],
+      "look": "The exact failing production input replayed locally, then a diff of effective config and installed versions.",
+      "confirm": "The local run fails once you add the one production difference.",
+      "fix": "Fix that difference, and add the input or setting to tests so the gap stays closed."
+    },
+    {
+      "symptom": "Fails one time in fifty, and a retry works",
+      "causes": ["A race between concurrent requests", "One bad instance or node", "A rare input", "Timeouts under load or randomness"],
+      "look": "Failures grouped by instance, input, concurrency, and time, compared with successes.",
+      "confirm": "Under one condition the failure rate jumps, for example to 30 percent with concurrent requests on the same record.",
+      "fix": "Fix the mechanism the condition reveals. A retry only hides it, and may repeat side effects."
+    },
+    {
+      "symptom": "Error message points far from the cause, such as 'NoneType' has no attribute in unrelated code",
+      "causes": ["An earlier error swallowed and turned into None", "A cause hidden with raise from None"],
+      "look": "Where the None value was produced, and broad `except` blocks on that path.",
+      "confirm": "Logs for the same request id show an earlier exception, or the function returns None for a known bad input.",
+      "fix": "Let the original error propagate or log it with its traceback."
+    },
+    {
+      "symptom": "The fix made the error disappear, but nobody can say why it started",
+      "causes": ["A retry, timeout bump, or exception handler masking the cause"],
+      "look": "Whether the explanation accounts for when it started, who it affects, and how often.",
+      "confirm": "Removing the fix and recreating the original condition brings the failure back.",
+      "fix": "Keep the mitigation if it helps, but keep the investigation open until the cause is named."
+    },
+    {
+      "symptom": "Errors started at a specific minute with no deploy",
+      "causes": ["Config or flag change", "New kind of data arriving", "Upstream provider change", "Time-based event such as certificate expiry or a cron job"],
+      "look": "The first bad minute in metrics, then every change log, cron schedule, and provider status in the minutes before it.",
+      "confirm": "One change lines up to the minute and explains the scope of the failures.",
+      "fix": "Revert or correct that change; add it to whatever change log you check first next time."
+    },
+    {
+      "symptom": "Error tracker shows only a wrapper error such as ToolError, with no useful message",
+      "causes": ["The tracker groups by the last exception in a chain", "The cause was raised from None or not logged"],
+      "look": "The full event: the first traceback block above 'direct cause' or 'during handling'.",
+      "confirm": "The first block holds a specific error type and value.",
+      "fix": "Always chain with `from exc`, and include the identifying value in the wrapper's message."
+    },
+    {
+      "symptom": "git bisect names a commit that cannot plausibly cause the bug",
+      "causes": ["A flaky reproduction marked a bad commit good", "The wrong commit was chosen as the good end"],
+      "look": "The bisect log, and how reliable the reproduction script is.",
+      "confirm": "Rerunning the script several times on the named commit's parent gives mixed results.",
+      "fix": "Make the reproduction reliable or repeat it per step, then bisect again."
+    },
+    {
+      "symptom": "Cannot reproduce at all, with the same code",
+      "causes": ["Missing the exact input, user, or data", "Missing the environment difference"],
+      "look": "What the failing request carried and touched, from logs keyed by its request id.",
+      "confirm": "Replaying with the captured input fails.",
+      "fix": "Log enough per request to replay it: ids, inputs, versions, and for LLM calls the full request."
+    },
+    {
+      "symptom": "The log says one thing and the system clearly does another",
+      "causes": ["Reading a stale log, the wrong host, or the wrong environment", "Logs buffered and not yet flushed"],
+      "look": "Timestamps, hostnames, and environment on the lines you rely on.",
+      "confirm": "The lines predate the incident or come from another environment.",
+      "fix": "Query logs by request id and time window, and include environment in every line."
+    }
+  ],
+  "glossary": [
+    {"term": "Hypothesis", "def": "A specific, testable guess at a cause, stated with the observation you would expect if it were true."},
+    {"term": "Reproduction", "def": "A way to make a failure happen on demand, so each experiment takes seconds instead of waiting for production."},
+    {"term": "Minimal reproduction", "def": "The smallest input and setup that still fails, found by removing parts until any further removal makes it pass."},
+    {"term": "Intermittent failure", "def": "A failure that happens on some runs and not others. Something differs between failing and passing runs, and finding it is the work."},
+    {"term": "Bisection", "def": "Binary search for a cause: test the midpoint between a good and a bad state, keep the half that contains the change, repeat."},
+    {"term": "git bisect", "def": "A Git command that bisects over commits between a known good and a known bad one, optionally driven by a script's exit code."},
+    {"term": "Stack trace", "def": "The list of function calls active when an error was raised. In Python, the most recent call is printed last."},
+    {"term": "Chained exception", "def": "An exception raised while handling or because of an earlier one. Python prints the earlier one first, with a marker between them."},
+    {"term": "Swallowed error", "def": "An exception caught and discarded or reduced to a message, so its traceback is lost and the failure appears later somewhere else."},
+    {"term": "Root cause", "def": "The earliest fault that, if removed, prevents the failure. The error you see is usually a later consequence of it."},
+    {"term": "Confirmation bias", "def": "Noticing evidence that supports the theory you already hold and missing evidence against it."},
+    {"term": "Roll back", "def": "Returning to the previous known good version to stop damage, before the cause is fully understood."}
+  ],
+  "apply": {
+    "title": "Turn your last bug into a method",
+    "minutes": 20,
+    "steps": [
+      "Pick a bug from your project this month. Write one line each for expected, actual, scope, start time, and what changed. Notice which you did not know at the time.",
+      "Write a script that reproduces one current failure in your project and exits non-zero when it fails. Run it 20 times and record the failure rate.",
+      "Search your code for `except Exception` and bare `except`. For each one, check whether it logs the full traceback or re-raises, and fix one that does neither.",
+      "Find the last commit where your eval score or test suite was known good, count the commits since, and work out how many bisection steps it would take."
+    ]
+  },
+  "quiz": [
+    {
+      "id": "d06-q01",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["what-changed", "method"],
+      "diagnostic": true,
+      "q": "A service ran cleanly all morning. At 14:05 its error rate jumps from near zero to 8 percent. Which question is most likely to narrow the cause quickly?",
+      "options": [
+        "Which function in the codebase is most likely buggy?",
+        "What changed in or around the system shortly before 14:05?",
+        "Would restarting the service make the errors stop?",
+        "Has the error rate been this high before?"
+      ],
+      "answer": 1,
+      "explain": "A sharp start at a known minute means something changed then: a deploy, config, data, traffic, a provider, or a timed event. Listing those changes usually cuts the search to a handful. Reading code first searches everything with no clue about where to look.",
+      "why": ["Code that worked all morning did not change by itself at 14:05, so reading it first has no starting point.", "", "A restart might hide the symptom and destroys evidence such as the process state.", "History is useful context, but it does not point at what started this incident."]
+    },
+    {
+      "id": "d06-q02",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["tracebacks", "root-cause"],
+      "artifact": {"lang": "python", "code": "Traceback (most recent call last):\n  File \"/app/relay/tools/orders.py\", line 38, in lookup_order\n    order = await fetch_order(int(args[\"order_id\"]))\nValueError: invalid literal for int() with base 10: 'A-8812'\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/app/relay/agent/tools.py\", line 57, in call_tool\n    raise ToolError(f\"{name} failed\") from exc\nrelay.agent.tools.ToolError: lookup_order failed"},
+      "q": "What should the investigation focus on?",
+      "options": [
+        "Why `call_tool` raises ToolError instead of returning a result",
+        "Why `fetch_order` is slow for this order",
+        "Why an order id with an `A-` prefix reached `lookup_order`",
+        "Why the traceback has two blocks instead of one"
+      ],
+      "answer": 2,
+      "explain": "The first block is the original error: the code assumed numeric order ids and received 'A-8812'. ToolError is a deliberate wrapper and is behaving as designed. The tempting move is to investigate the last line because it is what the tracker shows.",
+      "why": ["Wrapping the error is intended behavior; it reports the failure rather than causing it.", "`fetch_order` was never called, since `int()` failed while building its argument.", "", "Two blocks mean the code chained the errors with `from`, which is correct and helpful."]
+    },
+    {
+      "id": "d06-q03",
+      "type": "mcq",
+      "level": 1,
+      "tags": ["bisection"],
+      "q": "About 600 commits separate a known good release from the broken head. With a reliable reproduction, roughly how many test runs will `git bisect` need?",
+      "options": [
+        "About 10",
+        "About 30",
+        "About 60",
+        "About 300"
+      ],
+      "answer": 0,
+      "explain": "Each step halves the range: 600, 300, 150, 75, 38, 19, 10, 5, 3, 2, 1, so about 10 steps. 300 is what a linear search would average, which is the cost bisection avoids.",
+      "why": ["", "Thirty steps would cover a range of about a billion commits.", "Sixty is a tenth of the range, as if each step removed a fixed share instead of half.", "Three hundred is the average for checking commits one by one."]
+    },
+    {
+      "id": "d06-q04",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["intermittent", "grouping"],
+      "context": "About 2 percent of Relay's chat requests fail with a 500 and succeed on retry. Relay runs six API pods.",
+      "artifact": {"lang": "text", "title": "Failures in the last 24 hours, grouped", "code": "by pod:      api-1: 0  api-2: 0  api-3: 212  api-4: 0  api-5: 0  api-6: 0\nby tool:     spread across all tools\nby ticket:   212 different tickets\nimage tag:   api-1..2,4..6: relay:v2.15   api-3: relay:v2.15"},
+      "q": "What do you check next?",
+      "options": [
+        "Add a retry for 500s in the web app",
+        "Roll back v2.15 on all pods",
+        "Profile the agent loop for slow tools",
+        "Compare api-3's effective config, node, and connections with another pod"
+      ],
+      "answer": 3,
+      "explain": "Every failure is on one pod running the same image as the others, so the code is ruled out and the difference lies in that pod's environment: its config, its node, or its connections. Rolling back the image on all pods targets code that five healthy pods also run.",
+      "why": ["A retry hides the failures while one pod keeps failing.", "The same image runs on five pods with zero failures, so the code is cleared.", "Failures spread across all tools and tickets, so no single slow path explains them.", ""]
+    },
+    {
+      "id": "d06-q05",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["works-locally", "config-diff"],
+      "context": "Relay's help-center search returns good articles on a laptop and nothing in production. Same commit in both.",
+      "artifact": {"lang": "text", "title": "Effective config and one query, both environments", "code": "                      laptop                  production\nEMBED_MODEL           embed-v3                embed-v4\nINDEX_BUILT_WITH      embed-v3                embed-v3\nMIN_SIMILARITY        0.5                     0.5\ntop score for query   0.81                    0.14"},
+      "q": "What is the most likely cause?",
+      "options": [
+        "The production index is missing articles",
+        "Queries are embedded with a different model than the index",
+        "The similarity threshold is too high in production",
+        "The production database is slower than the laptop's"
+      ],
+      "answer": 1,
+      "explain": "Production embeds queries with embed-v4 while the index holds embed-v3 vectors, and vectors from different models are not comparable, so every score is low and the threshold filters everything. The threshold looks guilty but is the same in both environments.",
+      "why": ["A missing article would lower some results, not drop the best score for every query to 0.14.", "", "The threshold is 0.5 in both places; it only exposes the low scores.", "Slowness changes latency, not similarity scores."]
+    },
+    {
+      "id": "d06-q06",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["symptom-fix", "traps"],
+      "q": "Intermittent `KeyError: 'shipping'` errors stop after a teammate changes `order['shipping']` to `order.get('shipping')`. Nobody knows why some orders lack the key. What is the main risk?",
+      "options": [
+        "The `.get` call is slower than indexing",
+        "The change will cause a new KeyError elsewhere at once",
+        "Orders missing shipping data now flow on silently with None",
+        "The error tracker will stop recording other errors"
+      ],
+      "answer": 2,
+      "explain": "The change removed the symptom without explaining it. Orders without shipping data still exist, and now code downstream receives None and may quote wrong delivery dates without any error. The cause, why the key is missing, is still unknown.",
+      "why": ["The speed difference is negligible and irrelevant to correctness.", "The None travels on quietly; it may surface later and far away, or never as an error.", "", "Other errors are still recorded; only this one is hidden."]
+    },
+    {
+      "id": "d06-q07",
+      "type": "mcq",
+      "level": 2,
+      "tags": ["logging-vs-debugger"],
+      "q": "A refund calculation is wrong for about 1 in 500 production requests. You cannot reproduce it locally and cannot pause production processes. What is the best next step?",
+      "options": [
+        "Add logging of the inputs and intermediate values, keyed by request id",
+        "Attach a debugger to a production worker and wait",
+        "Write a unit test for the refund function and see if it fails",
+        "Rewrite the calculation more carefully"
+      ],
+      "answer": 0,
+      "explain": "When a failure is rare and only in production, logging the values that matter is the way to capture it. A debugger needs a reproduction or a paused process, and a unit test needs to know which input fails, which is exactly what is missing. Once logs reveal the input, write the failing test.",
+      "why": ["", "Pausing a production worker is ruled out, and waiting for a 1-in-500 event at a breakpoint is impractical.", "A test only fails if you already know the failing input, which you do not yet.", "Rewriting without knowing the fault may keep the bug and add new ones."]
+    },
+    {
+      "id": "d06-q08",
+      "type": "mcq",
+      "level": 3,
+      "tags": ["rollback", "fix-forward"],
+      "context": "Release v2.16 went out at 10:00 with an additive migration (a new nullable column) and new refund code. Since 10:02, 30 percent of refunds fail. The cause is not yet understood.",
+      "q": "What should you do first?",
+      "options": [
+        "Ship a hotfix based on the most likely theory",
+        "Roll back both the code and the migration",
+        "Keep investigating, since 70 percent of refunds still work",
+        "Roll back the code, leave the column, then investigate"
+      ],
+      "answer": 3,
+      "explain": "The failures started two minutes after the deploy, the cause is unknown, and the old code ignores an added nullable column, so rolling back the code is safe and stops the damage. Reversing the migration drops data written since 10:00 for no gain. A hotfix on a theory risks a second bug.",
+      "why": ["A fix based on an unconfirmed theory can fail or add a new bug while customers keep failing.", "Dropping the new column destroys data, and old code does not need it removed.", "Thirty percent of refunds failing is ongoing customer harm that a safe rollback stops.", ""]
+    },
+    {
+      "id": "d06-q09",
+      "type": "multi",
+      "level": 2,
+      "tags": ["works-locally", "evidence"],
+      "q": "Relay's ticket summarizer works on your laptop and fails in production. Which of these are cheap moves that split the search space? Select all that apply.",
+      "options": [
+        "Replay the exact failing production input on your laptop",
+        "Diff the effective environment variables in both places",
+        "Compare installed package versions in both places",
+        "Restart the production pods to clear their state",
+        "Rewrite the summarizer to be more defensive"
+      ],
+      "answers": [0, 1, 2],
+      "explain": "Each of the first three tests one class of difference, data, config, or dependencies, and costs minutes. A restart destroys evidence and tests nothing, and a defensive rewrite is a fix applied before the cause is known."
+    },
+    {
+      "id": "d06-q10",
+      "type": "order",
+      "level": 2,
+      "tags": ["method"],
+      "q": "Put the steps of the debugging loop in order.",
+      "items": [
+        "State expected and actual behavior, scope, and start time",
+        "List what changed around the start time",
+        "Rank hypotheses and write a prediction for the top one",
+        "Run one experiment that changes or measures one thing",
+        "Record the result and what it rules out",
+        "Confirm the cause explains every observation before closing"
+      ],
+      "explain": "A precise statement and the change list come first because they shrink the field before any experiment. Recording comes after each test so ruled-out ideas stay ruled out, and the last check guards against a fix that only hid the symptom."
+    },
+    {
+      "id": "d06-q11",
+      "type": "match",
+      "level": 2,
+      "tags": ["traps"],
+      "q": "Match each statement to the trap it shows.",
+      "pairs": [
+        ["'Here is a cache miss, so it must be the cache'", "Confirmation bias"],
+        ["'I added a retry and the errors are gone'", "Fixing the symptom"],
+        ["'It broke after my deploy, revert it' (failures began earlier)", "Blaming the newest code"],
+        ["'The log says the flag is off' (yesterday's log)", "Trusting a stale log"],
+        ["'NoneType has no attribute' in the formatter", "A swallowed error upstream"]
+      ],
+      "explain": "Each trap replaces evidence with a feeling of progress. The counters are the same: predict what you would see if you were wrong, check timing and scope, and verify where each piece of evidence came from."
+    },
+    {
+      "id": "d06-q12",
+      "type": "open",
+      "level": 3,
+      "tags": ["bisection", "evals"],
+      "context": "A new version of Relay's system prompt contains eight separate edits. On the nightly eval its pass rate is 74 percent against 83 percent for the old prompt. Run-to-run variation on this eval is about 2 points.",
+      "q": "How would you find which edit caused the drop?",
+      "rubric": [
+        "Checks first that errored or infrastructure failures are not inflating the drop",
+        "Holds the model, dataset, and settings fixed across runs",
+        "Bisects the edits: apply half, rerun, keep the half that carries the drop",
+        "Accounts for noise, by repeating runs or requiring a gap well above 2 points",
+        "Notes that edits may interact, so the culprit may be a pair"
+      ],
+      "model": "First confirm the drop is in graded answers, not errors. Then hold the model, dataset, and settings fixed and bisect: apply four edits to the old prompt and rerun. A drop near 9 points means the culprit is in those four; near zero means the other four. Halve again, about three rounds. Repeat runs when results land near the 2-point noise, and if no single edit reproduces the drop, test pairs, since edits can interact."
+    }
+  ],
+  "drills": [
+    {
+      "id": "d06-x1",
+      "title": "The order lookup that broke after the deploy",
+      "brief": "Since Monday morning, about 6 percent of Relay chats end with 'I could not find your order.' The error tracker shows a spike of `ToolError: lookup_order failed`. Release v2.14 shipped Monday at 10:30 with 40 commits. A teammate says 'it's obviously v2.14, let's roll back'.",
+      "artifact": {"lang": "text", "title": "Error tracker summary", "code": "ToolError: lookup_order failed\nfirst seen:  Mon 09:14     events: 1,906     users: 1,402\nreleases:    v2.13 (212 events), v2.14 (1,694 events)"},
+      "steps": [
+        {
+          "q": "What do you look at first?",
+          "options": [
+            "The full chained traceback of one failed event",
+            "The diff of all 40 commits in v2.14",
+            "The LLM provider's status page",
+            "Postgres CPU and connection graphs"
+          ],
+          "answer": 0,
+          "explain": "The wrapper error says only that the tool failed. One full traceback, already stored, shows the original error and the line, which splits code, data, and infrastructure in one read. Reading 40 commits searches the whole release before you know what to look for.",
+          "reveal": "The first block shows `ValueError: invalid literal for int() with base 10: 'A-8812'` at `orders.py` line 38. Other events show 'A-9020', 'A-9133'.",
+          "artifact": {"lang": "python", "code": "  File \"/app/relay/tools/orders.py\", line 38, in lookup_order\n    order = await fetch_order(int(args[\"order_id\"]))\nValueError: invalid literal for int() with base 10: 'A-8812'\n\nThe above exception was the direct cause of the following exception:\n..."}
+        },
+        {
+          "q": "The deploy is still the obvious suspect. Which cheap check tells you whether v2.14 is to blame?",
+          "options": [
+            "Roll back v2.14 and watch the error rate for an hour",
+            "Check when line 38 last changed and when the first `A-` order was created",
+            "Ask the model to stop sending order ids with prefixes",
+            "Rerun the nightly eval against v2.13 and v2.14"
+          ],
+          "answer": 1,
+          "explain": "Two lookups answer it: if line 38 predates v2.14, the code did not change, and the first `A-` order's creation time shows when the new input appeared. The summary already hinted at this, since the error was first seen at 09:14 under v2.13. A rollback takes an hour and changes production to learn the same thing.",
+          "reveal": "Line 38 has not changed in eight months. The first order with an `A-` id was created at 09:12 on Monday, when the business launched a marketplace sales channel. Its orders use prefixed ids. v2.14 is innocent; it simply received most of the traffic."
+        },
+        {
+          "q": "What is the right fix?",
+          "options": [
+            "Catch the ValueError and tell the model the order was not found",
+            "Strip the `A-` prefix before converting the id to an integer",
+            "Treat order ids as strings end to end and add a test with an `A-` id",
+            "Roll back v2.14 until the marketplace team changes its id format"
+          ],
+          "answer": 2,
+          "explain": "Order ids are no longer numbers, so the code's assumption is what broke. Catching the error tells customers their real orders do not exist. Stripping the prefix may fetch a different order with the same number. Rolling back changes nothing, since v2.13 has the same line.",
+          "reveal": "The tool schema, the parser, and the query now treat `order_id` as a string, and a test covers both id formats."
+        },
+        {
+          "q": "How do you confirm the fix explains the whole incident?",
+          "options": [
+            "Watch the error tracker for an hour after deploying",
+            "Ask a few marketplace customers to try again",
+            "Replay Monday's failed tool calls against the fix and check failures by sales channel",
+            "Run the existing nightly eval and compare the pass rate"
+          ],
+          "answer": 2,
+          "explain": "Replaying the captured failing inputs proves the fix handles exactly the cases that failed, and splitting by channel checks that marketplace orders account for all of them. The existing eval has no `A-` orders, so it cannot show anything about this bug.",
+          "reveal": "All 1,906 failed calls succeed on replay, and every one of them was a marketplace order. The team adds recent marketplace tickets to the eval set."
+        }
+      ],
+      "debrief": "Root cause: a new sales channel introduced string order ids, and `lookup_order` had always assumed integers. The deploy at 10:30 was a coincidence that the error tracker's grouping by release made look guilty. Reading the chained traceback and checking the first-seen time cleared it in minutes. The fix treats ids as strings everywhere and adds both formats to tests and evals. The general lesson: check timing and scope before blaming the newest change."
+    },
+    {
+      "id": "d06-x2",
+      "title": "One message in fifty disappears",
+      "brief": "About 2 percent of customer messages fail with 'Something went wrong, please try again', and sending again works. The rate was below 0.5 percent until last week. Last week the team upgraded the Postgres driver and shipped a new mobile layout for the chat screen. A teammate wants to add an automatic retry and move on.",
+      "artifact": {"lang": "text", "title": "500s on POST /tickets/{id}/messages, daily", "code": "Mon 0.4%   Tue 0.3%   Wed 0.4%   <- driver upgrade Wed 18:00\nThu 0.4%   Fri 2.1%   <- mobile layout Fri 09:00\nSat 2.3%   Sun 1.9%"},
+      "steps": [
+        {
+          "q": "What do you do first?",
+          "options": [
+            "Add an automatic retry on 500 in the web and mobile apps",
+            "Roll back the Postgres driver upgrade",
+            "Group the failed requests by their error text and by what else was happening on that ticket",
+            "Scale up Postgres in case it is overloaded"
+          ],
+          "answer": 2,
+          "explain": "The daily rates already clear the driver: Thursday stayed at 0.4 percent after Wednesday's upgrade, and the jump came Friday with the mobile layout. Grouping the failures' errors costs minutes and says what kind of fault it is. A retry would hide it and could send a customer's message twice.",
+          "reveal": "All failures share one error. Every failed request inserts a message into a ticket.",
+          "artifact": {"lang": "log", "code": "ERROR:  duplicate key value violates unique constraint \"messages_ticket_id_seq_key\"\nDETAIL:  Key (ticket_id, seq)=(451, 7) already exists."}
+        },
+        {
+          "q": "A duplicate `(ticket_id, seq)` means two inserts chose the same sequence number. What do you compare next?",
+          "options": [
+            "Whether each failure had another message for the same ticket within a second",
+            "Failure rates by hour of day",
+            "Failure rates by API pod",
+            "The driver's changelog for unique constraint changes"
+          ],
+          "answer": 0,
+          "explain": "Two writers picking the same number suggests two requests for the same ticket at the same moment. Checking for a neighbor request on the same ticket tests that directly. Pods and hours are reasonable groupings in general, but the error already points at per-ticket concurrency.",
+          "reveal": "Every failure had a second POST for the same ticket within 300 ms. Most came from the new mobile layout, where the send button is easy to tap twice.",
+          "artifact": {"lang": "log", "code": "09:41:07.112 POST /tickets/451/messages client=mobile-2.3 -> 201\n09:41:07.231 POST /tickets/451/messages client=mobile-2.3 -> 500"}
+        },
+        {
+          "q": "How do you confirm the mechanism before fixing it?",
+          "options": [
+            "Wait for a week of production data under the current layout",
+            "Send pairs of concurrent messages to one ticket in staging and count failures",
+            "Read the message insert code and reason about it",
+            "Roll back the mobile layout and watch the rate"
+          ],
+          "answer": 1,
+          "explain": "A targeted replay raises the failure rate from 2 percent to something you can measure in a minute, and compares it with a control. Reading the code is a good companion, but only an experiment confirms that this race is the one in production. Rolling back the layout would reduce double taps without proving the mechanism.",
+          "reveal": "Concurrent pairs on one ticket fail 31 times in 100; pairs on different tickets and sequential sends never fail. The insert computes `max(seq) + 1` and then writes it, with nothing stopping two requests from reading the same max."
+        },
+        {
+          "q": "What is the right fix?",
+          "options": [
+            "Disable the send button for one second after each tap",
+            "Catch the duplicate key error and return 200",
+            "Retry the whole request from the app on any 500",
+            "Assign the sequence atomically in Postgres, and dedupe sends by a client message id"
+          ],
+          "answer": 3,
+          "explain": "The race is in the write, so it must be fixed there: lock the ticket row or let the database assign the number. A double tap would then create two identical messages, so a client-generated message id used as an idempotency key removes those. Disabling the button only shrinks the race, and returning 200 loses the message.",
+          "reveal": "With both changes, concurrent pairs succeed in staging and duplicates are merged. Production 500s on this endpoint fall below 0.05 percent."
+        }
+      ],
+      "debrief": "Root cause: message numbering used read-then-write with no lock, a race that had always been there at a low rate. The new mobile layout made double taps common and raised the rate fourfold. The driver upgrade was the obvious suspect and the daily numbers cleared it for free. Fixes: atomic sequence assignment and a client message id. A concurrency test on the insert would have caught it early. The general lesson: an intermittent failure has a condition; find it and raise its rate."
+    }
+  ]
+}
